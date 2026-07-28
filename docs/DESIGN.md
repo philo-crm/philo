@@ -36,8 +36,6 @@ Full rationale: [ADR-0001](adr/0001-typescript-node-over-rust.md),
 | MCP | `@modelcontextprotocol/sdk`, streamable HTTP |
 | Container | Single Docker image, `ghcr.io/philo-crm/philo` |
 
-Cloudflare is excluded from the design entirely.
-
 ## Architecture
 
 One server process, one SQLite file, three API surfaces over one service
