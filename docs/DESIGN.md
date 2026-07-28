@@ -13,8 +13,8 @@ rationale in [docs/adr/](adr/). The scope guardrail and naming table live in
 
 Philo is a self-hosted, open-source CRM deployed as **one instance per
 business** — single-tenant by design, permanently. The MVP serves driver
-recruiting pre-screening at Oberon Logistics; a later sales-CRM use case
-(fractional CTO practice) constrains generality but is not built for.
+recruiting pre-screening at a small trucking company; a later sales-CRM use
+case (a consulting practice) constrains generality but is not built for.
 
 Philo is **agent-usable from day one**: MCP is a first-class API surface, not
 a bolt-on.
@@ -238,7 +238,7 @@ MVP tool set:
 
 1. **Default seeded stages** — what should first boot create? Working
    assumption: `New → Contacted → Qualified → Closed (terminal)`, renamed
-   in-app for recruiting. Needs Jim's actual recruiting funnel names.
+   in-app for recruiting. Needs the operator's actual funnel stage names.
 2. **Backup guidance** — docs will say "copy the data dir"; do we also
    document Litestream replication as the recommended belt-and-suspenders?
 3. **`llms.txt`** — Ollie ships a hand-written agent tour at `/llms.txt`.
@@ -246,7 +246,7 @@ MVP tool set:
 4. **Instance branding** — `business.name` lives in settings; is a logo
    upload for emails/PWA worth it, or does it drag in the attachments
    machinery we just cut? (Leaning: name only, no logo, MVP.)
-5. **Oberon form field list** — the concrete qualification questions (years
+5. **Production form field list** — the concrete qualification questions (years
    of experience, endorsements, equipment type, availability) need
    finalizing against the guardrail before the intake form is built —
    they're form-side, not schema-side, so this doesn't block implementation.

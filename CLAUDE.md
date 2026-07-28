@@ -13,5 +13,8 @@ before making changes. This file carries only what must load every session.
   fields, no SSN, no license number, no DOB. Flag, don't build.
 - **Single-tenant, permanently.** One business per instance. Take every
   simplification that follows.
+- **No real-world names in repo content.** Public repo: no real businesses,
+  individuals, or deployment domains in docs, code, issues, or fixtures —
+  generic descriptions and `example.com` placeholders only (see AGENTS.md).
 - **Commits:** conventional prefixes, `git commit -s` (DCO enforced),
   co-author `Claude with <model-name>`.

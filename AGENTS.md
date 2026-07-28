@@ -40,9 +40,20 @@ lives in `docs/`, and contested architectural calls are recorded in
 `docs/adr/`. Read both before proposing implementation work.
 
 First production use case: pre-screening driver applicants for a trucking
-company. Second (future) use case: sales CRM for a fractional CTO practice.
+company. Second (future) use case: sales CRM for a consulting practice.
 The data model must not paint the second case into a corner, but we do not
 build for it yet.
+
+## No real-world names in repo content
+
+This is a public open-source repository. Never reference real-world
+businesses, individuals, domains, or other identifying details of any
+deployment in docs, plans, issues, code, comments, tests, or fixtures —
+describe use cases generically ("a small trucking company", "the operator")
+and use `example.com`-style placeholder domains. The maintainer's GitHub
+handle in functional files (CODEOWNERS, trust lists) is the one exception.
+If deployment-specific detail is needed to do the work, it belongs in the
+conversation, not the repo.
 
 ## Naming — decided, do not relitigate
 
