@@ -19,5 +19,7 @@ named `NNNN-short-kebab-title.md`.
 
 ## Index
 
-_No ADRs yet. The first batch (stack, database, data model generality,
-notification architecture) lands with the initial design document._
+- [0001 — TypeScript on Node over Rust](0001-typescript-node-over-rust.md)
+- [0002 — SQLite over Postgres (and over LanceDB)](0002-sqlite-over-postgres.md)
+- [0003 — Hardcoded Lead entity with a JSON fields column](0003-lead-entity-with-json-fields.md)
+- [0004 — Notifications: best-effort declarative web push, email guaranteed](0004-push-best-effort-email-guaranteed.md)
