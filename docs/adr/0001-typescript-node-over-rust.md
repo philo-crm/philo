@@ -5,7 +5,8 @@
 
 ## Context
 
-Philo's sibling project (Ollie) is Rust, which argued for consistency. But the
+Philo's sibling project ([Ollie](https://github.com/olliefms/ollie)) is
+Rust, which argued for consistency. But the
 project's constraints shifted the calculus: all code is written by AI agents
 ("vibe-coded") rather than by hand; Philo must be usable by AI agents via MCP;
 and the self-hosting bar is "runs in a Docker container," not "single static

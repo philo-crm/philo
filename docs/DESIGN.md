@@ -197,8 +197,8 @@ Three credentials, one identity:
    (claude.ai connectors): `401` + `WWW-Authenticate`, protected-resource
    metadata (RFC 9728), AS metadata (RFC 8414), dynamic client registration
    (RFC 7591), authorization-code + PKCE, refresh tokens. Single
-   login+consent page (one POST authenticates and consents — Ollie's proven
-   simplification). Implemented against the MCP TypeScript SDK's auth
+   login+consent page (one POST authenticates and consents — a
+   simplification proven in [Ollie](https://github.com/olliefms/ollie)). Implemented against the MCP TypeScript SDK's auth
    framework rather than hand-assembled.
 
 ## MCP surface

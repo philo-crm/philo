@@ -8,7 +8,8 @@
 Philo is permanently single-tenant with hobby-scale volume (a recruiting
 funnel measured in dozens of leads per week). The install story must be
 embarrassingly short. The maintainer has existing Postgres infrastructure,
-which argued for Postgres; the sibling project used LanceDB, chosen there for
+which argued for Postgres; the sibling project
+([Ollie](https://github.com/olliefms/ollie)) used LanceDB, chosen there for
 vector search over document embeddings. Philo needs full-text search and must
 be searchable by AI agents; it has no embedding corpus at MVP.
 

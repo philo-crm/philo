@@ -50,8 +50,10 @@ This is a public open-source repository. Never reference real-world
 businesses, individuals, domains, or other identifying details of any
 deployment in docs, plans, issues, code, comments, tests, or fixtures —
 describe use cases generically ("a small trucking company", "the operator")
-and use `example.com`-style placeholder domains. The maintainer's GitHub
-handle in functional files (CODEOWNERS, trust lists) is the one exception.
+and use `example.com`-style placeholder domains. Two exceptions: the
+maintainer's GitHub handle in functional files (CODEOWNERS, trust lists),
+and other open-source projects (e.g. Ollie), which may be referenced freely
+— link to the project on first mention in each document.
 If deployment-specific detail is needed to do the work, it belongs in the
 conversation, not the repo.
 
