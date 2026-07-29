@@ -35,9 +35,11 @@ Philo is a self-hosted, open-source **CRM**, deployed as **one instance per
 business** — single-tenant by design, permanently. Every simplification that
 falls out of single-tenancy should be taken.
 
-**Status: design phase.** No application code exists yet. The design document
-lives in `docs/`, and contested architectural calls are recorded in
-`docs/adr/`. Read both before proposing implementation work.
+**Status: MVP in progress.** The scaffold has landed — server and web
+workspaces, and a Docker image that boots and serves `GET /version`. Features
+are tracked as GitHub issues. The design document lives in `docs/`, and
+contested architectural calls are recorded in `docs/adr/`. Read both before
+proposing implementation work.
 
 First production use case: pre-screening driver applicants for a trucking
 company. Second (future) use case: sales CRM for a consulting practice.

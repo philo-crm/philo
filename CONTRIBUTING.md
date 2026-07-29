@@ -34,8 +34,25 @@ If you forget, amend the most recent commit with:
 
 ## Development setup
 
-Philo is in the design phase; there is no buildable application yet. Build and
-test instructions will land in [AGENTS.md](AGENTS.md) alongside the first code.
+Node 24 or newer. From the repo root:
+
+    npm install          # install both workspaces
+    npm test             # server test suite
+    npm run typecheck    # both workspaces
+    npm run build        # web -> server/public, then server -> server/dist
+
+Run the server in watch mode with `npm run dev`; for the PWA with hot reload,
+run `npm run dev --workspace web` alongside it (Vite proxies `/api` and
+`/version` to the server on port 3000).
+
+Configuration is environment-driven: `PHILO_PORT` (default 3000),
+`PHILO_DATA_DIR` (default `./data` locally, `/data` in the container), and
+`PHILO_PUBLIC_BASE_URL` (default `http://localhost:<port>`).
+
+The container is built from the repo root and keeps all state in one volume:
+
+    docker build -t philo:dev .
+    docker run -p 3000:3000 -v philo-data:/data philo:dev
 
 ## Architecture decisions
 
