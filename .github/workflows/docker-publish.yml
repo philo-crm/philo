@@ -25,10 +25,12 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
-# A newer push to the same ref supersedes an in-flight run. Tags and manual
-# dispatches get their own group so a release build is never cancelled.
+# A newer push to the same ref supersedes an in-flight run. A dispatch keys on
+# the requested tag rather than github.ref — which for workflow_dispatch is the
+# launching branch (normally main), so keying on it would let a later push to
+# main cancel a queued republish.
 concurrency:
-  group: docker-${{ github.ref }}
+  group: docker-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -40,9 +42,11 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: |
-          # Only allow well-formed version tags — this value becomes the
-          # checkout ref below, so an unvalidated string is a ref injection.
-          echo "$TAG" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$' || {
+          # Only allow well-formed version tags. `grep -q` is wrong here: it
+          # matches per line, so a multi-line input passes and its newlines go
+          # on to break the GITHUB_OUTPUT heredoc below, letting a caller set
+          # arbitrary step outputs. `[[ =~ ]]` matches the whole string.
+          [[ "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::tag '$TAG' is not a valid version tag (expected vX.Y.Z)"; exit 1; }
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -79,23 +83,47 @@ jobs:
             type=semver,pattern={{major}}
             type=edge,branch=main
 
-      # Manual dispatch: derive the same semver tag set from the input.
-      - name: Compute tags (manual dispatch)
+      # Manual dispatch: derive the same semver tag set from the input, plus the
+      # OCI labels the metadata action would otherwise have supplied. Without
+      # them a republish loses provenance and, because GHCR derives the
+      # package-to-repo link from image.source, can unlink the package.
+      - name: Compute tags and labels (manual dispatch)
         id: manual
         if: github.event_name == 'workflow_dispatch'
         env:
           TAG: ${{ inputs.tag }}
           IMG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           V="${TAG#v}"            # 1.2.3
           MAJOR="${V%%.*}"        # 1
           MINOR="${V%.*}"         # 1.2
+          REVISION="$(git rev-parse HEAD)"
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Only move :latest when this really is the newest release —
+          # rebuilding an older tag must not downgrade consumers pulling
+          # :latest. Tags are present because checkout used fetch-depth: 0.
+          NEWEST="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
+          if [ "$NEWEST" = "v$V" ]; then
+            LATEST_TAG="$IMG:latest"
+          else
+            LATEST_TAG=""
+            echo "::notice::$TAG is not the newest release ($NEWEST); leaving :latest alone"
+          fi
+
           {
             echo "tags<<EOF"
             echo "$IMG:$V"
             echo "$IMG:$MINOR"
             echo "$IMG:$MAJOR"
-            echo "$IMG:latest"
+            if [ -n "$LATEST_TAG" ]; then echo "$LATEST_TAG"; fi
+            echo "EOF"
+            echo "labels<<EOF"
+            echo "org.opencontainers.image.source=$REPO_URL"
+            echo "org.opencontainers.image.revision=$REVISION"
+            echo "org.opencontainers.image.version=$V"
+            echo "org.opencontainers.image.created=$CREATED"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -139,6 +167,6 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags || steps.manual.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: ${{ steps.meta.outputs.labels || steps.manual.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
