@@ -17,12 +17,19 @@ export function createApp(options: AppOptions = {}): Hono {
 
   app.get('/version', (c) => c.json({ name: 'philo', version: VERSION }))
 
-  // Unknown API paths answer in JSON; they must never fall through to the SPA.
-  app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404))
-
-  // Built PWA assets, then an index.html fallback so client-side routes work.
+  // Built PWA assets. Misses fall through to the not-found handler, so routes
+  // registered after this one still match.
   app.use('/*', serveStatic({ root }))
-  app.get('/*', serveStatic({ root, path: 'index.html' }))
+
+  const serveIndexHtml = serveStatic({ root, path: 'index.html' })
+
+  app.notFound(async (c) => {
+    // API surfaces answer in JSON; they must never fall through to the SPA.
+    if (c.req.path.startsWith('/api/')) return c.json({ error: 'not_found' }, 404)
+    // Everything else is a client-side route: hand back the app shell.
+    const res = await serveIndexHtml(c, async () => {})
+    return res ?? c.text('Not Found', 404)
+  })
 
   return app
 }

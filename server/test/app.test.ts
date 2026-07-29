@@ -54,4 +54,12 @@ describe('unknown API paths', () => {
     expect(res.status).toBe(404)
     expect(res.headers.get('content-type')).toContain('application/json')
   })
+
+  it('does not shadow API routes registered after createApp', async () => {
+    const withApi = createApp({ publicDir })
+    withApi.get('/api/v1/leads', (c) => c.json({ leads: [] }))
+    const res = await withApi.request('/api/v1/leads')
+    expect(res.status).toBe(200)
+    await expect(res.json()).resolves.toEqual({ leads: [] })
+  })
 })
