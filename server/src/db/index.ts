@@ -42,7 +42,22 @@ export function openDatabase(dataDir: string): Db {
   migrate(db, { migrationsFolder: MIGRATIONS_DIR })
   // Cascades and restrictions in the schema are inert without this.
   sqlite.pragma('foreign_keys = ON')
+  assertReferentialIntegrity(sqlite)
 
   seed(db)
   return db
+}
+
+/**
+ * Migrating with foreign keys off means nothing checked the result. A migration
+ * that left dangling references would otherwise produce a database claiming an
+ * integrity it does not have, and every write after that compounds it — so make
+ * it a failed boot instead.
+ */
+function assertReferentialIntegrity(sqlite: Database.Database): void {
+  const violations = sqlite.pragma('foreign_key_check') as unknown[]
+  if (violations.length === 0) return
+  throw new Error(
+    `Database has ${violations.length} foreign key violation(s) after migrating: ${JSON.stringify(violations.slice(0, 5))}`,
+  )
 }

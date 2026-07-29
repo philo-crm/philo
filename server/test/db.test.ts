@@ -135,6 +135,15 @@ describe('reboot', () => {
     ])
   })
 
+  it('does not resurrect email templates the operator deleted outright', () => {
+    const dataDir = tempDataDir()
+    const first = openTracked(dataDir)
+    first.delete(emailTemplates).run()
+    first.$client.close()
+
+    expect(openTracked(dataDir).select().from(emailTemplates).all()).toEqual([])
+  })
+
   it('preserves rows written before the restart', () => {
     const dataDir = tempDataDir()
     const first = openTracked(dataDir)
@@ -182,6 +191,20 @@ describe('lead constraints', () => {
 })
 
 describe('full-text search', () => {
+  // A migration that rebuilds `leads` — drizzle-kit's strategy for most SQLite
+  // column changes — drops its triggers along with it, and search then goes
+  // quietly stale instead of failing. This is the assertion that catches it.
+  it('keeps all three sync triggers installed', () => {
+    const db = openTracked(tempDataDir())
+    const triggers = db.$client
+      .prepare<[], { name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'leads' ORDER BY name",
+      )
+      .all()
+      .map((row) => row.name)
+    expect(triggers).toEqual(['leads_fts_delete', 'leads_fts_insert', 'leads_fts_update'])
+  })
+
   it('indexes name, email, phone, and the values in fields', () => {
     const db = openTracked(tempDataDir())
     const [lead] = db
@@ -211,6 +234,26 @@ describe('full-text search', () => {
       })
       .run()
     expect(search(db, 'endorsements')).toEqual([])
+  })
+
+  it('reaches values nested inside fields without indexing their keys', () => {
+    const db = openTracked(tempDataDir())
+    const [lead] = db
+      .insert(leads)
+      .values({
+        name: 'Dana Rivers',
+        currentStageId: firstStageId(db),
+        fields: JSON.stringify({
+          endorsements: ['hazmat', 'tanker'],
+          availability: { earliest_start: 'immediately' },
+        }),
+      })
+      .returning({ id: leads.id })
+      .all()
+
+    expect(search(db, 'tanker')).toEqual([lead!.id])
+    expect(search(db, 'immediately')).toEqual([lead!.id])
+    expect(search(db, 'earliest')).toEqual([])
   })
 
   it('follows updates', () => {

@@ -8,9 +8,10 @@
 --   WHERE leads_fts MATCH ?;
 CREATE VIRTUAL TABLE `leads_fts` USING fts5(`name`, `email`, `phone`, `fields`);
 --> statement-breakpoint
--- The `fields` column is indexed as its JSON *values* only. Indexing the raw
--- JSON would make every key ("years_experience") a search term matching every
--- lead that has it.
+-- The `fields` column is indexed as its JSON scalar values only, at any depth.
+-- Indexing the raw JSON would make every key ("years_experience") a search term
+-- matching every lead that has it; `json_each` would do the same for the keys of
+-- a nested object, so the walk is `json_tree` with the containers filtered out.
 CREATE TRIGGER `leads_fts_insert` AFTER INSERT ON `leads` BEGIN
   INSERT INTO `leads_fts` (`rowid`, `name`, `email`, `phone`, `fields`)
   VALUES (
@@ -18,7 +19,7 @@ CREATE TRIGGER `leads_fts_insert` AFTER INSERT ON `leads` BEGIN
     new.`name`,
     new.`email`,
     new.`phone`,
-    (SELECT group_concat(value, ' ') FROM json_each(new.`fields`))
+    (SELECT group_concat(value, ' ') FROM json_tree(new.`fields`) WHERE type NOT IN ('object', 'array'))
   );
 END;
 --> statement-breakpoint
@@ -34,7 +35,7 @@ CREATE TRIGGER `leads_fts_update` AFTER UPDATE ON `leads` BEGIN
     new.`name`,
     new.`email`,
     new.`phone`,
-    (SELECT group_concat(value, ' ') FROM json_each(new.`fields`))
+    (SELECT group_concat(value, ' ') FROM json_tree(new.`fields`) WHERE type NOT IN ('object', 'array'))
   );
 END;
 --> statement-breakpoint
@@ -46,5 +47,5 @@ SELECT
   `name`,
   `email`,
   `phone`,
-  (SELECT group_concat(value, ' ') FROM json_each(`leads`.`fields`))
+  (SELECT group_concat(value, ' ') FROM json_tree(`leads`.`fields`) WHERE type NOT IN ('object', 'array'))
 FROM `leads`;

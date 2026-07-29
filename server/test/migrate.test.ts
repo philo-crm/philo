@@ -7,8 +7,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Db } from '../src/db/index.ts'
 import { DB_FILENAME, MIGRATIONS_DIR, openDatabase } from '../src/db/index.ts'
-import { DEFAULT_EMAIL_TEMPLATES } from '../src/db/seed.ts'
-import { emailTemplates, leads, pipelines, stages } from '../src/db/schema.ts'
+import { DEFAULT_EMAIL_TEMPLATES, SEEDED_AT_KEY } from '../src/db/seed.ts'
+import { emailTemplates, leads, pipelines, settings, stages } from '../src/db/schema.ts'
 
 interface Journal {
   entries: { idx: number; tag: string }[]
@@ -49,8 +49,10 @@ function partialMigrationsDir(count: number): string {
 }
 
 /**
- * A database left at the first migration with real data in it — what an
- * operator upgrading an existing install actually hands the new build.
+ * A database left at the first migration, already seeded and then worked in —
+ * what an operator upgrading an installed instance actually hands the new
+ * build. Its stage was renamed and its pipeline is not the seeded default, so
+ * anything that re-seeds over an existing install shows up here.
  */
 function seedSchemaDatabase(dataDir: string): void {
   const sqlite = new Database(join(dataDir, DB_FILENAME))
@@ -79,14 +81,26 @@ function seedSchemaDatabase(dataDir: string): void {
       updatedAt: now,
     })
     .run()
+  db.insert(emailTemplates)
+    .values(DEFAULT_EMAIL_TEMPLATES.map((template) => ({ ...template, updatedAt: now })))
+    .run()
+  db.insert(settings).values({ key: SEEDED_AT_KEY, value: now.toISOString(), updatedAt: now }).run()
 
   // Guards the fixture: if the first migration ever grows a search index, these
   // upgrade tests would silently stop exercising an upgrade at all.
-  const fts = sqlite
-    .prepare("SELECT name FROM sqlite_master WHERE name = 'leads_fts'")
-    .get()
+  const fts = sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'leads_fts'").get()
   if (fts !== undefined) throw new Error('the seed schema already has leads_fts')
   sqlite.close()
+}
+
+/** Ids of the leads matching an FTS5 query. */
+function search(db: Db, query: string): number[] {
+  return db.$client
+    .prepare<[string], { id: number }>(
+      'SELECT l.id AS id FROM leads_fts JOIN leads l ON l.id = leads_fts.rowid WHERE leads_fts MATCH ?',
+    )
+    .all(query)
+    .map((row) => row.id)
 }
 
 function appliedMigrations(db: Db): number {
@@ -117,26 +131,24 @@ describe('upgrading an existing database', () => {
   it('backfills pre-existing leads into the search index', () => {
     const dataDir = tempDir('philo-upgrade-')
     seedSchemaDatabase(dataDir)
-    const db = openTracked(dataDir)
-    const hits = db.$client
-      .prepare<[string], { id: number }>(
-        'SELECT l.id AS id FROM leads_fts JOIN leads l ON l.id = leads_fts.rowid WHERE leads_fts MATCH ?',
-      )
-      .all('hazmat')
-    expect(hits).toHaveLength(1)
+    expect(search(openTracked(dataDir), 'hazmat')).toHaveLength(1)
   })
 
-  it('does not seed a default pipeline alongside an existing one', () => {
+  it('indexes leads written after the upgrade', () => {
+    const dataDir = tempDir('philo-upgrade-')
+    seedSchemaDatabase(dataDir)
+    const db = openTracked(dataDir)
+    const [stage] = db.select().from(stages).limit(1).all()
+    db.insert(leads).values({ name: 'Sam Brooks', currentStageId: stage!.id }).run()
+    expect(search(db, 'Brooks')).toHaveLength(1)
+  })
+
+  it('does not re-seed an install that was already seeded', () => {
     const dataDir = tempDir('philo-upgrade-')
     seedSchemaDatabase(dataDir)
     const db = openTracked(dataDir)
     expect(db.select().from(pipelines).all()).toMatchObject([{ name: 'Recruiting' }])
-  })
-
-  it('seeds what the old database never had', () => {
-    const dataDir = tempDir('philo-upgrade-')
-    seedSchemaDatabase(dataDir)
-    const db = openTracked(dataDir)
+    expect(db.select().from(stages).all()).toMatchObject([{ name: 'Applied' }])
     expect(db.select().from(emailTemplates).all()).toHaveLength(DEFAULT_EMAIL_TEMPLATES.length)
   })
 })

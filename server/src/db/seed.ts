@@ -1,5 +1,6 @@
+import { eq } from 'drizzle-orm'
 import type { Db } from './index.ts'
-import { emailTemplates, pipelines, stages } from './schema.ts'
+import { emailTemplates, pipelines, settings, stages } from './schema.ts'
 
 export const DEFAULT_PIPELINE_NAME = 'Default'
 
@@ -39,36 +40,51 @@ export const DEFAULT_EMAIL_TEMPLATES = [
   },
 ] as const
 
+/** Settings key recording that first-boot seeding has happened. */
+export const SEEDED_AT_KEY = 'seeded_at'
+
 /**
- * First-boot seeds. Each block runs only when its table is empty, so an
- * operator who deletes a seeded stage or template does not get it back on the
- * next restart — re-seeding a deliberate deletion is a bug, not a repair.
+ * First-boot seeds, run exactly once per database and never again — an
+ * operator who deletes every seeded stage or template has decided something,
+ * and re-creating it on the next restart is a bug, not a repair. Checking the
+ * marker rather than whether the tables are empty is what makes that hold: an
+ * emptiness check resurrects a wholesale deletion on the next boot.
+ *
+ * Seeded data added after this point belongs in a migration, which has its own
+ * once-per-database guarantee.
  */
 export function seed(db: Db): void {
   db.transaction((tx) => {
-    if (tx.select({ id: pipelines.id }).from(pipelines).limit(1).all().length === 0) {
-      const [pipeline] = tx
-        .insert(pipelines)
-        .values({ name: DEFAULT_PIPELINE_NAME })
-        .returning({ id: pipelines.id })
-        .all()
-      if (pipeline === undefined) throw new Error('Failed to seed the default pipeline')
-      tx.insert(stages)
-        .values(
-          DEFAULT_STAGES.map((stage, position) => ({
-            pipelineId: pipeline.id,
-            name: stage.name,
-            position,
-            isTerminal: stage.isTerminal,
-          })),
-        )
-        .run()
-    }
+    const seeded = tx
+      .select({ key: settings.key })
+      .from(settings)
+      .where(eq(settings.key, SEEDED_AT_KEY))
+      .limit(1)
+      .all()
+    if (seeded.length > 0) return
 
-    if (tx.select({ id: emailTemplates.id }).from(emailTemplates).limit(1).all().length === 0) {
-      tx.insert(emailTemplates)
-        .values(DEFAULT_EMAIL_TEMPLATES.map((template) => ({ ...template })))
-        .run()
-    }
+    const [pipeline] = tx
+      .insert(pipelines)
+      .values({ name: DEFAULT_PIPELINE_NAME })
+      .returning({ id: pipelines.id })
+      .all()
+    if (pipeline === undefined) throw new Error('Failed to seed the default pipeline')
+
+    tx.insert(stages)
+      .values(
+        DEFAULT_STAGES.map((stage, position) => ({
+          pipelineId: pipeline.id,
+          name: stage.name,
+          position,
+          isTerminal: stage.isTerminal,
+        })),
+      )
+      .run()
+
+    tx.insert(emailTemplates)
+      .values(DEFAULT_EMAIL_TEMPLATES.map((template) => ({ ...template })))
+      .run()
+
+    tx.insert(settings).values({ key: SEEDED_AT_KEY, value: new Date().toISOString() }).run()
   })
 }

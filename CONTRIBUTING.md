@@ -78,6 +78,14 @@ triggers — live in hand-written migrations created with
 over existing rows must backfill them; the triggers only cover writes from that
 point on.
 
+**A migration that alters the `leads` table must re-create the three
+`leads_fts_*` triggers.** SQLite cannot change most of a column in place, so
+drizzle-kit migrates by building a new table, copying the rows, and dropping
+the old one — which drops its triggers too. Nothing fails when that happens:
+search simply stops seeing new leads. Re-create the triggers and re-run the
+backfill in the same migration. `server/test/db.test.ts` asserts all three
+exist after startup, so a migration that forgets fails the suite.
+
 ## Architecture decisions
 
 Significant architectural choices are recorded in [docs/adr/](docs/adr/). If
