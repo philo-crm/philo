@@ -15,8 +15,12 @@
   "scripts": {
     "build": "npm run build --workspace web && npm run build --workspace server",
     "dev": "npm run dev --workspace server",
+    "lint": "oxlint --deny-warnings",
     "start": "node server/dist/index.js",
     "test": "npm run test --workspace server",
     "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "oxlint": "1.76.0"
   }
 }

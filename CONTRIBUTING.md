@@ -39,7 +39,11 @@ Node 24 or newer. From the repo root:
     npm install          # install both workspaces
     npm test             # server test suite
     npm run typecheck    # both workspaces
+    npm run lint         # oxlint, both workspaces
     npm run build        # web -> server/public, then server -> server/dist
+
+CI runs typecheck, lint, test, and build on every pull request, plus a
+container build that must boot and answer `GET /version`.
 
 Run the server in watch mode with `npm run dev`; for the PWA with hot reload,
 run `npm run dev --workspace web` alongside it (Vite proxies `/api` and

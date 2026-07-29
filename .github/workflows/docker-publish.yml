@@ -1,0 +1,144 @@
+# .github/workflows/docker-publish.yml
+# Build and publish the Philo container image to GitHub Container Registry (GHCR).
+# - version tags (v*) -> semver tags (e.g. 1.2.3, 1.2, 1) + latest
+# - pushes to main    -> edge
+# - manual dispatch   -> (re)build an existing tag and publish its semver tags
+# - pull requests     -> build and smoke test only, never published
+name: Docker
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to build and publish (e.g. v1.2.3). Publishes version, major.minor, major, and latest."
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# A newer push to the same ref supersedes an in-flight run. Tags and manual
+# dispatches get their own group so a release build is never cancelled.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate dispatch tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          # Only allow well-formed version tags — this value becomes the
+          # checkout ref below, so an unvalidated string is a ref injection.
+          echo "$TAG" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "::error::tag '$TAG' is not a valid version tag (expected vX.Y.Z)"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # On manual dispatch, build the requested tag; otherwise the triggering ref.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+          fetch-depth: 0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Skipped on pull requests: nothing is published from a PR, and a fork PR
+      # gets a read-only GITHUB_TOKEN that cannot log in to the registry.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Push-triggered builds derive tags + labels from the git ref.
+      - name: Docker metadata
+        id: meta
+        if: github.event_name != 'workflow_dispatch'
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Default flavor latest=auto adds :latest for semver (release) tags only,
+          # not for edge/main.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=edge,branch=main
+
+      # Manual dispatch: derive the same semver tag set from the input.
+      - name: Compute tags (manual dispatch)
+        id: manual
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+          IMG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          V="${TAG#v}"            # 1.2.3
+          MAJOR="${V%%.*}"        # 1
+          MINOR="${V%.*}"         # 1.2
+          {
+            echo "tags<<EOF"
+            echo "$IMG:$V"
+            echo "$IMG:$MINOR"
+            echo "$IMG:$MAJOR"
+            echo "$IMG:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build (local)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: philo-smoke:candidate
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The image must actually boot and serve JSON before we publish it.
+      # `server/src/version.ts` resolves package.json relative to its own module
+      # URL, so a layout change in the runtime stage breaks /version without
+      # breaking the build — only running the container catches that.
+      - name: Smoke test image
+        run: |
+          docker run -d --name philo-smoke -p 3000:3000 philo-smoke:candidate
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/version -o version.json; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs philo-smoke
+          docker rm -f philo-smoke
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::container never served GET /version"
+            exit 1
+          fi
+          cat version.json
+          jq -e '.name == "philo" and (.version | type == "string" and length > 0)' version.json \
+            || { echo "::error::GET /version returned an unexpected payload"; exit 1; }
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags || steps.manual.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
