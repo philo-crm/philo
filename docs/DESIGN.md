@@ -85,7 +85,9 @@ Full rationale for the generality decision:
   in MVP**. The one place future generality is deliberately bought.
 - **`stages`** — `id`, `pipeline_id`, `name`, `position`, `is_terminal`.
   User-definable in the app: create, rename, reorder, delete-if-empty.
-  Transitions are unrestricted — any stage to any stage.
+  Transitions are unrestricted — any stage to any stage. First boot seeds
+  `New → Contacted → Qualified → Closed` (terminal), renamed in-app to the
+  operator's real funnel.
 - **`intake_forms`** — `id`, `name`, `form_key` (unguessable slug),
   `allowed_origins`, `created_at`. Per-form keys support the future second
   use case (second form, same instance).
@@ -216,6 +218,9 @@ MVP tool set:
 - Read-write from day one; a recruiting agent that can pre-screen and
   advance a lead is the point of the requirement.
 
+Alongside MCP, the server serves a public, hand-written `GET /llms.txt` —
+an agent-oriented tour of every surface (a convention carried from Ollie).
+
 ## Deliberately deferred (decisions, not omissions)
 
 | Deferred | Why / trigger to revisit |
@@ -231,20 +236,19 @@ MVP tool set:
 | Delivery webhooks (bounce/open tracking) | Lost by choosing SMTP-generic; revisit only if deliverability becomes a real problem. |
 | Agent automation workflows (triage, shadow review) | Ollie's are repo-proven; adopt after there's code to review. |
 | `assigned_to` / ownership | 1–2 users per instance; add when a real second user needs it. |
+| Logo / visual branding | Business name only in MVP; a logo upload drags in the file-upload machinery deliberately cut with attachments. |
 
 ## Open questions
 
-1. **Default seeded stages** — what should first boot create? Working
-   assumption: `New → Contacted → Qualified → Closed (terminal)`, renamed
-   in-app for recruiting. Needs the operator's actual funnel stage names.
-2. **Backup guidance** — docs will say "copy the data dir"; do we also
-   document Litestream replication as the recommended belt-and-suspenders?
-3. **`llms.txt`** — Ollie ships a hand-written agent tour at `/llms.txt`.
-   Carry the convention? (Leaning yes; cheap and on-brand for agent-first.)
-4. **Instance branding** — `business.name` lives in settings; is a logo
-   upload for emails/PWA worth it, or does it drag in the attachments
-   machinery we just cut? (Leaning: name only, no logo, MVP.)
-5. **Production form field list** — the concrete qualification questions (years
-   of experience, endorsements, equipment type, availability) need
-   finalizing against the guardrail before the intake form is built —
-   they're form-side, not schema-side, so this doesn't block implementation.
+None outstanding — all kickoff questions were resolved in review
+(2026-07-28):
+
+1. **Default seeded stages** — `New → Contacted → Qualified → Closed
+   (terminal)` confirmed; the operator renames in-app.
+2. **Backup guidance** — docs say "copy the data dir," nothing more; no
+   replication tooling documented.
+3. **`llms.txt`** — carried (see MCP surface).
+4. **Instance branding** — business name only; logo deferred (see table).
+5. **Intake form fields** — out of scope for this repo: the form lives in
+   the website's own codebase, and any non-core field it submits flows into
+   the `fields` JSON column without schema work here.
