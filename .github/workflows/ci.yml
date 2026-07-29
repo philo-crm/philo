@@ -37,6 +37,7 @@ jobs:
 
       - run: npm test
 
-      # Build last: it is the slowest step and the least likely to fail alone,
-      # but it keeps a broken build from reaching docker-publish on main.
+      # Build last: it is the slowest step, and typecheck/lint/test give
+      # sharper failures. It still earns its place by catching what they miss
+      # — bundler and emit errors — while the change is still a PR.
       - run: npm run build
