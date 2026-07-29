@@ -1,0 +1,43 @@
+# .github/workflows/ci.yml
+# Typecheck, lint, test, and build both workspaces on every PR and push to main.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          # Match the runtime the container ships (node:24-alpine in Dockerfile),
+          # so CI cannot pass on a version production never runs.
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # `lint` passes --deny-warnings; oxlint exits 0 on warnings without it.
+      - run: npm run lint
+
+      - run: npm test
+
+      # Build last: it is the slowest step, and typecheck/lint/test give
+      # sharper failures. It still earns its place by catching what they miss
+      # — bundler and emit errors — while the change is still a PR.
+      - run: npm run build
