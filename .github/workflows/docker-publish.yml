@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing git tag to build and publish (e.g. v1.2.3). Publishes version, major.minor, major, and latest."
+        description: "Existing git tag to build and publish (e.g. v1.2.3). Publishes version, major.minor, and major; also moves latest, but only if this is the newest release."
         required: true
 
 permissions:
@@ -25,10 +25,11 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
-# A newer push to the same ref supersedes an in-flight run. A dispatch keys on
-# the requested tag rather than github.ref — which for workflow_dispatch is the
-# launching branch (normally main), so keying on it would let a later push to
-# main cancel a queued republish.
+# Pull request runs supersede each other; pushes, tags, and dispatches queue
+# rather than cancel, so a release build is never killed mid-flight. A dispatch
+# keys on the requested tag rather than github.ref — which for workflow_dispatch
+# is the launching branch (normally main), so keying on it would let a later
+# push to main cancel a still-queued republish.
 concurrency:
   group: docker-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -46,7 +47,11 @@ jobs:
           # matches per line, so a multi-line input passes and its newlines go
           # on to break the GITHUB_OUTPUT heredoc below, letting a caller set
           # arbitrary step outputs. `[[ =~ ]]` matches the whole string.
-          [[ "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          # The `v` is required, not optional: the push trigger only creates
+          # `v*` tags and the checkout below uses this value as the ref
+          # verbatim, so accepting a bare `1.2.3` would defer a guaranteed
+          # failure to the checkout instead of reporting it here.
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::tag '$TAG' is not a valid version tag (expected vX.Y.Z)"; exit 1; }
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
