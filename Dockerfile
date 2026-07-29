@@ -5,7 +5,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY web/package.json web/
-RUN npm ci
+# No install scripts: better-sqlite3 ships a prebuilt binding for every platform
+# this image runs on, so skipping them avoids dragging a C toolchain into the
+# build and makes the result independent of npm's script-approval policy.
+RUN npm ci --ignore-scripts
 COPY tsconfig.base.json ./
 COPY server/ server/
 COPY web/ web/
@@ -22,6 +25,8 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/server/package.json ./server/package.json
 COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/server/public ./server/public
+# SQL migrations are read at startup, not compiled into dist.
+COPY --from=build /app/server/drizzle ./server/drizzle
 
 # Pre-created and owned by `node` so a fresh named volume inherits the
 # ownership and the unprivileged process can write to it.

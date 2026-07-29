@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "db:generate": "drizzle-kit generate",
     "dev": "node --watch src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
@@ -12,10 +13,14 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.12",
+    "better-sqlite3": "^13.0.2",
+    "drizzle-orm": "^0.45.2",
     "hono": "^4.12.32"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.13.3",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   }
