@@ -10,9 +10,9 @@ your inbox, and an acknowledgment to the person who applied or inquired.
 single-tenant. There is no organizations table, no tenant isolation, no plan
 tiers — and there never will be. That simplicity is the product.
 
-> **Status: pre-alpha.** Philo is in the design phase. There is no runnable
-> application yet. See [docs/](docs/) for the design document and
-> [docs/adr/](docs/adr/) for architecture decision records.
+> **Status: pre-alpha.** The scaffold boots and serves a health endpoint; none
+> of the MVP features below are built yet. See [docs/](docs/) for the design
+> document and [docs/adr/](docs/adr/) for architecture decision records.
 
 ## What Philo will do (MVP)
 

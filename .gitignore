@@ -9,4 +9,6 @@ data/
 .claude/worktrees/
 .playwright-mcp/
 node_modules/
+dist/
+server/public/
 /target
