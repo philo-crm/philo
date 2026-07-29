@@ -118,7 +118,26 @@ Trunk-based. Three skills cover the workflow:
 - **`/sprint-plan`** — exception, for cross-cutting work that must land atomically. Plans + executes on a feature branch, one PR to main.
 - **`/cut-release`** — when main has accumulated enough work to ship. Bumps version, tags, generates release notes. No release branch involved.
 
-### Version increment
+### Versioning — `/cut-release` owns the version, nothing else
+
+**Only `/cut-release` changes the version.** Feature and fix PRs never touch
+it, however large the change — a `/work-issue` or `/sprint-plan` branch that
+bumps the version is wrong even when the increment it picked would have been
+the right one. Between releases, the version on `main` is the last released
+version.
+
+- **Version file: the root `package.json` `"version"` field** — the single
+  source of truth. The server reads it at runtime to serve `GET /version`, so
+  one bump ships everywhere with no second file to update.
+- **`0.0.0` means nothing has been released yet.** The scaffold set that
+  baseline rather than claiming a number it hadn't earned; the first
+  `/cut-release` minor bump lands on `0.1.0` and tags `v0.1.0`.
+- **`server/package.json` and `web/package.json` carry no `version` field**,
+  deliberately. They are private workspace packages; giving them a version
+  creates a second number that drifts from the first. Leave them alone.
+
+Increment rules — applied by `/cut-release`, not by the PR that motivates them:
+
 - **Patch (x.y.Z):** bug fixes only, no new API surface or features
 - **Minor (x.Y.0):** any new feature, endpoint, or UI capability
 
