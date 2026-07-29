@@ -11,9 +11,30 @@ export interface AppOptions {
   publicDir?: string
 }
 
+/**
+ * Machine-facing surfaces (DESIGN.md, Architecture). These answer in JSON and
+ * must never fall through to the app shell — an HTML 200 would be an
+ * unparseable success to a REST or MCP client.
+ */
+function isMachinePath(path: string): boolean {
+  return path.startsWith('/api/') || path === '/mcp' || path.startsWith('/mcp/')
+}
+
 export function createApp(options: AppOptions = {}): Hono {
   const root = options.publicDir ?? PUBLIC_DIR
   const app = new Hono()
+
+  // Vite emits content-hashed files under /assets, so they can be cached
+  // forever; the shell that references them must never be, or an upgrade
+  // serves an old index.html pointing at assets the new build deleted.
+  app.use('/*', async (c, next) => {
+    await next()
+    if (c.res.headers.get('Content-Type')?.startsWith('text/html')) {
+      c.res.headers.set('Cache-Control', 'no-cache')
+    } else if (c.req.path.startsWith('/assets/')) {
+      c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+    }
+  })
 
   app.get('/version', (c) => c.json({ name: 'philo', version: VERSION }))
 
@@ -24,8 +45,7 @@ export function createApp(options: AppOptions = {}): Hono {
   const serveIndexHtml = serveStatic({ root, path: 'index.html' })
 
   app.notFound(async (c) => {
-    // API surfaces answer in JSON; they must never fall through to the SPA.
-    if (c.req.path.startsWith('/api/')) return c.json({ error: 'not_found' }, 404)
+    if (isMachinePath(c.req.path)) return c.json({ error: 'not_found' }, 404)
     // Everything else is a client-side route: hand back the app shell.
     const res = await serveIndexHtml(c, async () => {})
     return res ?? c.text('Not Found', 404)

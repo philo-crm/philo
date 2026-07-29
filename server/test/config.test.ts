@@ -27,6 +27,13 @@ describe('loadConfig', () => {
     expect(loadConfig({ PHILO_DATA_DIR: './var/state' }).dataDir).toBe(resolve('var/state'))
   })
 
+  it.each(['PHILO_PORT', 'PHILO_DATA_DIR', 'PHILO_PUBLIC_BASE_URL'])(
+    'treats an empty %s as unset',
+    (key) => {
+      expect(loadConfig({ [key]: '' })).toEqual(loadConfig({}))
+    },
+  )
+
   it('defaults the public base url to the configured port', () => {
     expect(loadConfig({ PHILO_PORT: '8080' }).publicBaseUrl).toBe('http://localhost:8080')
   })

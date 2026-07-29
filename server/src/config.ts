@@ -39,9 +39,12 @@ function parsePublicBaseUrl(raw: string | undefined, port: number): string {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const port = parsePort(env['PHILO_PORT'])
+  // An empty value counts as unset — `-e PHILO_DATA_DIR=` or an unexpanded
+  // compose variable must not silently park state in the working directory.
+  const dataDir = env['PHILO_DATA_DIR'] || DEFAULT_DATA_DIR
   return {
     port,
-    dataDir: resolve(env['PHILO_DATA_DIR'] ?? DEFAULT_DATA_DIR),
+    dataDir: resolve(dataDir),
     publicBaseUrl: parsePublicBaseUrl(env['PHILO_PUBLIC_BASE_URL'], port),
   }
 }
