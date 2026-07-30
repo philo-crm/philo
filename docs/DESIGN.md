@@ -144,11 +144,14 @@ Full rationale for the generality decision:
   everything else lands untouched in `fields` JSON. A renamed or added form
   field can never drop a submission. Only validation: at least one of email
   or phone, else 422.
-- **Spam:** hidden honeypot field + per-IP rate limit (in-process; single
-  instance) + request size cap. Honeypot hits are **accepted with
-  `is_spam = true`** — normal 200 (bots learn nothing), no notifications, no
-  acknowledgment email, visible in a spam view with a "not spam" action that
-  promotes the lead and fires the pipeline. No silent drops.
+- **Spam:** hidden honeypot field (`_hp`) + per-caller rate limit (in-process;
+  single instance) + request size cap. Honeypot hits are **accepted with
+  `is_spam = true`** — the same `201` and the same body a real submission gets,
+  so bots learn nothing — but no notifications and no acknowledgment email, and
+  visible in a spam view with a "not spam" action that promotes the lead and
+  fires the pipeline. No silent drops. (Kickoff wrote "normal 200" here; what
+  mattered was that the answer be indistinguishable, and every accepted
+  submission creates a lead, so `201` is the one answer both cases give.)
 - **CORS:** per-form `allowed_origins` allowlist, echoed on preflight.
   Understood to be browser etiquette, not security — the rate limit and
   honeypot carry the load.
