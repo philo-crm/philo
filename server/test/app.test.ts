@@ -1,21 +1,16 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { beforeAll, describe, expect, it } from 'vitest'
-import { createApp } from '../src/app.ts'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { VERSION } from '../src/version.ts'
+import { cleanupTestApps, createTestApp, setupAdmin, type TestApp } from './support/app.ts'
 
-let publicDir: string
-let app: ReturnType<typeof createApp>
+let testApp: TestApp
+let app: TestApp['app']
 
-beforeAll(() => {
-  publicDir = mkdtempSync(join(tmpdir(), 'philo-public-'))
-  mkdirSync(join(publicDir, 'assets'))
-  writeFileSync(join(publicDir, 'index.html'), '<!doctype html><title>Philo</title>')
-  writeFileSync(join(publicDir, 'app.js'), 'console.log("philo")')
-  writeFileSync(join(publicDir, 'assets', 'index-abc123.js'), 'console.log("hashed")')
-  app = createApp({ publicDir })
+beforeEach(() => {
+  testApp = createTestApp()
+  app = testApp.app
 })
+
+afterEach(cleanupTestApps)
 
 describe('GET /version', () => {
   it('reports the package version', async () => {
@@ -69,7 +64,7 @@ describe('caching', () => {
 })
 
 describe('unknown machine-facing paths', () => {
-  it.each(['/api/v1/nope', '/api/intake/some-key', '/mcp', '/mcp/anything'])(
+  it.each(['/api/intake/some-key', '/mcp', '/mcp/anything'])(
     '404s %s as JSON instead of falling through to the SPA',
     async (path) => {
       const res = await app.request(path)
@@ -78,10 +73,18 @@ describe('unknown machine-facing paths', () => {
     },
   )
 
+  it('404s an unknown guarded path as JSON once authenticated', async () => {
+    const cookie = await setupAdmin(testApp)
+    const res = await app.request('/api/v1/nope', { headers: { cookie } })
+    expect(res.status).toBe(404)
+    expect(res.headers.get('content-type')).toContain('application/json')
+  })
+
   it('does not shadow API routes registered after createApp', async () => {
-    const withApi = createApp({ publicDir })
-    withApi.get('/api/v1/leads', (c) => c.json({ leads: [] }))
-    const res = await withApi.request('/api/v1/leads')
+    // Registered before the first request: Hono freezes its router once one arrives.
+    app.get('/api/v1/leads', (c) => c.json({ leads: [] }))
+    const cookie = await setupAdmin(testApp)
+    const res = await app.request('/api/v1/leads', { headers: { cookie } })
     expect(res.status).toBe(200)
     await expect(res.json()).resolves.toEqual({ leads: [] })
   })
