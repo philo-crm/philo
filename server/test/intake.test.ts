@@ -186,6 +186,21 @@ describe('POST /api/intake/{form_key}', () => {
     expect(allLeads(testApp)).toHaveLength(0)
   })
 
+  it('guards the whole subtree, not just the key segment', async () => {
+    const testApp = createTestApp()
+    const formKey = createIntakeForm(testApp, 'careers-key', [SITE_ORIGIN])
+    const res = await testApp.app.request(
+      `${intakeUrl(formKey)}/anything`,
+      jsonSubmission({ email: 'dana@example.com' }, { origin: SITE_ORIGIN }),
+    )
+
+    // No handler is mounted there, so this 404s — but through the middleware,
+    // which is what a route added under the key later would rely on.
+    expect(res.status).toBe(404)
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(SITE_ORIGIN)
+  })
+
   it('never lets a cache pin the 404 for a rotated key', async () => {
     const testApp = createTestApp()
     const res = await submit(testApp, 'not-a-real-key', { email: 'dana@example.com' })

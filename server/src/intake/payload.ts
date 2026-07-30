@@ -17,10 +17,11 @@ export const HONEYPOT_FIELD = '_hp'
 const RESERVED_FIELDS: ReadonlySet<string> = new Set(['name', 'first_name', 'last_name', 'email', 'phone'])
 
 /**
- * How deep a JSON payload may nest. The FTS trigger walks `fields` with
- * `json_tree`, and SQLite's parser has its own depth limit — a payload past it
- * would turn every later insert into a failed write. Nothing a real form
- * produces is close to this.
+ * Levels of value nesting a payload may reach, counting the payload object
+ * itself — so seven levels of containers below the top. The FTS trigger walks
+ * `fields` with `json_tree`, and SQLite's parser has its own depth limit; a
+ * payload past it would turn every later insert into a failed write. Deliberately
+ * far below that limit, because nothing a real form produces is close to either.
  */
 export const MAX_FIELD_DEPTH = 8
 

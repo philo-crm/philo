@@ -1,5 +1,5 @@
 import { asc, eq } from 'drizzle-orm'
-import { Hono, type Context } from 'hono'
+import { Hono, type Context, type MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
@@ -66,12 +66,35 @@ interface IntakeForm {
   allowedOrigins: string
 }
 
-/** Resolved once, up front, so every layer below answers for a known form. */
+/**
+ * Resolved by the middleware below before any handler runs, which is what makes
+ * `form` safe to type as always present. See GUARDED_PATHS for what keeps that
+ * true of a route added later.
+ */
 interface IntakeEnv {
   Variables: {
     form: IntakeForm
     corsAllowed: boolean
   }
+}
+
+/**
+ * What the middleware covers. Both entries, not just the first: with only
+ * `/:formKey`, a route added later at `/:formKey/anything` would reach its
+ * handler with no form resolved, no CORS headers, and no body limit — while
+ * `IntakeEnv` went on promising it a form. Widening the guard is cheaper than
+ * remembering that rule.
+ */
+const GUARDED_PATHS = ['/:formKey', '/:formKey/*'] as const
+
+/**
+ * Outermost of the three, so every answer below carries it — including the ones
+ * the layers below short-circuit with, like the 413. A rotated key's 404 is as
+ * uncacheable as a submission: a CDN that pinned it would outlive the rotation.
+ */
+const noStore: MiddlewareHandler<IntakeEnv> = async (c, next) => {
+  await next()
+  c.res.headers.set('Cache-Control', 'no-store')
 }
 
 /**
@@ -227,34 +250,29 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
   })
   const dedupe = new DedupeWindow(tuning.dedupeWindowMs ?? DEDUPE_WINDOW_MS)
 
-  // Outermost, so every answer below carries it — including the ones the layers
-  // below short-circuit with, like the 413. A rotated key's 404 is as
-  // uncacheable as a submission: a CDN that pinned it would outlive the
-  // rotation.
-  routes.use('/:formKey', async (c, next) => {
-    await next()
-    c.res.headers.set('Cache-Control', 'no-store')
-  })
-
   // Before the body limit, not after, so a refusal from any layer below still
   // carries the CORS headers the form needs in order to read it. Without this a
   // visitor whose answer ran past the size cap sees a generic network error and
   // the form has nothing to tell them.
-  routes.use('/:formKey', async (c, next) => {
-    const form = findForm(deps.db, c.req.param('formKey'))
+  const resolveForm: MiddlewareHandler<IntakeEnv> = async (c, next) => {
+    const formKey = c.req.param('formKey')
+    const form = formKey === undefined ? undefined : findForm(deps.db, formKey)
     if (form === undefined) return c.json({ error: 'not_found' }, 404)
     c.set('form', form)
     c.set('corsAllowed', applyCors(c, form))
     return next()
+  }
+
+  const limitBody = bodyLimit({
+    maxSize: MAX_INTAKE_BODY_BYTES,
+    onError: (c) => c.json({ error: 'payload_too_large' }, 413),
   })
 
-  routes.use(
-    '/:formKey',
-    bodyLimit({
-      maxSize: MAX_INTAKE_BODY_BYTES,
-      onError: (c) => c.json({ error: 'payload_too_large' }, 413),
-    }),
-  )
+  for (const path of GUARDED_PATHS) {
+    routes.use(path, noStore)
+    routes.use(path, resolveForm)
+    routes.use(path, limitBody)
+  }
 
   /**
    * Preflight. Deliberately outside the rate limit: browsers send one of these
