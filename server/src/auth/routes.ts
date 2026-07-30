@@ -1,8 +1,8 @@
-import { getConnInfo } from '@hono/node-server/conninfo'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { eq } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
+import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import {
@@ -91,21 +91,6 @@ function optionalName(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
   const name = raw.trim()
   return name.length > 0 ? name : null
-}
-
-/**
- * Rate-limit key for the caller. Behind a reverse proxy every request arrives
- * from the proxy, so this collapses to one bucket for the whole deployment;
- * per-IP fidelity there needs a trusted-proxy setting Philo does not model yet.
- * The per-email key below is what keeps that case from being useless.
- */
-function clientKey(c: Context): string {
-  try {
-    return getConnInfo(c).remote.address ?? 'unknown'
-  } catch {
-    // No socket behind the request — `app.request()` in tests, for one.
-    return 'unknown'
-  }
 }
 
 function hasAnyUser(db: Db): boolean {

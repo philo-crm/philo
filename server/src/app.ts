@@ -5,6 +5,7 @@ import { csrf } from 'hono/csrf'
 import { fileURLToPath } from 'node:url'
 import { requireAuth, sessionMiddleware, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
 import { createAuthRoutes, type AuthTuning } from './auth/routes.ts'
+import { createIntakeRoutes, type CreatedLead, type IntakeTuning } from './intake/routes.ts'
 import { VERSION } from './version.ts'
 
 /** Where the Vite build lands — see web/vite.config.ts `build.outDir`. */
@@ -12,6 +13,13 @@ export const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url))
 
 /** Mount point for the cookie-authenticated REST surface. */
 const API_PREFIX = '/api/v1'
+
+/**
+ * Public form intake. Outside `API_PREFIX` on purpose: everything mounted there
+ * assumes a session cookie, JSON, and a same-origin caller, and intake is none
+ * of those — see the CSRF note below.
+ */
+const INTAKE_PREFIX = '/api/intake'
 
 /**
  * Ceiling on a request body. Setup and login are reachable without credentials,
@@ -40,6 +48,10 @@ export interface AppOptions extends AuthDeps {
   publicDir?: string
   /** Login throttle and hash-concurrency limits. Defaults are the production ones. */
   authTuning?: AuthTuning
+  /** Intake rate limit and dedupe window. Defaults are the production ones. */
+  intakeTuning?: IntakeTuning | undefined
+  /** Notifications for an accepted, non-spam lead. Email (#11) and push (#13) attach here. */
+  onLeadCreated?: ((lead: CreatedLead) => void) | undefined
 }
 
 /**
@@ -120,6 +132,18 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   })
 
   app.route(`${API_PREFIX}/auth`, createAuthRoutes(deps, options.authTuning ?? {}))
+
+  // Deliberately unauthenticated, cross-origin, and form-encoding-friendly: the
+  // caller is a visitor's browser on the business's own website. It carries its
+  // own body limit, rate limit, and per-form CORS instead of the ones above —
+  // see intake/routes.ts.
+  app.route(
+    INTAKE_PREFIX,
+    createIntakeRoutes(
+      { db: options.db, onLeadCreated: options.onLeadCreated },
+      options.intakeTuning ?? {},
+    ),
+  )
 
   // Built PWA assets. Misses fall through to the not-found handler, so routes
   // registered after this one still match.

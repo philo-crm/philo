@@ -6,6 +6,8 @@ import type { AuthTuning } from '../../src/auth/routes.ts'
 import { loadOrCreateSessionKey } from '../../src/auth/session-key.ts'
 import { SESSION_COOKIE_NAME } from '../../src/auth/session.ts'
 import { openDatabase, type Db } from '../../src/db/index.ts'
+import { intakeForms } from '../../src/db/schema.ts'
+import type { CreatedLead, IntakeTuning } from '../../src/intake/routes.ts'
 
 export interface TestApp {
   app: ReturnType<typeof createApp>
@@ -41,7 +43,12 @@ export function createPublicDir(): string {
 const FAST_THROTTLE = { baseDelayMs: 1, maxDelayMs: 2 }
 
 export function createTestApp(
-  options: { cookieSecure?: boolean; authTuning?: AuthTuning } = {},
+  options: {
+    cookieSecure?: boolean
+    authTuning?: AuthTuning
+    intakeTuning?: IntakeTuning | undefined
+    onLeadCreated?: ((lead: CreatedLead) => void) | undefined
+  } = {},
 ): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
   dataDirs.push(dataDir)
@@ -55,8 +62,31 @@ export function createTestApp(
     cookieSecure: options.cookieSecure ?? false,
     publicDir,
     authTuning: { ...tuning, throttle: { ...FAST_THROTTLE, ...tuning.throttle } },
+    intakeTuning: options.intakeTuning,
+    onLeadCreated: options.onLeadCreated,
   })
   return { app, db, dataDir, publicDir }
+}
+
+/** The form key seeded on first boot — what a fresh instance actually serves. */
+export function defaultFormKey(testApp: TestApp): string {
+  const [form] = testApp.db.select({ formKey: intakeForms.formKey }).from(intakeForms).limit(1).all()
+  if (form === undefined) throw new Error('no intake form was seeded')
+  return form.formKey
+}
+
+/** An extra form, for the CORS cases the wide-open seeded default cannot show. */
+export function createIntakeForm(
+  testApp: TestApp,
+  formKey: string,
+  origins: string[],
+  name = 'Careers',
+): string {
+  testApp.db
+    .insert(intakeForms)
+    .values({ name, formKey, allowedOrigins: JSON.stringify(origins) })
+    .run()
+  return formKey
 }
 
 /** Same origin as the URL `app.request()` builds, so `csrf()` treats calls as first-party. */
