@@ -1,6 +1,13 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, sans-serif;
+  --error: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --error: #f2b8b5;
+  }
 }
 
 body {
@@ -9,4 +16,41 @@ body {
 
 main {
   padding: 2rem;
+}
+
+/* The auth screens are the only forms so far; a grid keeps each control on its
+   own row without a class per field. */
+form {
+  display: grid;
+  gap: 1rem;
+  max-width: 22rem;
+}
+
+form > * {
+  margin: 0;
+}
+
+label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+label span {
+  font-weight: normal;
+  opacity: 0.7;
+}
+
+input {
+  font: inherit;
+  padding: 0.5rem;
+}
+
+button {
+  font: inherit;
+  padding: 0.5rem 1rem;
+  justify-self: start;
+}
+
+[role='alert'] {
+  color: var(--error);
 }
