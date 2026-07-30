@@ -204,6 +204,20 @@ describe('TokenBucket', () => {
     expect(bucket.retryAfterSeconds('ip', 1_000)).toBe(1)
   })
 
+  it('answers with a finite retry even for a bucket tuned not to refill', () => {
+    const bucket = new TokenBucket({ capacity: 1, refillPerSecond: 0 })
+    bucket.take('ip', 0)
+    expect(Number.isFinite(bucket.retryAfterSeconds('ip', 0))).toBe(true)
+  })
+
+  it('does not spend or move anything when asked how long to wait', () => {
+    const bucket = new TokenBucket({ capacity: 2, refillPerSecond: 1 })
+    bucket.take('ip', 0)
+    for (let i = 0; i < 5; i += 1) bucket.retryAfterSeconds('ip', 500)
+    expect(bucket.take('ip', 0)).toBe(true)
+    expect(bucket.take('ip', 0)).toBe(false)
+  })
+
   it('hands out no credit for a clock that jumps backwards', () => {
     const bucket = new TokenBucket({ capacity: 1, refillPerSecond: 1 })
     bucket.take('ip', 10_000)

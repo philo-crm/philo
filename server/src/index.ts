@@ -3,6 +3,8 @@ import { createApp } from './app.ts'
 import { loadOrCreateSessionKey } from './auth/session-key.ts'
 import { loadConfig } from './config.ts'
 import { openDatabase } from './db/index.ts'
+import { HONEYPOT_FIELD } from './intake/payload.ts'
+import { intakeUrls } from './intake/routes.ts'
 import { VERSION } from './version.ts'
 
 const config = loadConfig()
@@ -25,6 +27,14 @@ serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`  public base url: ${config.publicBaseUrl}`)
   console.log(`  data dir:        ${config.dataDir}`)
   console.log(`  database:        ${db.$client.name}`)
+  // The only place a form key is surfaced until there is a forms UI. Printed
+  // every boot rather than once, so it survives a lost log — and it is an
+  // identifier, not a credential: DESIGN.md (Intake endpoint) makes it public by
+  // construction, since the form that posts to it lives in a visitor's browser.
+  for (const url of intakeUrls(db, config.publicBaseUrl)) {
+    console.log(`  intake form:     ${url}`)
+  }
+  console.log(`  honeypot field:  ${HONEYPOT_FIELD} (render it hidden; a filled one is filed as spam)`)
   if (!cookieSecure) {
     // Easy to reach by accident: terminate TLS at a proxy but leave
     // PHILO_PUBLIC_BASE_URL unset, and the session cookie loses `Secure`

@@ -169,15 +169,29 @@ describe('POST /api/intake/{form_key}', () => {
     expect(allLeads(testApp)).toHaveLength(0)
   })
 
-  it('413s a body over the size cap', async () => {
+  it('413s a body over the size cap, with headers the form can read', async () => {
     const testApp = createTestApp()
-    const res = await submit(testApp, defaultFormKey(testApp), {
-      email: 'dana@example.com',
-      essay: 'x'.repeat(MAX_INTAKE_BODY_BYTES + 1),
-    })
+    const formKey = createIntakeForm(testApp, 'careers-key', [SITE_ORIGIN])
+    const res = await testApp.app.request(
+      intakeUrl(formKey),
+      jsonSubmission(
+        { email: 'dana@example.com', essay: 'x'.repeat(MAX_INTAKE_BODY_BYTES + 1) },
+        { origin: SITE_ORIGIN },
+      ),
+    )
 
     expect(res.status).toBe(413)
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(SITE_ORIGIN)
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
     expect(allLeads(testApp)).toHaveLength(0)
+  })
+
+  it('never lets a cache pin the 404 for a rotated key', async () => {
+    const testApp = createTestApp()
+    const res = await submit(testApp, 'not-a-real-key', { email: 'dana@example.com' })
+
+    expect(res.status).toBe(404)
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
   })
 
   it('503s rather than crashing when no stage is left to file under', async () => {
@@ -217,6 +231,20 @@ describe('honeypot', () => {
 
     await submit(testApp, formKey, { email: 'dana@example.com' })
     expect(onLeadCreated).toHaveBeenCalledWith({ id: 2, formId: 1, isSpam: false })
+  })
+
+  it('still returns 201 when a downstream notification rejects', async () => {
+    const onLeadCreated = vi.fn(() => Promise.reject(new Error('push endpoint is gone')) as unknown as void)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const testApp = createTestApp({ onLeadCreated })
+    const res = await submit(testApp, defaultFormKey(testApp), { email: 'dana@example.com' })
+
+    expect(res.status).toBe(201)
+    expect(allLeads(testApp)).toHaveLength(1)
+    // The rejection is handled a microtask later than the response.
+    await Promise.resolve()
+    expect(error).toHaveBeenCalled()
+    error.mockRestore()
   })
 
   it('still returns 201 when a downstream notification throws', async () => {

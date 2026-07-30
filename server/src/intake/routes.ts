@@ -24,8 +24,12 @@ export const MAX_INTAKE_BODY_BYTES = 32 * 1024
 
 /** Submissions a single source can burst before the refill rate governs. */
 export const INTAKE_BURST = 20
-/** Sustained submissions per second once that burst is spent — 20 a minute. */
-export const INTAKE_REFILL_PER_SECOND = 1 / 3
+/**
+ * Sustained submissions per second once that burst is spent — ten a minute. A
+ * form on one business's website that is taking more than that, minute after
+ * minute, is not taking applications.
+ */
+export const INTAKE_REFILL_PER_SECOND = 1 / 6
 
 /** DESIGN.md (Intake endpoint): "an identical submission within ~10 minutes". */
 export const DEDUPE_WINDOW_MS = 10 * 60 * 1000
@@ -62,6 +66,14 @@ interface IntakeForm {
   allowedOrigins: string
 }
 
+/** Resolved once, up front, so every layer below answers for a known form. */
+interface IntakeEnv {
+  Variables: {
+    form: IntakeForm
+    corsAllowed: boolean
+  }
+}
+
 /**
  * Origins the form's own site posts from. Stored as a JSON array; a bad value is
  * treated as an empty list rather than crashing the endpoint, since this is
@@ -95,6 +107,20 @@ function applyCors(c: Context, form: IntakeForm): boolean {
   if (origin === undefined || !isOriginAllowed(form, origin)) return false
   c.header('Access-Control-Allow-Origin', origin)
   return true
+}
+
+/**
+ * Every form's public URL, for the boot log. Nothing else surfaces a form key
+ * yet — there is no forms UI in the MVP — so without this an operator would have
+ * to read the SQLite file to find the endpoint their own website should post to.
+ */
+export function intakeUrls(db: Db, publicBaseUrl: string): string[] {
+  return db
+    .select({ formKey: intakeForms.formKey })
+    .from(intakeForms)
+    .orderBy(asc(intakeForms.id))
+    .all()
+    .map((form) => `${publicBaseUrl.replace(/\/+$/, '')}/api/intake/${form.formKey}`)
 }
 
 function findForm(db: Db, formKey: string): IntakeForm | undefined {
@@ -191,8 +217,8 @@ function createLead(db: Db, form: IntakeForm, submission: Submission): CreatedLe
   })
 }
 
-export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}): Hono {
-  const routes = new Hono()
+export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}): Hono<IntakeEnv> {
+  const routes = new Hono<IntakeEnv>()
   // Per app instance, so a test gets a fresh budget and a restart forgives.
   const bucket = new TokenBucket({
     capacity: INTAKE_BURST,
@@ -200,6 +226,27 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
     ...tuning.rateLimit,
   })
   const dedupe = new DedupeWindow(tuning.dedupeWindowMs ?? DEDUPE_WINDOW_MS)
+
+  // Outermost, so every answer below carries it — including the ones the layers
+  // below short-circuit with, like the 413. A rotated key's 404 is as
+  // uncacheable as a submission: a CDN that pinned it would outlive the
+  // rotation.
+  routes.use('/:formKey', async (c, next) => {
+    await next()
+    c.res.headers.set('Cache-Control', 'no-store')
+  })
+
+  // Before the body limit, not after, so a refusal from any layer below still
+  // carries the CORS headers the form needs in order to read it. Without this a
+  // visitor whose answer ran past the size cap sees a generic network error and
+  // the form has nothing to tell them.
+  routes.use('/:formKey', async (c, next) => {
+    const form = findForm(deps.db, c.req.param('formKey'))
+    if (form === undefined) return c.json({ error: 'not_found' }, 404)
+    c.set('form', form)
+    c.set('corsAllowed', applyCors(c, form))
+    return next()
+  })
 
   routes.use(
     '/:formKey',
@@ -209,21 +256,13 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
     }),
   )
 
-  // A submission is never cacheable, and neither is the 404 for a rotated key.
-  routes.use('/:formKey', async (c, next) => {
-    await next()
-    c.res.headers.set('Cache-Control', 'no-store')
-  })
-
   /**
    * Preflight. Deliberately outside the rate limit: browsers send one of these
    * per submission, so counting them would halve a form's real budget, and the
    * work is a single indexed lookup.
    */
   routes.options('/:formKey', (c) => {
-    const form = findForm(deps.db, c.req.param('formKey'))
-    if (form === undefined) return c.json({ error: 'not_found' }, 404)
-    if (applyCors(c, form)) {
+    if (c.get('corsAllowed')) {
       c.header('Access-Control-Allow-Methods', 'POST, OPTIONS')
       c.header('Access-Control-Allow-Headers', 'Content-Type')
       c.header('Access-Control-Max-Age', String(PREFLIGHT_MAX_AGE_SECONDS))
@@ -232,14 +271,7 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
   })
 
   routes.post('/:formKey', async (c) => {
-    // Looked up before the limit is charged, so a 429 can still carry the CORS
-    // headers the form needs to read it. An unknown key therefore costs one
-    // indexed lookup and no token — cheaper than the app shell this server
-    // hands back for any other unmatched path, so it is not worth budgeting.
-    const form = findForm(deps.db, c.req.param('formKey'))
-    if (form === undefined) return c.json({ error: 'not_found' }, 404)
-    applyCors(c, form)
-
+    const form = c.get('form')
     const key = clientKey(c)
     if (!bucket.take(key)) {
       const retryAfterSeconds = bucket.retryAfterSeconds(key)

@@ -37,34 +37,41 @@ export class TokenBucket {
     this.#options = options
   }
 
-  /** Spends a token if one is available. False means the caller is over budget. */
+  /**
+   * Spends a token if one is available. False means the caller is over budget —
+   * and records nothing, which is what keeps a refusal from extending itself.
+   */
   take(key: string, now = Date.now()): boolean {
     this.#pruneIfCrowded(now)
-    const bucket = this.#refill(key, now)
-    if (bucket.tokens < 1) return false
-    bucket.tokens -= 1
-    this.#buckets.set(key, bucket)
+    const tokens = this.#peek(key, now)
+    if (tokens < 1) return false
+    this.#buckets.set(key, { tokens: tokens - 1, updatedAt: now })
     return true
   }
 
-  /** Whole seconds until the next token, for `Retry-After`. Always at least 1. */
+  /**
+   * Whole seconds until the next token, for `Retry-After`. Always a finite value
+   * of at least 1 — a header of `Infinity` from a bucket tuned not to refill
+   * would be a malformed answer, and a caller told to wait a minute and retry is
+   * a truthful one.
+   */
   retryAfterSeconds(key: string, now = Date.now()): number {
-    const bucket = this.#refill(key, now)
-    if (bucket.tokens >= 1) return 1
-    return Math.max(1, Math.ceil((1 - bucket.tokens) / this.#options.refillPerSecond))
+    if (this.#options.refillPerSecond <= 0) return 60
+    const missing = 1 - this.#peek(key, now)
+    if (missing <= 0) return 1
+    return Math.max(1, Math.ceil(missing / this.#options.refillPerSecond))
   }
 
-  #refill(key: string, now: number): Bucket {
+  /** Tokens the key would have now. Pure: spends nothing, records nothing. */
+  #peek(key: string, now: number): number {
     const bucket = this.#buckets.get(key)
-    if (bucket === undefined) return { tokens: this.#options.capacity, updatedAt: now }
+    if (bucket === undefined) return this.#options.capacity
     // Clamped at zero so a clock that jumps backwards cannot hand out credit.
     const elapsedSeconds = Math.max(0, now - bucket.updatedAt) / 1000
-    bucket.tokens = Math.min(
+    return Math.min(
       this.#options.capacity,
       bucket.tokens + elapsedSeconds * this.#options.refillPerSecond,
     )
-    bucket.updatedAt = now
-    return bucket
   }
 
   /**
@@ -75,10 +82,10 @@ export class TokenBucket {
    */
   #pruneIfCrowded(now: number): void {
     if (this.#buckets.size < PRUNE_THRESHOLD) return
-    for (const [key, bucket] of this.#buckets) {
-      const elapsedSeconds = Math.max(0, now - bucket.updatedAt) / 1000
-      const refilled = bucket.tokens + elapsedSeconds * this.#options.refillPerSecond
-      if (refilled >= this.#options.capacity) this.#buckets.delete(key)
+    // Deleting during iteration is defined behaviour for a Map: a removed entry
+    // is simply not visited again.
+    for (const key of this.#buckets.keys()) {
+      if (this.#peek(key, now) >= this.#options.capacity) this.#buckets.delete(key)
     }
     // Map iteration is insertion-ordered, so this drops the least recently created.
     for (const key of this.#buckets.keys()) {

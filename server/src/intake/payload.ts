@@ -107,6 +107,11 @@ export function parseFormEncoded(body: string): Record<string, unknown> {
  * value is not a scalar — `email: {…}` from a hand-rolled JSON client — is left
  * in `fields` rather than coerced or dropped, so the submission still arrives
  * whole and a human can see what was sent.
+ *
+ * A consequence worth knowing downstream: `fields` holds whatever a stranger
+ * typed, key names included, so a stored payload can carry a `__proto__` key.
+ * `JSON.parse` puts it back as plain data, but spreading or merging a parsed
+ * `fields` into an object would not — read it, do not fold it into something.
  */
 export function mapSubmission(payload: Record<string, unknown>): Submission {
   const fields = emptyPayload()
