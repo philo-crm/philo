@@ -139,6 +139,16 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     }),
   )
 
+  /**
+   * Unauthenticated by design, per DESIGN.md (Auth and access) — which means
+   * whoever reaches a fresh instance first becomes its admin, including a scanner
+   * that finds it before the operator opens it. Reviewed and accepted rather than
+   * overlooked: the window closes at the first success, and it exists only while
+   * the instance holds no data, so the worst case is deleting an empty database
+   * and starting over. A one-time setup token in the boot log is the standard
+   * mitigation if that ever stops being true — do not add one without revisiting
+   * the install story in DESIGN.md, since it changes how Philo is set up.
+   */
   routes.post('/setup', async (c) => {
     // Before anything expensive. Without this check up front, every POST to a
     // long-configured instance would still pay for an argon2 hash on the way to

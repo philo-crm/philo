@@ -94,8 +94,14 @@ export class FailureThrottle {
  * in memory, so an unauthenticated endpoint that hashes on demand is an
  * amplifier: without this, one burst of concurrent logins reserves 19 MiB apiece.
  *
- * Unlike a failure cap this cannot lock anyone out — a slot frees as soon as a
- * hash finishes, in tens of milliseconds — so refusing here is safe.
+ * Unlike a cap on attempts this cannot lock anyone out — a slot frees as soon as
+ * a hash finishes, in tens of milliseconds — so refusing here is safe.
+ *
+ * Admission is a scramble rather than a queue, so a login arriving mid-flood can
+ * be shed and have to retry. Reviewed and accepted for now: it outlasts no flood,
+ * and because callers are throttled before they reach this point a slot is
+ * usually free anyway. A bounded FIFO queue is the upgrade if real deployments
+ * ever see it.
  */
 export class ConcurrencyGate {
   readonly #limit: number
