@@ -317,6 +317,27 @@ describe('rolling expiry', () => {
     expect(after?.expiresAt.getTime()).toBeGreaterThan(staleExpiry.getTime())
   })
 
+  it('lets a stale cookie holder log in again', async () => {
+    const testApp = createTestApp()
+    const stale = await setupAdmin(testApp)
+    testApp.db.update(sessions).set({ expiresAt: new Date(Date.now() - 1000) }).run()
+
+    // The middleware clears the dead cookie and the handler sets a live one, so
+    // the response carries two Set-Cookie lines for the same name. The live one
+    // has to be the one that sticks, or logging in after an expiry never works.
+    const res = await testApp.app.request(
+      '/api/v1/auth/login',
+      jsonPost({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }, { cookie: stale }),
+    )
+    expect(res.status).toBe(200)
+
+    const fresh = sessionCookie(res)
+    expect(fresh).toBeDefined()
+    expect(fresh).not.toBe(stale)
+    const reused = await testApp.app.request('/api/v1/auth/session', { headers: { cookie: fresh as string } })
+    expect(reused.status).toBe(200)
+  })
+
   it('refuses an expired session and deletes the row behind it', async () => {
     const testApp = createTestApp()
     const cookie = await setupAdmin(testApp)

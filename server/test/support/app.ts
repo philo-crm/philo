@@ -60,24 +60,26 @@ export function jsonPost(body: unknown, headers: Record<string, string> = {}): R
 }
 
 /**
+ * The last `Set-Cookie` line for the session cookie. Last, not first, because a
+ * response can carry more than one for the same name — a request presenting a
+ * dead cookie has it cleared by the middleware and re-set by the handler — and a
+ * browser's jar ends up holding whichever came last.
+ */
+export function sessionCookieAttributes(res: Response): string | undefined {
+  return res.headers.getSetCookie().findLast((raw) => raw.startsWith(`${SESSION_COOKIE_NAME}=`))
+}
+
+/**
  * The session cookie's `name=value` pair, ready to send back as a `Cookie`
  * header. Undefined when the response cleared the cookie or never set one.
  */
 export function sessionCookie(res: Response): string | undefined {
-  for (const raw of res.headers.getSetCookie()) {
-    const [pair] = raw.split(';')
-    if (pair === undefined) continue
-    const [name, ...rest] = pair.split('=')
-    if (name !== SESSION_COOKIE_NAME) continue
-    const value = rest.join('=')
-    return value.length > 0 ? pair : undefined
-  }
-  return undefined
-}
-
-/** The raw `Set-Cookie` line for the session cookie, for asserting on its attributes. */
-export function sessionCookieAttributes(res: Response): string | undefined {
-  return res.headers.getSetCookie().find((raw) => raw.startsWith(`${SESSION_COOKIE_NAME}=`))
+  const raw = sessionCookieAttributes(res)
+  if (raw === undefined) return undefined
+  const [pair] = raw.split(';')
+  if (pair === undefined) return undefined
+  const value = pair.slice(`${SESSION_COOKIE_NAME}=`.length)
+  return value.length > 0 ? pair : undefined
 }
 
 export const ADMIN_EMAIL = 'admin@example.com'
