@@ -58,6 +58,42 @@ The container is built from the repo root and keeps all state in one volume:
     docker build -t philo:dev .
     docker run -p 3000:3000 -v philo-data:/data philo:dev
 
+## Database changes
+
+The schema is Drizzle, in `server/src/db/schema.ts`. Migrations are plain SQL
+in `server/drizzle/`, generated from the schema and committed — the server
+applies them at startup and never generates anything at runtime. After editing
+the schema:
+
+    npm run db:generate -- --name=short_description
+
+Commit the generated `.sql` file and the `meta/` update together with the
+schema change. **Never edit a migration that has already shipped** — an
+installed instance has recorded it as applied and will not re-run it; correct
+it with a new migration instead.
+
+Things drizzle-kit cannot express — the `leads_fts` full-text index and its
+triggers — live in hand-written migrations created with
+`npm run db:generate -- --custom --name=...`. A migration that adds an index
+over existing rows must backfill them; the triggers only cover writes from that
+point on.
+
+**A migration that alters the `leads` table must re-create the three
+`leads_fts_*` triggers.** SQLite cannot change most of a column in place, so
+drizzle-kit migrates by building a new table, copying the rows, and dropping
+the old one — which drops its triggers too. Nothing fails when that happens:
+search simply stops seeing new leads. In the same migration, re-create the
+triggers and then rebuild the index with
+
+    DELETE FROM `leads_fts`;
+
+before re-running the backfill `INSERT`. The `DELETE FROM leads` inside a table
+rebuild does not fire `leads_fts_delete`, so the old index rows are still
+there; backfilling on top of them gives every lead two index rows and every
+search duplicate hits. `server/test/db.test.ts` asserts that all three triggers
+exist after startup and that the index holds exactly one row per lead, so a
+migration that gets either half wrong fails the suite.
+
 ## Architecture decisions
 
 Significant architectural choices are recorded in [docs/adr/](docs/adr/). If
