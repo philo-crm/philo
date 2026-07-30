@@ -78,15 +78,28 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     }),
   )
 
-  // Origin check on state-changing requests, scoped to the cookie-authenticated
-  // surface: /mcp authenticates with a bearer token, where CSRF does not apply,
-  // and public form intake is deliberately cross-origin.
+  // CSRF, in two parts. Neither is a token: the pair below is what makes one
+  // unnecessary, and removing either brings the need back.
+  //
+  // First, hono's csrf(). Note what it actually covers — it inspects only the
+  // content types a form element can produce (urlencoded, multipart, text/plain,
+  // and a missing header), and is a deliberate no-op for application/json. So it
+  // is the guard against the one request a cross-origin page can send without
+  // JavaScript and without a preflight.
+  //
+  // Scoped to the cookie-authenticated surface: /mcp authenticates with a bearer
+  // token, where CSRF does not apply, and public form intake is deliberately
+  // cross-origin.
   app.use(`${API_PREFIX}/*`, csrf())
 
-  // The other half of the CSRF story, and a middleware rather than a check inside
-  // each handler so a route added later cannot quietly opt out: a cross-origin
-  // form can be POSTed without JavaScript but cannot set this content type, and a
-  // `fetch` that can must first pass a preflight this server never answers.
+  // Second, require JSON on anything state-changing. This is what covers the
+  // content type csrf() ignores: a cross-origin fetch can set application/json,
+  // but only after a preflight this server answers for no origin, and SameSite=Lax
+  // withholds the session cookie from a cross-site POST regardless. Together those
+  // two make a forged state change unable to arrive authenticated.
+  //
+  // Middleware rather than a check inside each handler, so a route added later
+  // cannot quietly opt out of the layer.
   app.use(`${API_PREFIX}/*`, async (c, next) => {
     if (SAFE_METHODS.has(c.req.method)) return next()
     const contentType = c.req.header('content-type')?.toLowerCase() ?? ''

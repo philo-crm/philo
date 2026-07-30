@@ -49,10 +49,9 @@ function toUserResponse(user: SessionUser): UserResponse {
 }
 
 /**
- * Requiring `application/json` is the third CSRF layer, behind the SameSite
- * cookie and the origin check in `csrf()`: a cross-origin form can be POSTed
- * without JavaScript, but it cannot set this content type, and a `fetch` that
- * can must first survive a CORS preflight this server never answers.
+ * The content-type check here is belt to the middleware's braces — app.ts rejects
+ * a non-JSON state change before any handler runs, and that is where the CSRF
+ * reasoning lives. This only has to turn a malformed body into a 400.
  */
 async function readJsonBody(c: Context): Promise<Record<string, unknown> | undefined> {
   const contentType = c.req.header('content-type')?.toLowerCase() ?? ''
@@ -152,8 +151,8 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     // ones: there is no account yet to lock anybody out of, and the first success
     // retires the endpoint for good.
     const setupKey = `setup:${clientKey(c)}`
-    await delay(throttle.delayFor(setupKey))
-    throttle.recordFailure(setupKey)
+    throttle.recordAttempt(setupKey)
+    await delay(throttle.delayFor(setupKey), c.req.raw.signal)
 
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
@@ -202,16 +201,16 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     const ipKey = `ip:${clientKey(c)}`
 
     if (body === undefined) {
-      await delay(throttle.delayFor(ipKey))
-      throttle.recordFailure(ipKey)
+      throttle.recordAttempt(ipKey)
+      await delay(throttle.delayFor(ipKey), c.req.raw.signal)
       return c.json({ error: 'invalid_request' }, 400)
     }
 
     const email = normalizeEmail(body['email'])
     const password = validatePassword(body['password'])
     if (email === undefined || password === undefined) {
-      await delay(throttle.delayFor(ipKey))
-      throttle.recordFailure(ipKey)
+      throttle.recordAttempt(ipKey)
+      await delay(throttle.delayFor(ipKey), c.req.raw.signal)
       // Deliberately not saying which field: the login form is not a place to
       // confirm that an address is or is not a real account.
       return c.json({ error: 'invalid_credentials' }, 401)
@@ -220,11 +219,21 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     // Both keys matter: the address bounds credential stuffing against one
     // account, and the caller bounds someone working through many. The slower of
     // the two wins, and neither can refuse a correct password.
+    //
+    // Counted before the delay, not after the verify: otherwise every request in
+    // a concurrent burst reads the same low count and pays the same small delay.
     const emailKey = `email:${email}`
-    await delay(Math.max(throttle.delayFor(ipKey), throttle.delayFor(emailKey)))
+    throttle.recordAttempt(ipKey)
+    throttle.recordAttempt(emailKey)
+    await delay(Math.max(throttle.delayFor(ipKey), throttle.delayFor(emailKey)), c.req.raw.signal)
 
-    // Refusing here is safe where refusing on failure count is not: a slot frees
-    // the moment a hash finishes, so this throttles a burst without outlasting it.
+    // Whoever sent this is gone, so there is nobody to answer and no reason to
+    // spend a hash. The attempt is already counted, which is the point.
+    if (c.req.raw.signal.aborted) return c.json({ error: 'invalid_credentials' }, 401)
+
+    // Shedding here is safe where refusing on attempt count is not: a slot frees
+    // the moment a hash finishes, so this outlasts no flood. It does mean a login
+    // arriving mid-flood can be told to retry — see the PR notes.
     if (!hashGate.tryAcquire()) return tooManyRequests(c, 1)
     let account: { id: number; email: string; name: string | null } | undefined
     let passwordOk: boolean
@@ -245,8 +254,6 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     }
 
     if (account === undefined || !passwordOk) {
-      throttle.recordFailure(ipKey)
-      throttle.recordFailure(emailKey)
       return c.json({ error: 'invalid_credentials' }, 401)
     }
 
@@ -279,9 +286,18 @@ function tooManyRequests(c: Context, retryAfterSeconds: number) {
   return c.json({ error: 'too_many_requests', retryAfterSeconds }, 429)
 }
 
-function delay(ms: number): Promise<void> {
-  if (ms <= 0) return Promise.resolve()
-  return sleep(ms)
+/**
+ * Waits, but stops early if the caller hangs up. Without the signal an attacker
+ * could fire and forget: they release everything while the server keeps a request
+ * context and a timer alive for the full delay, once per guess.
+ */
+async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return
+  try {
+    await sleep(ms, undefined, signal ? { signal } : undefined)
+  } catch {
+    // Aborted. The caller checks the signal; nothing here needs to distinguish.
+  }
 }
 
 let unmatchable: Promise<string> | undefined

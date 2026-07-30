@@ -259,6 +259,27 @@ describe('POST /api/v1/auth/login', () => {
     expect(performance.now() - started).toBeLessThan(120)
   })
 
+  it('charges a concurrent burst for its own size, not once for the whole burst', async () => {
+    const testApp = createTestApp({
+      authTuning: { throttle: { freeAttempts: 1, baseDelayMs: 20, maxDelayMs: 400 } },
+    })
+    await setupAdmin(testApp)
+
+    // The regression: counting attempts *after* verifying let every request in a
+    // burst read the same low count and pay the same small delay, so parallelism
+    // bought an attacker two orders of magnitude over the serial rate.
+    const started = performance.now()
+    const burst = await Promise.all(
+      Array.from({ length: 12 }, () => login(testApp, ADMIN_EMAIL, 'wrong-but-long-enough')),
+    )
+    const elapsed = performance.now() - started
+
+    for (const res of burst) expect([401, 429]).toContain(res.status)
+    // Twelve arrivals past a one-attempt allowance means the later ones are held
+    // for a doubling delay; if they all paid the base 20ms this would fly through.
+    expect(elapsed).toBeGreaterThan(400)
+  })
+
   it('sheds load rather than queueing unbounded password hashes', async () => {
     const testApp = createTestApp({ authTuning: { maxConcurrentHashes: 1 } })
     await setupAdmin(testApp)

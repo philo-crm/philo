@@ -2,23 +2,23 @@
 const PRUNE_THRESHOLD = 1024
 
 interface Window {
-  failures: number
+  attempts: number
   resetAt: number
 }
 
 export interface ThrottleOptions {
-  /** How long a key's failures are remembered. */
+  /** How long a key's attempts are remembered. */
   windowMs: number
-  /** Failures within the window that cost nothing, so ordinary typos do not sting. */
+  /** Attempts within the window that cost nothing, so ordinary typos do not sting. */
   freeAttempts: number
-  /** Delay after the first non-free failure; doubles per failure after that. */
+  /** Delay after the first non-free attempt; doubles per attempt after that. */
   baseDelayMs: number
   /** Ceiling on the delay, so a legitimate sign-in is never worse than this. */
   maxDelayMs: number
 }
 
 /**
- * Per-key failure tracker that answers with a *delay*, never a refusal.
+ * Per-key attempt tracker that answers with a *delay*, never a refusal.
  *
  * Refusing outright is the obvious design and it is wrong here: the deployment in
  * DESIGN.md (Architecture) sits behind a TLS-terminating proxy, so every request
@@ -28,9 +28,11 @@ export interface ThrottleOptions {
  * that tripped it. Slowing an attacker to a crawl costs them everything and costs
  * the operator a couple of seconds.
  *
- * The work an attacker can actually commission is bounded separately, by
- * `ConcurrencyGate` — a delay cannot bound the first burst, because every request
- * in it sees the same low failure count.
+ * Counting *attempts* rather than failures, before the work rather than after, is
+ * what makes the delay bite under load. Counting failures afterwards would let
+ * every request in a concurrent burst read the same low count and pay the same
+ * small delay — turning a half-per-second serial limit into hundreds per second.
+ * A success calls `reset`, so a legitimate user never accumulates anything.
  */
 export class FailureThrottle {
   readonly #options: ThrottleOptions
@@ -44,21 +46,22 @@ export class FailureThrottle {
   delayFor(key: string, now = Date.now()): number {
     const window = this.#windows.get(key)
     if (window === undefined || window.resetAt <= now) return 0
-    const overage = window.failures - this.#options.freeAttempts
+    const overage = window.attempts - this.#options.freeAttempts
     if (overage <= 0) return 0
     const delay = this.#options.baseDelayMs * 2 ** (overage - 1)
     return Math.min(delay, this.#options.maxDelayMs)
   }
 
-  recordFailure(key: string, now = Date.now()): void {
+  /** Call before the expensive work, so concurrent callers see each other. */
+  recordAttempt(key: string, now = Date.now()): void {
     this.#pruneIfCrowded(now)
     const window = this.#windows.get(key)
     if (window === undefined || window.resetAt <= now) {
-      this.#windows.set(key, { failures: 1, resetAt: now + this.#options.windowMs })
+      this.#windows.set(key, { attempts: 1, resetAt: now + this.#options.windowMs })
       return
     }
-    window.failures += 1
-    // Each failure restarts the window: an attacker pacing themselves to just
+    window.attempts += 1
+    // Each attempt restarts the window: an attacker pacing themselves to just
     // outside it should not get their budget back for free.
     window.resetAt = now + this.#options.windowMs
   }
@@ -68,14 +71,20 @@ export class FailureThrottle {
   }
 
   /**
-   * The map only grows when attempts fail, and a key is dead once its window
-   * closes. Sweeping past a threshold bounds it without a timer that would hold
-   * the process open.
+   * Keys are attacker-supplied (one per email tried), so the map needs a bound.
+   * A sweep only reclaims closed windows, so it cannot keep up with a flood on its
+   * own; past the threshold the oldest windows go regardless. Evicting a window
+   * only ever forgives attempts, and the caller's other key still throttles.
    */
   #pruneIfCrowded(now: number): void {
     if (this.#windows.size < PRUNE_THRESHOLD) return
     for (const [key, window] of this.#windows) {
       if (window.resetAt <= now) this.#windows.delete(key)
+    }
+    // Map iteration is insertion-ordered, so this drops the least recently created.
+    for (const key of this.#windows.keys()) {
+      if (this.#windows.size <= PRUNE_THRESHOLD) break
+      this.#windows.delete(key)
     }
   }
 }

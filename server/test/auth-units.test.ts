@@ -103,25 +103,25 @@ describe('FailureThrottle', () => {
     return new FailureThrottle(OPTIONS)
   }
 
-  it('charges nothing for a key that has never failed', () => {
+  it('charges nothing for a key that has never been used', () => {
     expect(throttle().delayFor('a', 0)).toBe(0)
   })
 
   it('charges nothing within the free allowance', () => {
     const t = throttle()
-    t.recordFailure('a', 0)
+    t.recordAttempt('a', 0)
     expect(t.delayFor('a', 0)).toBe(0)
-    t.recordFailure('a', 0)
+    t.recordAttempt('a', 0)
     expect(t.delayFor('a', 0)).toBe(0)
   })
 
-  it('doubles the delay per failure past the allowance, up to the ceiling', () => {
+  it('doubles the delay per attempt past the allowance, up to the ceiling', () => {
     const t = throttle()
-    for (let i = 0; i < OPTIONS.freeAttempts; i += 1) t.recordFailure('a', 0)
+    for (let i = 0; i < OPTIONS.freeAttempts; i += 1) t.recordAttempt('a', 0)
 
     const delays: number[] = []
     for (let i = 0; i < 6; i += 1) {
-      t.recordFailure('a', 0)
+      t.recordAttempt('a', 0)
       delays.push(t.delayFor('a', 0))
     }
     expect(delays).toEqual([100, 200, 400, 800, 800, 800])
@@ -129,41 +129,55 @@ describe('FailureThrottle', () => {
 
   /**
    * The property that makes this safe to run in front of the only credential:
-   * however much a key has failed, the answer is a wait, never a refusal.
+   * however many attempts a key has made, the answer is a wait, never a refusal.
    */
   it('never reports an unbounded wait', () => {
     const t = throttle()
-    for (let i = 0; i < 1000; i += 1) t.recordFailure('a', 0)
+    for (let i = 0; i < 1000; i += 1) t.recordAttempt('a', 0)
     expect(t.delayFor('a', 0)).toBe(OPTIONS.maxDelayMs)
   })
 
   it('keys independently', () => {
     const t = throttle()
-    for (let i = 0; i < 5; i += 1) t.recordFailure('a', 0)
+    for (let i = 0; i < 5; i += 1) t.recordAttempt('a', 0)
     expect(t.delayFor('a', 0)).toBeGreaterThan(0)
     expect(t.delayFor('b', 0)).toBe(0)
   })
 
   it('forgives once the window closes', () => {
     const t = throttle()
-    for (let i = 0; i < 5; i += 1) t.recordFailure('a', 0)
+    for (let i = 0; i < 5; i += 1) t.recordAttempt('a', 0)
     expect(t.delayFor('a', OPTIONS.windowMs - 1)).toBeGreaterThan(0)
     expect(t.delayFor('a', OPTIONS.windowMs)).toBe(0)
   })
 
-  it('restarts the window on each failure, so pacing does not earn a free budget', () => {
+  it('restarts the window on each attempt, so pacing does not earn a free budget', () => {
     const t = throttle()
-    for (let i = 0; i < 5; i += 1) t.recordFailure('a', 0)
-    // A failure just before the window would have closed carries it forward.
-    t.recordFailure('a', OPTIONS.windowMs - 1)
+    for (let i = 0; i < 5; i += 1) t.recordAttempt('a', 0)
+    // An attempt just before the window would have closed carries it forward.
+    t.recordAttempt('a', OPTIONS.windowMs - 1)
     expect(t.delayFor('a', OPTIONS.windowMs)).toBeGreaterThan(0)
   })
 
   it('clears a key on reset, so a success wipes the accumulated delay', () => {
     const t = throttle()
-    for (let i = 0; i < 5; i += 1) t.recordFailure('a', 0)
+    for (let i = 0; i < 5; i += 1) t.recordAttempt('a', 0)
     t.reset('a')
     expect(t.delayFor('a', 0)).toBe(0)
+  })
+
+  it('bounds its own size against keys an attacker chooses', () => {
+    const t = throttle()
+    // One key per email tried. Sweeping only reclaims closed windows, so without
+    // an eviction path this map would grow with the flood.
+    for (let i = 0; i < 5000; i += 1) t.recordAttempt(`email:${i}@example.com`, 0)
+
+    // The most recent key is still tracked, so eviction has not made the throttle
+    // useless — it has only forgotten the oldest.
+    t.recordAttempt('email:4999@example.com', 0)
+    for (let i = 0; i < 5; i += 1) t.recordAttempt('email:4999@example.com', 0)
+    expect(t.delayFor('email:4999@example.com', 0)).toBeGreaterThan(0)
+    expect(t.delayFor('email:0@example.com', 0)).toBe(0)
   })
 })
 
