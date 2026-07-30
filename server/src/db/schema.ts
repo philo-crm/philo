@@ -84,7 +84,7 @@ export const leads = sqliteTable(
     index('leads_created_at_idx').on(table.createdAt),
     index('leads_email_idx').on(table.email),
     index('leads_is_spam_idx').on(table.isSpam),
-    // The FTS trigger runs `json_each(fields)`, which errors on malformed
+    // The FTS trigger walks this with `json_tree`, which errors on malformed
     // input; rejecting it at write time keeps a bad write from wedging inserts.
     check('leads_fields_json', sql`json_valid(${table.fields})`),
   ],

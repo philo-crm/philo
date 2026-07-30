@@ -82,9 +82,17 @@ point on.
 `leads_fts_*` triggers.** SQLite cannot change most of a column in place, so
 drizzle-kit migrates by building a new table, copying the rows, and dropping
 the old one — which drops its triggers too. Nothing fails when that happens:
-search simply stops seeing new leads. Re-create the triggers and re-run the
-backfill in the same migration. `server/test/db.test.ts` asserts all three
-exist after startup, so a migration that forgets fails the suite.
+search simply stops seeing new leads. In the same migration, re-create the
+triggers and then rebuild the index with
+
+    DELETE FROM `leads_fts`;
+
+before re-running the backfill `INSERT`. The `DELETE FROM leads` inside a table
+rebuild does not fire `leads_fts_delete`, so the old index rows are still
+there; backfilling on top of them gives every lead two index rows and every
+search duplicate hits. `server/test/db.test.ts` asserts that all three triggers
+exist after startup and that the index holds exactly one row per lead, so a
+migration that gets either half wrong fails the suite.
 
 ## Architecture decisions
 

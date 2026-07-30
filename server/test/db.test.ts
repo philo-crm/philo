@@ -1,12 +1,22 @@
+import Database from 'better-sqlite3'
 import { asc, eq } from 'drizzle-orm'
+import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Db } from '../src/db/index.ts'
-import { DB_FILENAME, openDatabase } from '../src/db/index.ts'
-import { DEFAULT_EMAIL_TEMPLATES, DEFAULT_PIPELINE_NAME, DEFAULT_STAGES } from '../src/db/seed.ts'
-import { emailTemplates, leadEvents, leads, pipelines, stages } from '../src/db/schema.ts'
+import { DB_FILENAME, MIGRATIONS_DIR, openDatabase } from '../src/db/index.ts'
+import * as schema from '../src/db/schema.ts'
+import {
+  DEFAULT_EMAIL_TEMPLATES,
+  DEFAULT_PIPELINE_NAME,
+  DEFAULT_STAGES,
+  SEEDED_AT_KEY,
+  seed,
+} from '../src/db/seed.ts'
+import { emailTemplates, leadEvents, leads, pipelines, settings, stages } from '../src/db/schema.ts'
 
 const dataDirs: string[] = []
 const open: Db[] = []
@@ -26,6 +36,19 @@ function openTracked(dataDir: string): Db {
   const db = openDatabase(dataDir)
   open.push(db)
   return db
+}
+
+/** Migrated but not seeded — `openDatabase` always seeds, so build it by hand. */
+function openUnseeded(dataDir: string): Db {
+  const db = drizzle(new Database(join(dataDir, DB_FILENAME)), { schema })
+  migrate(db, { migrationsFolder: MIGRATIONS_DIR })
+  open.push(db)
+  return db
+}
+
+/** Rows in the search index. Must always equal the number of leads. */
+function indexedCount(db: Db): number {
+  return db.$client.prepare<[], { c: number }>('SELECT count(*) AS c FROM leads_fts').get()?.c ?? -1
 }
 
 function firstStageId(db: Db): number {
@@ -62,6 +85,25 @@ describe('openDatabase', () => {
     expect(db.$client.pragma('journal_mode', { simple: true })).toBe('wal')
     expect(db.$client.pragma('foreign_keys', { simple: true })).toBe(1)
   })
+
+  // Migrations run with foreign keys off, so this check is the only thing
+  // between a migration that drops referenced rows and a database that claims
+  // an integrity it does not have.
+  it('refuses to boot a database holding a dangling reference', () => {
+    const dataDir = tempDataDir()
+    openTracked(dataDir).$client.close()
+
+    const raw = new Database(join(dataDir, DB_FILENAME))
+    raw.pragma('foreign_keys = OFF')
+    raw
+      .prepare(
+        'INSERT INTO leads (current_stage_id, fields, created_at, updated_at) VALUES (99999, ?, 0, 0)',
+      )
+      .run('{}')
+    raw.close()
+
+    expect(() => openDatabase(dataDir)).toThrow(/foreign key violation/i)
+  })
 })
 
 describe('first-boot seeds', () => {
@@ -86,6 +128,21 @@ describe('first-boot seeds', () => {
     for (const stage of db.select().from(stages).all()) {
       expect(stage.pipelineId).toBe(pipeline?.id)
     }
+  })
+
+  // The marker is written last, inside the same transaction as the rows. A seed
+  // that failed partway and still left the marker would lock in a half-seeded
+  // database that no later boot would repair.
+  it('rolls the whole seed back when any part of it fails', () => {
+    const db = openUnseeded(tempDataDir())
+    db.insert(emailTemplates)
+      .values({ trigger: 'new_lead_notify', subject: 'taken', body: 'taken' })
+      .run()
+
+    expect(() => seed(db)).toThrow()
+    expect(db.select().from(pipelines).all()).toEqual([])
+    expect(db.select().from(stages).all()).toEqual([])
+    expect(db.select().from(settings).where(eq(settings.key, SEEDED_AT_KEY)).all()).toEqual([])
   })
 
   it('seeds an enabled notify and ack email template', () => {
@@ -279,6 +336,27 @@ describe('full-text search', () => {
 
     db.delete(leads).where(eq(leads.id, lead!.id)).run()
     expect(search(db, 'Rivers')).toEqual([])
+  })
+
+  // A migration that re-runs the backfill without clearing the index first
+  // leaves two index rows per lead, and every search then returns duplicates.
+  it('holds exactly one index row per lead through inserts, updates, and deletes', () => {
+    const db = openTracked(tempDataDir())
+    const stageId = firstStageId(db)
+    const [first] = db
+      .insert(leads)
+      .values({ name: 'Dana Rivers', currentStageId: stageId })
+      .returning({ id: leads.id })
+      .all()
+    db.insert(leads).values({ name: 'Sam Brooks', currentStageId: stageId }).run()
+    expect(indexedCount(db)).toBe(2)
+
+    db.update(leads).set({ name: 'Dana Brooks' }).where(eq(leads.id, first!.id)).run()
+    expect(indexedCount(db)).toBe(2)
+    expect(search(db, 'Brooks')).toHaveLength(2)
+
+    db.delete(leads).where(eq(leads.id, first!.id)).run()
+    expect(indexedCount(db)).toBe(1)
   })
 
   it('matches only the lead that has the term', () => {
