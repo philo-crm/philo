@@ -65,7 +65,12 @@ function isMachinePath(path: string): boolean {
 
 export function createApp(options: AppOptions): Hono<AuthEnv> {
   const root = options.publicDir ?? PUBLIC_DIR
-  const deps: AuthDeps = { db: options.db, sessionKey: options.sessionKey, cookieSecure: options.cookieSecure }
+  const deps: AuthDeps = {
+    db: options.db,
+    sessionKey: options.sessionKey,
+    cookieSecure: options.cookieSecure,
+    trustedProxyHops: options.trustedProxyHops,
+  }
   const app = new Hono<AuthEnv>()
 
   // Vite emits content-hashed files under /assets, so they can be cached
@@ -140,7 +145,11 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   app.route(
     INTAKE_PREFIX,
     createIntakeRoutes(
-      { db: options.db, onLeadCreated: options.onLeadCreated },
+      {
+        db: options.db,
+        onLeadCreated: options.onLeadCreated,
+        trustedProxyHops: options.trustedProxyHops,
+      },
       options.intakeTuning ?? {},
     ),
   )

@@ -145,7 +145,7 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     // account exists is throttled too. Every attempt counts here, not just failed
     // ones: there is no account yet to lock anybody out of, and the first success
     // retires the endpoint for good.
-    const setupKey = `setup:${clientKey(c)}`
+    const setupKey = `setup:${clientKey(c, deps.trustedProxyHops)}`
     throttle.recordAttempt(setupKey)
     await delay(throttle.delayFor(setupKey), c.req.raw.signal)
 
@@ -193,7 +193,7 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
 
   routes.post('/login', async (c) => {
     const body = await readJsonBody(c)
-    const ipKey = `ip:${clientKey(c)}`
+    const ipKey = `ip:${clientKey(c, deps.trustedProxyHops)}`
 
     if (body === undefined) {
       throttle.recordAttempt(ipKey)

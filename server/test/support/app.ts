@@ -48,6 +48,7 @@ export function createTestApp(
     authTuning?: AuthTuning
     intakeTuning?: IntakeTuning | undefined
     onLeadCreated?: ((lead: CreatedLead) => void) | undefined
+    trustedProxyHops?: number
   } = {},
 ): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
@@ -60,6 +61,7 @@ export function createTestApp(
     db,
     sessionKey: loadOrCreateSessionKey(dataDir),
     cookieSecure: options.cookieSecure ?? false,
+    trustedProxyHops: options.trustedProxyHops ?? 0,
     publicDir,
     authTuning: { ...tuning, throttle: { ...FAST_THROTTLE, ...tuning.throttle } },
     intakeTuning: options.intakeTuning,

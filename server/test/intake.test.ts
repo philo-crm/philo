@@ -484,6 +484,45 @@ describe('rate limit', () => {
   })
 })
 
+describe('rate limit behind a reverse proxy', () => {
+  function submitAs(testApp: TestApp, formKey: string, forwardedFor: string, email: string) {
+    return testApp.app.request(intakeUrl(formKey), jsonSubmission({ email }, { 'x-forwarded-for': forwardedFor }))
+  }
+
+  it('gives each forwarded caller its own budget', async () => {
+    const testApp = createTestApp({
+      trustedProxyHops: 1,
+      intakeTuning: { rateLimit: { capacity: 1, refillPerSecond: 1 } },
+    })
+    const formKey = defaultFormKey(testApp)
+
+    expect((await submitAs(testApp, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
+    expect((await submitAs(testApp, formKey, '203.0.113.7', 'b@example.com')).status).toBe(429)
+    // A different visitor is not paying for the first one's flood.
+    expect((await submitAs(testApp, formKey, '203.0.113.9', 'c@example.com')).status).toBe(201)
+  })
+
+  it('does not let a spoofed prefix buy a fresh budget', async () => {
+    const testApp = createTestApp({
+      trustedProxyHops: 1,
+      intakeTuning: { rateLimit: { capacity: 1, refillPerSecond: 1 } },
+    })
+    const formKey = defaultFormKey(testApp)
+
+    expect((await submitAs(testApp, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
+    const spoofed = await submitAs(testApp, formKey, '198.51.100.1, 203.0.113.7', 'b@example.com')
+    expect(spoofed.status).toBe(429)
+  })
+
+  it('ignores the header when the operator has not said a proxy is there', async () => {
+    const testApp = createTestApp({ intakeTuning: { rateLimit: { capacity: 1, refillPerSecond: 1 } } })
+    const formKey = defaultFormKey(testApp)
+
+    expect((await submitAs(testApp, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
+    expect((await submitAs(testApp, formKey, '203.0.113.9', 'b@example.com')).status).toBe(429)
+  })
+})
+
 describe('the seeded default form', () => {
   it('exists on a fresh instance with an unguessable key', () => {
     const testApp = createTestApp()

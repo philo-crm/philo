@@ -52,6 +52,12 @@ export interface IntakeDeps {
    * Spam submissions are not announced.
    */
   onLeadCreated?: ((lead: CreatedLead) => void) | undefined
+  /**
+   * Reverse proxies in front of this process, from the config of the same name.
+   * Without it every submission behind a proxy shares one bucket, and one
+   * attacker can spend the whole deployment's budget — see `clientKey`.
+   */
+  trustedProxyHops: number
 }
 
 export interface IntakeTuning {
@@ -290,7 +296,7 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
 
   routes.post('/:formKey', async (c) => {
     const form = c.get('form')
-    const key = clientKey(c)
+    const key = clientKey(c, deps.trustedProxyHops)
     if (!bucket.take(key)) {
       const retryAfterSeconds = bucket.retryAfterSeconds(key)
       c.header('Retry-After', String(retryAfterSeconds))
