@@ -19,7 +19,7 @@ export interface AuthDeps {
    * Only the login and setup throttles read it — a caller behind a proxy would
    * otherwise share one bucket with everyone else, including an attacker.
    */
-  trustedProxyHops: number
+  trustProxy: boolean
 }
 
 export interface AuthEnv {

@@ -8,6 +8,7 @@ import {
   createIntakeForm,
   createTestApp,
   defaultFormKey,
+  withServer,
   type TestApp,
 } from './support/app.ts'
 
@@ -484,42 +485,53 @@ describe('rate limit', () => {
   })
 })
 
+/**
+ * Over a real socket, because the peer address is half the rule: the header is
+ * only believed when a private peer vouches for it, and `app.request()` has no
+ * peer at all. Loopback here is what a proxy on the same host looks like.
+ */
 describe('rate limit behind a reverse proxy', () => {
-  function submitAs(testApp: TestApp, formKey: string, forwardedFor: string, email: string) {
-    return testApp.app.request(intakeUrl(formKey), jsonSubmission({ email }, { 'x-forwarded-for': forwardedFor }))
+  const ONE_SUBMISSION = { rateLimit: { capacity: 1, refillPerSecond: 1 } }
+
+  function submitAs(baseUrl: string, formKey: string, forwardedFor: string, email: string) {
+    return fetch(`${baseUrl}${intakeUrl(formKey)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': forwardedFor },
+      body: JSON.stringify({ email }),
+    })
   }
 
   it('gives each forwarded caller its own budget', async () => {
-    const testApp = createTestApp({
-      trustedProxyHops: 1,
-      intakeTuning: { rateLimit: { capacity: 1, refillPerSecond: 1 } },
-    })
+    const testApp = createTestApp({ trustProxy: true, intakeTuning: ONE_SUBMISSION })
     const formKey = defaultFormKey(testApp)
 
-    expect((await submitAs(testApp, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
-    expect((await submitAs(testApp, formKey, '203.0.113.7', 'b@example.com')).status).toBe(429)
-    // A different visitor is not paying for the first one's flood.
-    expect((await submitAs(testApp, formKey, '203.0.113.9', 'c@example.com')).status).toBe(201)
+    await withServer(testApp, async (baseUrl) => {
+      expect((await submitAs(baseUrl, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
+      expect((await submitAs(baseUrl, formKey, '203.0.113.7', 'b@example.com')).status).toBe(429)
+      // A different visitor is not paying for the first one's flood.
+      expect((await submitAs(baseUrl, formKey, '203.0.113.9', 'c@example.com')).status).toBe(201)
+    })
   })
 
-  it('does not let a spoofed prefix buy a fresh budget', async () => {
-    const testApp = createTestApp({
-      trustedProxyHops: 1,
-      intakeTuning: { rateLimit: { capacity: 1, refillPerSecond: 1 } },
-    })
+  it('does not let a forged prefix buy a fresh budget', async () => {
+    const testApp = createTestApp({ trustProxy: true, intakeTuning: ONE_SUBMISSION })
     const formKey = defaultFormKey(testApp)
 
-    expect((await submitAs(testApp, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
-    const spoofed = await submitAs(testApp, formKey, '198.51.100.1, 203.0.113.7', 'b@example.com')
-    expect(spoofed.status).toBe(429)
+    await withServer(testApp, async (baseUrl) => {
+      expect((await submitAs(baseUrl, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
+      const forged = await submitAs(baseUrl, formKey, '198.51.100.1, 203.0.113.7', 'b@example.com')
+      expect(forged.status).toBe(429)
+    })
   })
 
   it('ignores the header when the operator has not said a proxy is there', async () => {
-    const testApp = createTestApp({ intakeTuning: { rateLimit: { capacity: 1, refillPerSecond: 1 } } })
+    const testApp = createTestApp({ intakeTuning: ONE_SUBMISSION })
     const formKey = defaultFormKey(testApp)
 
-    expect((await submitAs(testApp, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
-    expect((await submitAs(testApp, formKey, '203.0.113.9', 'b@example.com')).status).toBe(429)
+    await withServer(testApp, async (baseUrl) => {
+      expect((await submitAs(baseUrl, formKey, '203.0.113.7', 'a@example.com')).status).toBe(201)
+      expect((await submitAs(baseUrl, formKey, '203.0.113.9', 'b@example.com')).status).toBe(429)
+    })
   })
 })
 

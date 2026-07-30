@@ -69,7 +69,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     db: options.db,
     sessionKey: options.sessionKey,
     cookieSecure: options.cookieSecure,
-    trustedProxyHops: options.trustedProxyHops,
+    trustProxy: options.trustProxy,
   }
   const app = new Hono<AuthEnv>()
 
@@ -148,7 +148,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
       {
         db: options.db,
         onLeadCreated: options.onLeadCreated,
-        trustedProxyHops: options.trustedProxyHops,
+        trustProxy: options.trustProxy,
       },
       options.intakeTuning ?? {},
     ),

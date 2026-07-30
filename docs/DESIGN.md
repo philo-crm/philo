@@ -58,21 +58,30 @@ layer:
   -e PHILO_PUBLIC_BASE_URL=https://philo.example.com ghcr.io/philo-crm/philo`
 - Configuration philosophy: env vars for what the process needs before it can
   serve (`PHILO_PORT`, `PHILO_DATA_DIR`, `PHILO_PUBLIC_BASE_URL`,
-  `PHILO_TRUSTED_PROXY_HOPS`); the DB `settings` table for everything else
+  `PHILO_TRUSTED_PROXY`); the DB `settings` table for everything else
   (SMTP config, sender identity, business name), editable in the UI. Secrets
   that Philo can generate itself are generated, persisted in the data dir, and
   never asked of the operator.
-- **`PHILO_TRUSTED_PROXY_HOPS` is how rate limits learn who the caller is.**
-  Philo's limits — login, first-boot setup, form intake — key on the socket's
-  peer address, and behind the TLS-terminating proxy of the install story above
-  that is one address for the whole deployment: every caller shares one budget,
-  so one flood spends everyone's. The var counts the proxies in front, and the
-  caller is read that many entries from the right of `X-Forwarded-For`. A count
-  rather than a boolean, because only the entries a trusted proxy appended are
-  trustworthy — everything left of them is client-supplied, and an attacker who
-  could reach it would mint a fresh identity per request. Default `0`: trust
-  nothing, read no header. A mismatch between the count and the header falls
-  back to the peer address, which over-restricts rather than under-restricts.
+- **`PHILO_TRUSTED_PROXY` is how rate limits learn who the caller is.** Philo's
+  limits — login, first-boot setup, form intake — key on the socket's peer
+  address, and behind the TLS-terminating proxy of the install story above that
+  is one address for the whole deployment: every caller shares one budget, so
+  one flood spends everyone's. Set it to `true` and the caller comes from
+  `X-Forwarded-For` instead. Default `false`: read no header at all.
+  - The rule is **the rightmost public entry, and only when the socket's peer is
+    itself private.** Each hop appends the address it saw, so an attacker's
+    injected entries sit left of what the proxy wrote and the right-to-left walk
+    never reaches them. A count of trusted hops is the other common design and
+    it is worse: an operator who miscounts by one lets an attacker pad the header
+    until the entry the count selects is one they wrote. There is no equivalent
+    mistake available here.
+  - **`true` requires that only the proxy can reach the port.** The private-peer
+    condition is what enforces it — publish on `127.0.0.1:3000:3000` or a private
+    network, and a caller who reaches the app directly is throttled on their own
+    address because their peer address is public.
+  - Failure directions are all over-restrictive, never permissive: a public proxy
+    (a CDN whose egress addresses are public) collapses to the proxy rather than
+    the visitor, and anything unparseable or absent falls back to the peer.
 
 ## Data model
 

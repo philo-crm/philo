@@ -15,6 +15,7 @@ import {
   sessionCookieAttributes,
   setupAdmin,
   TEST_ORIGIN,
+  withServer,
   type TestApp,
 } from './support/app.ts'
 
@@ -239,6 +240,43 @@ describe('POST /api/v1/auth/login', () => {
 
     // By here the delay has doubled at least twice off a 40ms base.
     expect(fourth).toBeGreaterThan(100)
+  })
+
+  /**
+   * The per-caller half of the login throttle. Behind a proxy every request
+   * arrives from the same address, so without `PHILO_TRUSTED_PROXY` one attacker
+   * makes every other visitor pay their delay. Over a real socket, because the
+   * header is only believed when a private peer vouches for it.
+   */
+  it('charges a forwarded attacker without slowing anyone else down', async () => {
+    const testApp = createTestApp({
+      trustProxy: true,
+      authTuning: { throttle: { freeAttempts: 0, baseDelayMs: 60, maxDelayMs: 480 } },
+    })
+    await setupAdmin(testApp)
+
+    await withServer(testApp, async (baseUrl) => {
+      // A distinct address per attempt, because the route throttles the email
+      // too and the slower of the two keys wins — this test is about the
+      // caller key, so the email must not be what carries the delay.
+      const attempt = async (forwardedFor: string, email: string): Promise<number> => {
+        const started = performance.now()
+        const res = await fetch(`${baseUrl}/api/v1/auth/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: baseUrl, 'x-forwarded-for': forwardedFor },
+          body: JSON.stringify({ email, password: 'wrong-but-long-enough' }),
+        })
+        expect(res.status).toBe(401)
+        return performance.now() - started
+      }
+
+      // The attacker's own delay compounds — every attempt is charged.
+      for (let i = 0; i < 4; i += 1) await attempt('203.0.113.7', `attacker${i}@example.com`)
+      expect(await attempt('203.0.113.7', 'attacker-again@example.com')).toBeGreaterThan(100)
+
+      // A different visitor's first attempt is not paying for any of it.
+      expect(await attempt('198.51.100.42', 'visitor@example.com')).toBeLessThan(100)
+    })
   })
 
   it('clears the accumulated delay after a successful login', async () => {

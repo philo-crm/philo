@@ -22,12 +22,15 @@ interface Bucket {
  * protect and a real cost to admitting everything — every accepted submission is
  * a row, a notification email, and a push. So this one says no.
  *
- * What keeps that from becoming its own denial of service — behind a reverse
- * proxy every submission shares one key (see clientKey) — is continuous refill:
- * a refused request consumes nothing and the bucket recovers on a timer, so the
- * worst a flood can do is make a real applicant's submission wait seconds, not
- * be turned away until the flood stops. A window that reset on every attempt,
- * or a cap that outlived the requests that tripped it, would not hold that line.
+ * What keeps that from becoming its own denial of service is continuous refill: a
+ * refused request consumes nothing and the bucket recovers on a timer, so the
+ * worst a flood can do is make a real applicant's submission wait seconds, not be
+ * turned away until the flood stops. A window that reset on every attempt, or a
+ * cap that outlived the requests that tripped it, would not hold that line.
+ *
+ * That matters most when callers share a key, which is what happens behind a
+ * proxy unless `PHILO_TRUSTED_PROXY` is set — see `resolveClientAddress`. With it
+ * set, a flood costs the flooder their own bucket and nobody else's.
  */
 export class TokenBucket {
   readonly #options: TokenBucketOptions

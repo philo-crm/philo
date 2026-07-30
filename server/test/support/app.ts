@@ -1,3 +1,4 @@
+import { serve, type ServerType } from '@hono/node-server'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -48,7 +49,7 @@ export function createTestApp(
     authTuning?: AuthTuning
     intakeTuning?: IntakeTuning | undefined
     onLeadCreated?: ((lead: CreatedLead) => void) | undefined
-    trustedProxyHops?: number
+    trustProxy?: boolean
   } = {},
 ): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
@@ -61,13 +62,39 @@ export function createTestApp(
     db,
     sessionKey: loadOrCreateSessionKey(dataDir),
     cookieSecure: options.cookieSecure ?? false,
-    trustedProxyHops: options.trustedProxyHops ?? 0,
+    trustProxy: options.trustProxy ?? false,
     publicDir,
     authTuning: { ...tuning, throttle: { ...FAST_THROTTLE, ...tuning.throttle } },
     intakeTuning: options.intakeTuning,
     onLeadCreated: options.onLeadCreated,
   })
   return { app, db, dataDir, publicDir }
+}
+
+/**
+ * Serves the app on a real socket and hands back its base URL.
+ *
+ * `app.request()` has no socket behind it, so the peer address is unknown — and
+ * `PHILO_TRUSTED_PROXY` deliberately refuses to believe `X-Forwarded-For` without
+ * a private peer vouching for it. Testing that path at all therefore needs a real
+ * listener, where the peer is loopback exactly as it is behind a real proxy.
+ */
+export async function withServer<T>(
+  testApp: TestApp,
+  body: (baseUrl: string) => Promise<T>,
+): Promise<T> {
+  // Port 0 is only resolved once the socket is listening, so the callback is
+  // what has the answer — `server.address()` is still null when serve() returns.
+  const { server, port } = await new Promise<{ server: ServerType; port: number }>((resolve) => {
+    const started = serve({ fetch: testApp.app.fetch, port: 0, hostname: '127.0.0.1' }, (info) => {
+      resolve({ server: started, port: info.port })
+    })
+  })
+  try {
+    return await body(`http://127.0.0.1:${port}`)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
 }
 
 /** The form key seeded on first boot — what a fresh instance actually serves. */

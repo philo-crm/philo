@@ -8,22 +8,15 @@ export interface Config {
   /** Externally reachable origin, used to build absolute links. No trailing slash. */
   publicBaseUrl: string
   /**
-   * How many reverse proxies sit in front of this process. Zero — the default —
-   * means the socket's peer address is the caller. See `clientKey` for what this
-   * buys and why the count, rather than a boolean, is what makes it safe.
+   * Whether a reverse proxy sits in front of this process, so `X-Forwarded-For`
+   * may be believed. False — the default — means the socket's peer address is the
+   * caller. See `resolveClientAddress` for exactly how far the trust extends.
    */
-  trustedProxyHops: number
+  trustProxy: boolean
 }
 
 const DEFAULT_PORT = 3000
 const DEFAULT_DATA_DIR = 'data'
-
-/**
- * A ceiling on the hop count. Not a technical limit — nobody is running fifteen
- * reverse proxies, and a typo like `PHILO_TRUSTED_PROXY_HOPS=100` would otherwise
- * silently reach past every real entry in the header to the client-supplied part.
- */
-const MAX_TRUSTED_PROXY_HOPS = 8
 
 class ConfigError extends Error {}
 
@@ -50,15 +43,17 @@ function parsePublicBaseUrl(raw: string | undefined, port: number): string {
   return url.origin + url.pathname.replace(/\/$/, '')
 }
 
-function parseTrustedProxyHops(raw: string | undefined): number {
-  if (raw === undefined || raw === '') return 0
-  const hops = Number(raw)
-  if (!Number.isInteger(hops) || hops < 0 || hops > MAX_TRUSTED_PROXY_HOPS) {
-    throw new ConfigError(
-      `PHILO_TRUSTED_PROXY_HOPS must be an integer between 0 and ${MAX_TRUSTED_PROXY_HOPS}, got ${JSON.stringify(raw)}`,
-    )
-  }
-  return hops
+/**
+ * Strict rather than truthy. `PHILO_TRUSTED_PROXY=flase` silently meaning "yes"
+ * would decide a security question by typo, and this setting is only ever set on
+ * purpose, so there is nothing to be lenient for.
+ */
+function parseTrustProxy(raw: string | undefined): boolean {
+  if (raw === undefined || raw === '') return false
+  const value = raw.trim().toLowerCase()
+  if (value === 'true' || value === '1') return true
+  if (value === 'false' || value === '0') return false
+  throw new ConfigError(`PHILO_TRUSTED_PROXY must be true or false, got ${JSON.stringify(raw)}`)
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -70,6 +65,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port,
     dataDir: resolve(dataDir),
     publicBaseUrl: parsePublicBaseUrl(env['PHILO_PUBLIC_BASE_URL'], port),
-    trustedProxyHops: parseTrustedProxyHops(env['PHILO_TRUSTED_PROXY_HOPS']),
+    trustProxy: parseTrustProxy(env['PHILO_TRUSTED_PROXY']),
   }
 }

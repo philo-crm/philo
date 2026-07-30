@@ -20,7 +20,7 @@ const sessionKey = loadOrCreateSessionKey(config.dataDir)
 // own base URL is what keeps localhost dev working without a special case.
 const cookieSecure = config.publicBaseUrl.startsWith('https://')
 
-const app = createApp({ db, sessionKey, cookieSecure, trustedProxyHops: config.trustedProxyHops })
+const app = createApp({ db, sessionKey, cookieSecure, trustProxy: config.trustProxy })
 
 serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`philo ${VERSION} listening on port ${config.port}`)
@@ -35,16 +35,22 @@ serve({ fetch: app.fetch, port: config.port }, () => {
     console.log(`  intake form:     ${url}`)
   }
   console.log(`  honeypot field:  ${HONEYPOT_FIELD} (render it hidden; a filled one is filed as spam)`)
-  if (config.trustedProxyHops === 0) {
-    // Silent by default and easy to leave that way: nothing looks broken, but
-    // every rate limit collapses onto the proxy's address, so one flood can
-    // spend the budget for every real caller.
-    console.warn(
-      '  note: rate limits key on the socket address. If a reverse proxy sits in front, ' +
-        'set PHILO_TRUSTED_PROXY_HOPS to the number of proxies so limits apply per caller.',
+  if (config.trustProxy) {
+    // Worth stating positively: this is the setting that decides whether a header
+    // a stranger can write is allowed to name the caller.
+    console.log('  rate limits:     per caller, from X-Forwarded-For (PHILO_TRUSTED_PROXY=true)')
+    console.log(
+      '                   requires that only the proxy can reach this port — publish it on ' +
+        'localhost (-p 127.0.0.1:PORT:PORT) or a private network, not 0.0.0.0',
     )
   } else {
-    console.log(`  trusted proxies: ${config.trustedProxyHops}`)
+    // Silent by default and easy to leave that way: nothing looks broken, but
+    // behind a proxy every rate limit collapses onto that one address, so one
+    // flood spends the budget for every real caller.
+    console.warn(
+      '  note: rate limits key on the socket address. If a reverse proxy sits in front, ' +
+        'set PHILO_TRUSTED_PROXY=true so limits apply per caller instead of per deployment.',
+    )
   }
   if (!cookieSecure) {
     // Easy to reach by accident: terminate TLS at a proxy but leave
