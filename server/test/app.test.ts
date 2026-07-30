@@ -82,10 +82,10 @@ describe('unknown machine-facing paths', () => {
 
   it('does not shadow API routes registered after createApp', async () => {
     // Registered before the first request: Hono freezes its router once one arrives.
-    app.get('/api/v1/leads', (c) => c.json({ leads: [] }))
+    app.get('/api/v1/later', (c) => c.json({ later: true }))
     const cookie = await setupAdmin(testApp)
-    const res = await app.request('/api/v1/leads', { headers: { cookie } })
+    const res = await app.request('/api/v1/later', { headers: { cookie } })
     expect(res.status).toBe(200)
-    await expect(res.json()).resolves.toEqual({ leads: [] })
+    await expect(res.json()).resolves.toEqual({ later: true })
   })
 })

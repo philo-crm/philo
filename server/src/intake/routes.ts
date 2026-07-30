@@ -4,6 +4,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
 import { intakeForms, leadEvents, leads, stages } from '../db/schema.ts'
+import { notifyLeadCreated, type CreatedLead, type LeadCreatedHook } from '../notify.ts'
 import { DedupeWindow } from './dedupe.ts'
 import { TokenBucket, type TokenBucketOptions } from './rate-limit.ts'
 import {
@@ -37,12 +38,6 @@ export const DEDUPE_WINDOW_MS = 10 * 60 * 1000
 /** How long a browser may cache the preflight answer. */
 const PREFLIGHT_MAX_AGE_SECONDS = 600
 
-export interface CreatedLead {
-  id: number
-  formId: number
-  isSpam: boolean
-}
-
 export interface IntakeDeps {
   db: Db
   /**
@@ -51,7 +46,7 @@ export interface IntakeDeps {
    * turn an accepted lead into an error. Email (#11) and push (#13) hang here.
    * Spam submissions are not announced.
    */
-  onLeadCreated?: ((lead: CreatedLead) => void) | undefined
+  onLeadCreated?: LeadCreatedHook | undefined
   /**
    * Reverse proxies in front of this process, from the config of the same name.
    * Without it every submission behind a proxy shares one bucket, and one
@@ -320,7 +315,7 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
     if (created === undefined) return c.json({ error: 'no_stage_configured' }, 503)
     dedupe.record(hash)
 
-    if (!created.isSpam) notify(deps, created)
+    if (!created.isSpam) notifyLeadCreated(deps.onLeadCreated, created)
     return accepted(c)
   })
 
@@ -334,23 +329,4 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
  */
 function accepted(c: Context) {
   return c.json({ ok: true }, 201)
-}
-
-/**
- * Downstream effects, isolated from the response. A hook that throws — or one
- * that returns a promise which rejects — is logged and dropped; the lead is
- * already committed, and an SMTP outage is not the form's problem to report.
- */
-function notify(deps: IntakeDeps, lead: CreatedLead): void {
-  if (deps.onLeadCreated === undefined) return
-  try {
-    const result = deps.onLeadCreated(lead) as unknown
-    if (result instanceof Promise) result.catch(logHookFailure)
-  } catch (error: unknown) {
-    logHookFailure(error)
-  }
-}
-
-function logHookFailure(error: unknown): void {
-  console.error('intake: lead-created hook failed', error)
 }
