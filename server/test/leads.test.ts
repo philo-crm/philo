@@ -2,7 +2,7 @@ import { asc, eq } from 'drizzle-orm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { leadEvents, leads, stages } from '../src/db/schema.ts'
 import { HONEYPOT_FIELD } from '../src/intake/payload.ts'
-import { MAX_NOTE_LENGTH, MAX_PAGE_SIZE, NOT_SPAM_NOTE } from '../src/leads/service.ts'
+import { MAX_NOTE_LENGTH, MAX_PAGE_SIZE, MAX_SEARCH_LENGTH, NOT_SPAM_NOTE } from '../src/leads/service.ts'
 import type { CreatedLead } from '../src/notify.ts'
 import {
   cleanupTestApps,
@@ -261,6 +261,27 @@ describe('GET /api/v1/leads (FTS5 search)', () => {
     expect(page.leads).toEqual([])
   })
 
+  it('matches nothing past the length ceiling, rather than truncating and widening', async () => {
+    const testApp = createTestApp()
+    const cookie = await setupAdmin(testApp)
+    await submit(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    const padded = `Dana${' nomatch'.repeat(MAX_SEARCH_LENGTH)}`
+    expect(padded.length).toBeGreaterThan(MAX_SEARCH_LENGTH)
+    expect((await list(testApp, cookie, `?search=${encodeURIComponent(padded)}`)).total).toBe(0)
+  })
+
+  it('keeps every token of a long-but-accepted search', async () => {
+    const testApp = createTestApp()
+    const cookie = await setupAdmin(testApp)
+    await submit(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    // Twenty tokens, well past any per-token cap, all of which must be required.
+    const search = ['Dana', ...Array.from({ length: 19 }, (_unused, i) => `nomatch${i}`)].join(' ')
+    expect(search.length).toBeLessThanOrEqual(MAX_SEARCH_LENGTH)
+    expect((await list(testApp, cookie, `?search=${encodeURIComponent(search)}`)).total).toBe(0)
+  })
+
   it('respects the spam filter while searching', async () => {
     const testApp = createTestApp()
     const cookie = await setupAdmin(testApp)
@@ -318,11 +339,25 @@ describe('PATCH /api/v1/leads/:id', () => {
     await submit(testApp, { name: 'Dana Rivers', email: 'dana@example.com', cdl_class: 'A' })
     const id = onlyLeadId(testApp)
 
-    await testApp.app.request(
+    const res = await testApp.app.request(
       `/api/v1/leads/${id}`,
-      jsonRequest('PATCH', { name: 'Dana', fields: { cdl_class: 'tampered' } }, cookie),
+      jsonRequest('PATCH', { fields: { cdl_class: 'tampered' } }, cookie),
     )
+    expect(res.status).toBe(200)
     expect((await detail(testApp, cookie, id)).fields).toEqual({ cdl_class: 'A' })
+  })
+
+  it('treats a patch that names no contact field as a no-op', async () => {
+    const testApp = createTestApp()
+    const cookie = await setupAdmin(testApp)
+    await submit(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+    const id = onlyLeadId(testApp)
+
+    const res = await testApp.app.request(`/api/v1/leads/${id}`, jsonRequest('PATCH', {}, cookie))
+    expect(res.status).toBe(200)
+    await expect(res.json()).resolves.toMatchObject({
+      lead: { name: 'Dana Rivers', email: 'dana@example.com' },
+    })
   })
 
   it('clears a field with null', async () => {
@@ -435,15 +470,17 @@ describe('POST /api/v1/leads/:id/stage', () => {
     expect((await detail(testApp, cookie, id)).stageId).toBe(newStage)
   })
 
-  it('422s a missing or malformed stageId', async () => {
+  it.each([
+    ['a missing stageId', {}],
+    ['a string stageId', { stageId: 'contacted' }],
+    ['a fractional stageId', { stageId: 1.5 }],
+    ['a zero stageId', { stageId: 0 }],
+  ])('422s %s', async (_label, body) => {
     const testApp = createTestApp()
     const cookie = await setupAdmin(testApp)
     await submit(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    const res = await testApp.app.request(
-      `/api/v1/leads/${onlyLeadId(testApp)}/stage`,
-      jsonPost({ stageId: 'contacted' }, { cookie }),
-    )
+    const res = await testApp.app.request(`/api/v1/leads/${onlyLeadId(testApp)}/stage`, jsonPost(body, { cookie }))
     expect(res.status).toBe(422)
     await expect(res.json()).resolves.toEqual({ error: 'invalid_stage' })
   })

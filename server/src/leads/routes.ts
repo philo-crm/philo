@@ -153,9 +153,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    const stageId = body['stageId']
-    if (!Number.isInteger(stageId) || (stageId as number) <= 0) return fail(c, 'invalid_stage')
-    return respond(c, moveLeadStage(deps.db, id, stageId as number, actorOf(c)))
+    return respond(c, moveLeadStage(deps.db, id, body['stageId'], actorOf(c)))
   })
 
   routes.post('/:id/notes', async (c) => {

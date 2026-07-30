@@ -7,10 +7,12 @@ import { err, ok, type Result } from '../result.ts'
 export const DEFAULT_PAGE_SIZE = 50
 export const MAX_PAGE_SIZE = 200
 
-/** Longest search string considered; the rest is ignored rather than rejected. */
+/**
+ * Longest search string accepted. Past it the search matches nothing rather
+ * than being truncated: dropping the tail would quietly widen the result, and a
+ * filter that widens itself is the one failure direction a list must not have.
+ */
 export const MAX_SEARCH_LENGTH = 256
-/** Tokens carried into the FTS query. A search box with more than this is not a search. */
-export const MAX_SEARCH_TOKENS = 16
 
 export const MAX_NOTE_LENGTH = 5_000
 /** RFC 5321's practical ceiling, matching auth/routes.ts. */
@@ -94,12 +96,10 @@ export interface ContactPatch {
  * search at all.
  */
 export function toMatchQuery(search: string): string | undefined {
-  const tokens = search.slice(0, MAX_SEARCH_LENGTH).match(/[\p{L}\p{N}_]+/gu)
+  if (search.length > MAX_SEARCH_LENGTH) return undefined
+  const tokens = search.match(/[\p{L}\p{N}_]+/gu)
   if (tokens === null || tokens.length === 0) return undefined
-  return tokens
-    .slice(0, MAX_SEARCH_TOKENS)
-    .map((token) => `"${token}"*`)
-    .join(' ')
+  return tokens.map((token) => `"${token}"*`).join(' ')
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> {
@@ -312,6 +312,11 @@ export function updateLeadContact(
     const nextPhone = phone === undefined ? current.phone : phone
     if (nextEmail === null && nextPhone === null) return 'email_or_phone_required' as const
 
+    // A patch that names none of the three fields is a no-op, not an error: a UI
+    // that PATCHes only what changed will send one. Returning early is also what
+    // keeps it off drizzle's update builder, which rejects an empty `set`.
+    if (name === undefined && email === undefined && phone === undefined) return 'updated' as const
+
     tx.update(leads)
       .set({
         ...(name === undefined ? {} : { name }),
@@ -336,9 +341,14 @@ export function updateLeadContact(
 export function moveLeadStage(
   db: Db,
   id: number,
-  stageId: number,
+  stageId: unknown,
   actor: string,
 ): Result<LeadDetail, LeadError> {
+  // Validated here rather than in the handler, so the MCP surface (#15) does not
+  // have to re-implement it to get the same answer.
+  if (!Number.isSafeInteger(stageId) || (stageId as number) <= 0) return err('invalid_stage')
+  const targetId = stageId as number
+
   const outcome = db.transaction((tx) => {
     const [lead] = tx
       .select({ currentStageId: leads.currentStageId })
@@ -351,7 +361,7 @@ export function moveLeadStage(
     const [target] = tx
       .select({ id: stages.id, name: stages.name })
       .from(stages)
-      .where(eq(stages.id, stageId))
+      .where(eq(stages.id, targetId))
       .limit(1)
       .all()
     if (target === undefined) return 'invalid_stage' as const
