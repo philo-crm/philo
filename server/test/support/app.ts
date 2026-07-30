@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../../src/app.ts'
+import type { AuthTuning } from '../../src/auth/routes.ts'
 import { loadOrCreateSessionKey } from '../../src/auth/session-key.ts'
 import { SESSION_COOKIE_NAME } from '../../src/auth/session.ts'
 import { openDatabase, type Db } from '../../src/db/index.ts'
@@ -33,17 +34,27 @@ export function createPublicDir(): string {
   return dir
 }
 
-export function createTestApp(options: { cookieSecure?: boolean } = {}): TestApp {
+/**
+ * Throttle delays shrunk to ~nothing. The curve is unit-tested directly; making
+ * the route tests sleep the production seconds would buy nothing.
+ */
+const FAST_THROTTLE = { baseDelayMs: 1, maxDelayMs: 2 }
+
+export function createTestApp(
+  options: { cookieSecure?: boolean; authTuning?: AuthTuning } = {},
+): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
   dataDirs.push(dataDir)
   const db = openDatabase(dataDir)
   openDbs.push(db)
   const publicDir = createPublicDir()
+  const tuning = options.authTuning ?? {}
   const app = createApp({
     db,
     sessionKey: loadOrCreateSessionKey(dataDir),
     cookieSecure: options.cookieSecure ?? false,
     publicDir,
+    authTuning: { ...tuning, throttle: { ...FAST_THROTTLE, ...tuning.throttle } },
   })
   return { app, db, dataDir, publicDir }
 }

@@ -4,7 +4,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { csrf } from 'hono/csrf'
 import { fileURLToPath } from 'node:url'
 import { requireAuth, sessionMiddleware, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
-import { createAuthRoutes } from './auth/routes.ts'
+import { createAuthRoutes, type AuthTuning } from './auth/routes.ts'
 import { VERSION } from './version.ts'
 
 /** Where the Vite build lands — see web/vite.config.ts `build.outDir`. */
@@ -19,6 +19,9 @@ const API_PREFIX = '/api/v1'
  * every JSON payload this API takes is orders of magnitude smaller.
  */
 const MAX_BODY_BYTES = 64 * 1024
+
+/** Methods that change nothing, and so need neither an origin nor a JSON body. */
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 /**
  * Reachable without a session. Everything else under `API_PREFIX` is guarded, so
@@ -35,6 +38,8 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
 export interface AppOptions extends AuthDeps {
   /** Directory holding the built PWA. Overridable for tests. */
   publicDir?: string
+  /** Login throttle and hash-concurrency limits. Defaults are the production ones. */
+  authTuning?: AuthTuning
 }
 
 /**
@@ -78,13 +83,30 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   // and public form intake is deliberately cross-origin.
   app.use(`${API_PREFIX}/*`, csrf())
 
+  // The other half of the CSRF story, and a middleware rather than a check inside
+  // each handler so a route added later cannot quietly opt out: a cross-origin
+  // form can be POSTed without JavaScript but cannot set this content type, and a
+  // `fetch` that can must first pass a preflight this server never answers.
+  app.use(`${API_PREFIX}/*`, async (c, next) => {
+    if (SAFE_METHODS.has(c.req.method)) return next()
+    const contentType = c.req.header('content-type')?.toLowerCase() ?? ''
+    if (contentType.startsWith('application/json')) return next()
+    return c.json({ error: 'expected_json' }, 415)
+  })
+
+  // Responses here carry account data, so they must not sit in a shared cache.
+  app.use(`${API_PREFIX}/*`, async (c, next) => {
+    await next()
+    c.res.headers.set('Cache-Control', 'no-store')
+  })
+
   app.use(`${API_PREFIX}/*`, sessionMiddleware(deps))
   app.use(`${API_PREFIX}/*`, async (c, next) => {
     if (PUBLIC_API_PATHS.has(c.req.path)) return next()
     return requireAuth(c, next)
   })
 
-  app.route(`${API_PREFIX}/auth`, createAuthRoutes(deps))
+  app.route(`${API_PREFIX}/auth`, createAuthRoutes(deps, options.authTuning ?? {}))
 
   // Built PWA assets. Misses fall through to the not-found handler, so routes
   // registered after this one still match.

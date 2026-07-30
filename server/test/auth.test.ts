@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from '../src/auth/password.ts'
-import { LOGIN_FAILURE_LIMIT } from '../src/auth/routes.ts'
+import { LOGIN_FREE_ATTEMPTS } from '../src/auth/routes.ts'
 import { SESSION_COOKIE_NAME, SESSION_TTL_MS, hashSessionToken } from '../src/auth/session.ts'
 import { sessions, users } from '../src/db/schema.ts'
 import {
@@ -129,22 +129,28 @@ describe('POST /api/v1/auth/setup', () => {
     await expect(res.json()).resolves.toEqual({ error: 'setup_already_complete' })
   })
 
-  it('rate limits setup attempts while the instance is still unconfigured', async () => {
-    const testApp = createTestApp()
+  it('throttles setup attempts while the instance is unconfigured, without ever refusing one', async () => {
+    const testApp = createTestApp({
+      authTuning: { throttle: { freeAttempts: 1, baseDelayMs: 40, maxDelayMs: 160 } },
+    })
 
     // Every attempt counts here, not just failures: there is no account yet to
     // lock anyone out of, and a success retires the endpoint.
-    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT; attempt += 1) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
       const res = await testApp.app.request('/api/v1/auth/setup', jsonPost({ email: 'bad', password: 'short' }))
       expect(res.status).toBe(400)
     }
 
-    const limited = await testApp.app.request(
+    // Slower by now, but the operator still gets their account — the whole point
+    // of throttling instead of capping.
+    const started = performance.now()
+    const created = await testApp.app.request(
       '/api/v1/auth/setup',
       jsonPost({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
     )
-    expect(limited.status).toBe(429)
-    expect(testApp.db.select({ id: users.id }).from(users).all()).toHaveLength(0)
+    expect(created.status).toBe(201)
+    expect(performance.now() - started).toBeGreaterThan(100)
+    expect(testApp.db.select({ id: users.id }).from(users).all()).toHaveLength(1)
   })
 
   it.each(['', 'not-an-email', 'missing@tld', 'spaces in@example.com'])(
@@ -196,36 +202,76 @@ describe('POST /api/v1/auth/login', () => {
     expect(sessionCookie(wrongPassword)).toBeUndefined()
   })
 
-  it('stops accepting attempts once the failure limit is reached', async () => {
+  it('keeps accepting the correct password however many attempts have failed', async () => {
     const testApp = createTestApp()
     await setupAdmin(testApp)
 
-    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT; attempt += 1) {
+    // The regression this guards: a failure *cap* would refuse the operator here.
+    // Philo is behind a proxy in the documented deployment, so every request
+    // shares one key — a cap would let any anonymous caller spend a handful of
+    // junk requests to deny the only credential the product has.
+    for (let attempt = 0; attempt < LOGIN_FREE_ATTEMPTS * 4; attempt += 1) {
       expect((await login(testApp, ADMIN_EMAIL, 'wrong-but-long-enough')).status).toBe(401)
     }
 
-    const limited = await login(testApp, ADMIN_EMAIL, 'wrong-but-long-enough')
-    expect(limited.status).toBe(429)
-    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0)
-
-    // The limit holds even against the correct password: an attacker must not be
-    // able to keep guessing just because one guess happens to land.
-    expect((await login(testApp)).status).toBe(429)
+    const recovered = await login(testApp)
+    expect(recovered.status).toBe(200)
+    expect(sessionCookie(recovered)).toBeDefined()
   })
 
-  it('clears the failure budget after a successful login', async () => {
-    const testApp = createTestApp()
+  it('makes repeated failures progressively slower', async () => {
+    // Real delays, small but growing, so the curve is exercised end to end.
+    const testApp = createTestApp({
+      authTuning: { throttle: { freeAttempts: 1, baseDelayMs: 40, maxDelayMs: 160 } },
+    })
     await setupAdmin(testApp)
 
-    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT - 1; attempt += 1) {
+    const timeOneAttempt = async (): Promise<number> => {
+      const started = performance.now()
+      expect((await login(testApp, ADMIN_EMAIL, 'wrong-but-long-enough')).status).toBe(401)
+      return performance.now() - started
+    }
+
+    await timeOneAttempt() // free
+    await timeOneAttempt() // charges the first delay
+    await timeOneAttempt()
+    const fourth = await timeOneAttempt()
+
+    // By here the delay has doubled at least twice off a 40ms base.
+    expect(fourth).toBeGreaterThan(100)
+  })
+
+  it('clears the accumulated delay after a successful login', async () => {
+    const testApp = createTestApp({
+      authTuning: { throttle: { freeAttempts: 0, baseDelayMs: 40, maxDelayMs: 160 } },
+    })
+    await setupAdmin(testApp)
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       expect((await login(testApp, ADMIN_EMAIL, 'wrong-but-long-enough')).status).toBe(401)
     }
     expect((await login(testApp)).status).toBe(200)
 
-    // Back to a full budget rather than one attempt from a lockout.
-    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT; attempt += 1) {
-      expect((await login(testApp, ADMIN_EMAIL, 'wrong-but-long-enough')).status).toBe(401)
-    }
+    // A clean slate, so the next failure is charged the base delay rather than
+    // resuming where the previous run left off.
+    const started = performance.now()
+    expect((await login(testApp, ADMIN_EMAIL, 'wrong-but-long-enough')).status).toBe(401)
+    expect(performance.now() - started).toBeLessThan(120)
+  })
+
+  it('sheds load rather than queueing unbounded password hashes', async () => {
+    const testApp = createTestApp({ authTuning: { maxConcurrentHashes: 1 } })
+    await setupAdmin(testApp)
+
+    // Two logins in flight against a single hash slot: one is served, the other is
+    // told to come back. A slot frees in milliseconds, so this cannot lock anyone
+    // out the way a failure cap would.
+    const [first, second] = await Promise.all([login(testApp), login(testApp)])
+    const statuses = [first.status, second.status].toSorted()
+    expect(statuses).toEqual([200, 429])
+
+    // And the very next attempt succeeds, because the slot is already free again.
+    expect((await login(testApp)).status).toBe(200)
   })
 })
 
@@ -357,10 +403,7 @@ describe('POST /api/v1/auth/logout', () => {
     const testApp = createTestApp()
     const cookie = await setupAdmin(testApp)
 
-    const res = await testApp.app.request('/api/v1/auth/logout', {
-      method: 'POST',
-      headers: { cookie, origin: TEST_ORIGIN },
-    })
+    const res = await testApp.app.request('/api/v1/auth/logout', jsonPost({}, { cookie }))
     expect(res.status).toBe(204)
     expect(sessionCookieAttributes(res)).toContain('Max-Age=0')
     expect(testApp.db.select({ tokenHash: sessions.tokenHash }).from(sessions).all()).toHaveLength(0)
@@ -372,11 +415,20 @@ describe('POST /api/v1/auth/logout', () => {
 
   it('succeeds without a session, so a client can always drop a stale cookie', async () => {
     const testApp = createTestApp()
+    const res = await testApp.app.request('/api/v1/auth/logout', jsonPost({}))
+    expect(res.status).toBe(204)
+  })
+
+  it('requires the JSON content type like every other state-changing route', async () => {
+    const testApp = createTestApp()
+    const cookie = await setupAdmin(testApp)
     const res = await testApp.app.request('/api/v1/auth/logout', {
       method: 'POST',
-      headers: { origin: TEST_ORIGIN },
+      headers: { cookie, origin: TEST_ORIGIN },
     })
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(415)
+    // The session survives, because the request never reached the handler.
+    expect(testApp.db.select({ tokenHash: sessions.tokenHash }).from(sessions).all()).toHaveLength(1)
   })
 
   it('leaves other sessions alone', async () => {
@@ -387,10 +439,7 @@ describe('POST /api/v1/auth/logout', () => {
     expect(first).toBeDefined()
     expect(second).toBeDefined()
 
-    await testApp.app.request('/api/v1/auth/logout', {
-      method: 'POST',
-      headers: { cookie: first as string, origin: TEST_ORIGIN },
-    })
+    await testApp.app.request('/api/v1/auth/logout', jsonPost({}, { cookie: first as string }))
 
     expect((await testApp.app.request('/api/v1/auth/session', { headers: { cookie: first as string } })).status).toBe(401)
     expect((await testApp.app.request('/api/v1/auth/session', { headers: { cookie: second as string } })).status).toBe(200)
@@ -430,15 +479,17 @@ describe('CSRF protection', () => {
     expect(res.status).toBe(403)
   })
 
-  it('rejects a state-changing request that is not JSON, so a form post cannot reach a handler', async () => {
+  it('rejects a state-changing request that is not JSON, before any handler sees it', async () => {
     const testApp = createTestApp()
     const res = await testApp.app.request('/api/v1/auth/setup', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', origin: TEST_ORIGIN },
       body: 'email=admin@example.com&password=correct-horse-battery-staple',
     })
-    // Same-origin, so `csrf()` allows it; the handler still refuses a non-JSON body.
-    expect(res.status).toBe(400)
+    // Same-origin, so `csrf()` allows it; the JSON requirement stops it anyway,
+    // and it does so in middleware so no route can forget to check.
+    expect(res.status).toBe(415)
+    await expect(res.json()).resolves.toEqual({ error: 'expected_json' })
     expect(testApp.db.select({ id: users.id }).from(users).all()).toHaveLength(0)
   })
 

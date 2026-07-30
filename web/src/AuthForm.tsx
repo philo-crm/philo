@@ -1,12 +1,15 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useState, type FormEvent } from 'react'
 import { AuthError, MIN_PASSWORD_LENGTH, submitLogin, submitSetup, type User } from './auth.ts'
 
 interface AuthFormProps {
   /** Setup collects a confirmation and a name; login does not. */
   mode: 'setup' | 'login'
   onAuthenticated: (user: User) => void
-  /** Rendered under the form — the "already set up, sign in instead" nudge. */
-  footer?: ReactNode
+  /**
+   * Called when the server says setup is already done — someone else claimed the
+   * account first. Without this the screen would sit there repeating a 409.
+   */
+  onSetupSuperseded?: () => void
 }
 
 function messageFor(error: unknown): string {
@@ -14,7 +17,7 @@ function messageFor(error: unknown): string {
   return 'Could not reach the server. Check your connection and try again.'
 }
 
-export function AuthForm({ mode, onAuthenticated, footer }: AuthFormProps) {
+export function AuthForm({ mode, onAuthenticated, onSetupSuperseded }: AuthFormProps) {
   const isSetup = mode === 'setup'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -45,6 +48,10 @@ export function AuthForm({ mode, onAuthenticated, footer }: AuthFormProps) {
         : await submitLogin({ email, password })
       onAuthenticated(user)
     } catch (caught) {
+      if (caught instanceof AuthError && caught.status === 409 && onSetupSuperseded !== undefined) {
+        onSetupSuperseded()
+        return
+      }
       setError(messageFor(caught))
       setPending(false)
     }
@@ -117,8 +124,6 @@ export function AuthForm({ mode, onAuthenticated, footer }: AuthFormProps) {
       <button type="submit" disabled={pending}>
         {pending ? 'Working…' : isSetup ? 'Create account' : 'Sign in'}
       </button>
-
-      {footer}
     </form>
   )
 }

@@ -25,4 +25,13 @@ serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`  public base url: ${config.publicBaseUrl}`)
   console.log(`  data dir:        ${config.dataDir}`)
   console.log(`  database:        ${db.$client.name}`)
+  if (!cookieSecure) {
+    // Easy to reach by accident: terminate TLS at a proxy but leave
+    // PHILO_PUBLIC_BASE_URL unset, and the session cookie loses `Secure`
+    // without anything else looking wrong.
+    console.warn(
+      '  warning: session cookies are not marked Secure because PHILO_PUBLIC_BASE_URL is not https. ' +
+        'Set it to the https URL you serve on before exposing this instance.',
+    )
+  }
 })

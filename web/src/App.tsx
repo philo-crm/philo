@@ -68,7 +68,11 @@ export function App() {
   if (screen.kind === 'setup') {
     return (
       <main>
-        <AuthForm mode="setup" onAuthenticated={handleAuthenticated} />
+        <AuthForm
+          mode="setup"
+          onAuthenticated={handleAuthenticated}
+          onSetupSuperseded={() => setScreen({ kind: 'login' })}
+        />
       </main>
     )
   }

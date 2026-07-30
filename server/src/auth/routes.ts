@@ -1,5 +1,6 @@
 import { getConnInfo } from '@hono/node-server/conninfo'
 import { randomUUID } from 'node:crypto'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { eq } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
 import type { Db } from '../db/index.ts'
@@ -14,12 +15,25 @@ import {
   type AuthEnv,
 } from './middleware.ts'
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hashPassword, verifyPassword } from './password.ts'
-import { FailureLimiter } from './rate-limit.ts'
+import { ConcurrencyGate, FailureThrottle, type ThrottleOptions } from './rate-limit.ts'
 import { createSession, deleteSession, type SessionUser } from './session.ts'
 
-/** Failed logins tolerated per key before a key gets 429s for the rest of the window. */
-export const LOGIN_FAILURE_LIMIT = 10
+/**
+ * Failed attempts per key that cost nothing. Above this the next attempt waits,
+ * doubling up to the ceiling — see FailureThrottle for why this slows callers
+ * down instead of refusing them.
+ */
+export const LOGIN_FREE_ATTEMPTS = 5
+export const LOGIN_BASE_DELAY_MS = 250
+export const LOGIN_MAX_DELAY_MS = 2_000
 export const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000
+
+/**
+ * Simultaneous password hashes. Node's default libuv threadpool is four, so
+ * beyond that a request would queue anyway; this bounds the memory those hashes
+ * reserve rather than letting a burst decide it.
+ */
+export const MAX_CONCURRENT_HASHES = 8
 
 /** RFC 5321's practical ceiling; also stops a giant string reaching the database. */
 const MAX_EMAIL_LENGTH = 254
@@ -99,10 +113,24 @@ function hasAnyUser(db: Db): boolean {
   return db.select({ id: users.id }).from(users).limit(1).all().length > 0
 }
 
-export function createAuthRoutes(deps: AuthDeps): Hono<AuthEnv> {
+export const DEFAULT_THROTTLE: ThrottleOptions = {
+  windowMs: LOGIN_FAILURE_WINDOW_MS,
+  freeAttempts: LOGIN_FREE_ATTEMPTS,
+  baseDelayMs: LOGIN_BASE_DELAY_MS,
+  maxDelayMs: LOGIN_MAX_DELAY_MS,
+}
+
+export interface AuthTuning {
+  /** Overridden in tests, which would otherwise spend real seconds asleep. */
+  throttle?: Partial<ThrottleOptions>
+  maxConcurrentHashes?: number
+}
+
+export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
   // Per app instance, so a test gets a fresh budget and a restart forgives.
-  const limiter = new FailureLimiter(LOGIN_FAILURE_LIMIT, LOGIN_FAILURE_WINDOW_MS)
+  const throttle = new FailureThrottle({ ...DEFAULT_THROTTLE, ...tuning.throttle })
+  const hashGate = new ConcurrencyGate(tuning.maxConcurrentHashes ?? MAX_CONCURRENT_HASHES)
 
   /** Drives the first-boot screen: the PWA asks this before rendering anything. */
   routes.get('/status', (c) =>
@@ -120,13 +148,12 @@ export function createAuthRoutes(deps: AuthDeps): Hono<AuthEnv> {
     if (hasAnyUser(deps.db)) return c.json({ error: 'setup_already_complete' }, 409)
 
     // Setup is reachable without credentials, so the window before the first
-    // account exists is rate limited too. Every attempt counts, not just failed
-    // ones: there is no account here to lock anybody out of, and the first
-    // success retires the endpoint.
+    // account exists is throttled too. Every attempt counts here, not just failed
+    // ones: there is no account yet to lock anybody out of, and the first success
+    // retires the endpoint for good.
     const setupKey = `setup:${clientKey(c)}`
-    const setupCheck = limiter.check(setupKey)
-    if (!setupCheck.allowed) return tooManyRequests(c, setupCheck.retryAfterSeconds)
-    limiter.recordFailure(setupKey)
+    await delay(throttle.delayFor(setupKey))
+    throttle.recordFailure(setupKey)
 
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
@@ -141,9 +168,15 @@ export function createAuthRoutes(deps: AuthDeps): Hono<AuthEnv> {
       )
     }
 
-    // Hash before opening the transaction: better-sqlite3 is synchronous, so
-    // awaiting inside one would hold it open across the whole hash.
-    const passwordHash = await hashPassword(password)
+    if (!hashGate.tryAcquire()) return tooManyRequests(c, 1)
+    let passwordHash: string
+    try {
+      // Hash before opening the transaction: better-sqlite3 is synchronous, so
+      // awaiting inside one would hold it open across the whole hash.
+      passwordHash = await hashPassword(password)
+    } finally {
+      hashGate.release()
+    }
     const name = optionalName(body['name'])
 
     // The existence check and the insert share a transaction so two racing setup
@@ -168,47 +201,57 @@ export function createAuthRoutes(deps: AuthDeps): Hono<AuthEnv> {
     const body = await readJsonBody(c)
     const ipKey = `ip:${clientKey(c)}`
 
-    const ipCheck = limiter.check(ipKey)
-    if (!ipCheck.allowed) return tooManyRequests(c, ipCheck.retryAfterSeconds)
-
     if (body === undefined) {
-      limiter.recordFailure(ipKey)
+      await delay(throttle.delayFor(ipKey))
+      throttle.recordFailure(ipKey)
       return c.json({ error: 'invalid_request' }, 400)
     }
 
     const email = normalizeEmail(body['email'])
     const password = validatePassword(body['password'])
     if (email === undefined || password === undefined) {
-      limiter.recordFailure(ipKey)
+      await delay(throttle.delayFor(ipKey))
+      throttle.recordFailure(ipKey)
       // Deliberately not saying which field: the login form is not a place to
       // confirm that an address is or is not a real account.
       return c.json({ error: 'invalid_credentials' }, 401)
     }
 
+    // Both keys matter: the address bounds credential stuffing against one
+    // account, and the caller bounds someone working through many. The slower of
+    // the two wins, and neither can refuse a correct password.
     const emailKey = `email:${email}`
-    const emailCheck = limiter.check(emailKey)
-    if (!emailCheck.allowed) return tooManyRequests(c, emailCheck.retryAfterSeconds)
+    await delay(Math.max(throttle.delayFor(ipKey), throttle.delayFor(emailKey)))
 
-    const [account] = deps.db
-      .select({ id: users.id, email: users.email, name: users.name, passwordHash: users.passwordHash })
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1)
-      .all()
+    // Refusing here is safe where refusing on failure count is not: a slot frees
+    // the moment a hash finishes, so this throttles a burst without outlasting it.
+    if (!hashGate.tryAcquire()) return tooManyRequests(c, 1)
+    let account: { id: number; email: string; name: string | null } | undefined
+    let passwordOk: boolean
+    try {
+      const [found] = deps.db
+        .select({ id: users.id, email: users.email, name: users.name, passwordHash: users.passwordHash })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1)
+        .all()
 
-    // Verify even when there is no such account, against a hash that cannot
-    // match, so a missing account and a wrong password take the same time.
-    const passwordHash = account?.passwordHash ?? (await unmatchableHash())
-    const passwordOk = await verifyPassword(passwordHash, password)
+      // Verify even when there is no such account, against a hash that cannot
+      // match, so a missing account and a wrong password take the same time.
+      passwordOk = await verifyPassword(found?.passwordHash ?? (await unmatchableHash()), password)
+      account = found
+    } finally {
+      hashGate.release()
+    }
 
     if (account === undefined || !passwordOk) {
-      limiter.recordFailure(ipKey)
-      limiter.recordFailure(emailKey)
+      throttle.recordFailure(ipKey)
+      throttle.recordFailure(emailKey)
       return c.json({ error: 'invalid_credentials' }, 401)
     }
 
-    limiter.reset(ipKey)
-    limiter.reset(emailKey)
+    throttle.reset(ipKey)
+    throttle.reset(emailKey)
 
     const { token } = createSession(deps.db, account.id)
     await writeSessionCookie(c, deps, token)
@@ -236,6 +279,11 @@ function tooManyRequests(c: Context, retryAfterSeconds: number) {
   return c.json({ error: 'too_many_requests', retryAfterSeconds }, 429)
 }
 
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return sleep(ms)
+}
+
 let unmatchable: Promise<string> | undefined
 
 /**
@@ -244,6 +292,10 @@ let unmatchable: Promise<string> | undefined
  * Computed once, on first use rather than at module load, and never checked in.
  */
 function unmatchableHash(): Promise<string> {
-  unmatchable ??= hashPassword(`no-such-account:${randomUUID()}`)
+  unmatchable ??= hashPassword(`no-such-account:${randomUUID()}`).catch((error: unknown) => {
+    // Caching a rejection would break every later login, not just this one.
+    unmatchable = undefined
+    throw error
+  })
   return unmatchable
 }

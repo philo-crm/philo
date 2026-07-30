@@ -8,7 +8,7 @@ import {
   hashPassword,
   verifyPassword,
 } from '../src/auth/password.ts'
-import { FailureLimiter } from '../src/auth/rate-limit.ts'
+import { ConcurrencyGate, FailureThrottle } from '../src/auth/rate-limit.ts'
 import { SESSION_KEY_FILENAME, loadOrCreateSessionKey } from '../src/auth/session-key.ts'
 import { generateSessionToken, hashSessionToken } from '../src/auth/session.ts'
 
@@ -96,49 +96,98 @@ describe('session signing key', () => {
   })
 })
 
-describe('FailureLimiter', () => {
-  const WINDOW_MS = 60_000
+describe('FailureThrottle', () => {
+  const OPTIONS = { windowMs: 60_000, freeAttempts: 2, baseDelayMs: 100, maxDelayMs: 800 }
 
-  it('allows a key that has never failed', () => {
-    expect(new FailureLimiter(3, WINDOW_MS).check('a', 0).allowed).toBe(true)
+  function throttle(): FailureThrottle {
+    return new FailureThrottle(OPTIONS)
+  }
+
+  it('charges nothing for a key that has never failed', () => {
+    expect(throttle().delayFor('a', 0)).toBe(0)
   })
 
-  it('allows up to the limit and blocks past it', () => {
-    const limiter = new FailureLimiter(3, WINDOW_MS)
-    for (let i = 0; i < 3; i += 1) {
-      expect(limiter.check('a', 0).allowed).toBe(true)
-      limiter.recordFailure('a', 0)
+  it('charges nothing within the free allowance', () => {
+    const t = throttle()
+    t.recordFailure('a', 0)
+    expect(t.delayFor('a', 0)).toBe(0)
+    t.recordFailure('a', 0)
+    expect(t.delayFor('a', 0)).toBe(0)
+  })
+
+  it('doubles the delay per failure past the allowance, up to the ceiling', () => {
+    const t = throttle()
+    for (let i = 0; i < OPTIONS.freeAttempts; i += 1) t.recordFailure('a', 0)
+
+    const delays: number[] = []
+    for (let i = 0; i < 6; i += 1) {
+      t.recordFailure('a', 0)
+      delays.push(t.delayFor('a', 0))
     }
-    const blocked = limiter.check('a', 0)
-    expect(blocked.allowed).toBe(false)
-    expect(blocked.retryAfterSeconds).toBe(60)
+    expect(delays).toEqual([100, 200, 400, 800, 800, 800])
+  })
+
+  /**
+   * The property that makes this safe to run in front of the only credential:
+   * however much a key has failed, the answer is a wait, never a refusal.
+   */
+  it('never reports an unbounded wait', () => {
+    const t = throttle()
+    for (let i = 0; i < 1000; i += 1) t.recordFailure('a', 0)
+    expect(t.delayFor('a', 0)).toBe(OPTIONS.maxDelayMs)
   })
 
   it('keys independently', () => {
-    const limiter = new FailureLimiter(1, WINDOW_MS)
-    limiter.recordFailure('a', 0)
-    expect(limiter.check('a', 0).allowed).toBe(false)
-    expect(limiter.check('b', 0).allowed).toBe(true)
+    const t = throttle()
+    for (let i = 0; i < 5; i += 1) t.recordFailure('a', 0)
+    expect(t.delayFor('a', 0)).toBeGreaterThan(0)
+    expect(t.delayFor('b', 0)).toBe(0)
   })
 
   it('forgives once the window closes', () => {
-    const limiter = new FailureLimiter(1, WINDOW_MS)
-    limiter.recordFailure('a', 0)
-    expect(limiter.check('a', WINDOW_MS - 1).allowed).toBe(false)
-    expect(limiter.check('a', WINDOW_MS).allowed).toBe(true)
+    const t = throttle()
+    for (let i = 0; i < 5; i += 1) t.recordFailure('a', 0)
+    expect(t.delayFor('a', OPTIONS.windowMs - 1)).toBeGreaterThan(0)
+    expect(t.delayFor('a', OPTIONS.windowMs)).toBe(0)
   })
 
-  it('clears a key on reset, so a success restores the full budget', () => {
-    const limiter = new FailureLimiter(1, WINDOW_MS)
-    limiter.recordFailure('a', 0)
-    expect(limiter.check('a', 0).allowed).toBe(false)
-    limiter.reset('a')
-    expect(limiter.check('a', 0).allowed).toBe(true)
+  it('restarts the window on each failure, so pacing does not earn a free budget', () => {
+    const t = throttle()
+    for (let i = 0; i < 5; i += 1) t.recordFailure('a', 0)
+    // A failure just before the window would have closed carries it forward.
+    t.recordFailure('a', OPTIONS.windowMs - 1)
+    expect(t.delayFor('a', OPTIONS.windowMs)).toBeGreaterThan(0)
   })
 
-  it('reports a retry-after of at least one second, never zero', () => {
-    const limiter = new FailureLimiter(1, WINDOW_MS)
-    limiter.recordFailure('a', 0)
-    expect(limiter.check('a', WINDOW_MS - 1).retryAfterSeconds).toBe(1)
+  it('clears a key on reset, so a success wipes the accumulated delay', () => {
+    const t = throttle()
+    for (let i = 0; i < 5; i += 1) t.recordFailure('a', 0)
+    t.reset('a')
+    expect(t.delayFor('a', 0)).toBe(0)
+  })
+})
+
+describe('ConcurrencyGate', () => {
+  it('admits up to the limit and refuses past it', () => {
+    const gate = new ConcurrencyGate(2)
+    expect(gate.tryAcquire()).toBe(true)
+    expect(gate.tryAcquire()).toBe(true)
+    expect(gate.tryAcquire()).toBe(false)
+  })
+
+  it('frees a slot on release', () => {
+    const gate = new ConcurrencyGate(1)
+    expect(gate.tryAcquire()).toBe(true)
+    expect(gate.tryAcquire()).toBe(false)
+    gate.release()
+    expect(gate.tryAcquire()).toBe(true)
+  })
+
+  it('does not accumulate credit from extra releases', () => {
+    const gate = new ConcurrencyGate(1)
+    gate.release()
+    gate.release()
+    expect(gate.tryAcquire()).toBe(true)
+    expect(gate.tryAcquire()).toBe(false)
   })
 })
