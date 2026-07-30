@@ -1,8 +1,8 @@
-import { getConnInfo } from '@hono/node-server/conninfo'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { eq } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
+import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import {
@@ -93,21 +93,6 @@ function optionalName(raw: unknown): string | null {
   return name.length > 0 ? name : null
 }
 
-/**
- * Rate-limit key for the caller. Behind a reverse proxy every request arrives
- * from the proxy, so this collapses to one bucket for the whole deployment;
- * per-IP fidelity there needs a trusted-proxy setting Philo does not model yet.
- * The per-email key below is what keeps that case from being useless.
- */
-function clientKey(c: Context): string {
-  try {
-    return getConnInfo(c).remote.address ?? 'unknown'
-  } catch {
-    // No socket behind the request — `app.request()` in tests, for one.
-    return 'unknown'
-  }
-}
-
 function hasAnyUser(db: Db): boolean {
   return db.select({ id: users.id }).from(users).limit(1).all().length > 0
 }
@@ -160,7 +145,7 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     // account exists is throttled too. Every attempt counts here, not just failed
     // ones: there is no account yet to lock anybody out of, and the first success
     // retires the endpoint for good.
-    const setupKey = `setup:${clientKey(c)}`
+    const setupKey = `setup:${clientKey(c, deps.trustProxy)}`
     throttle.recordAttempt(setupKey)
     await delay(throttle.delayFor(setupKey), c.req.raw.signal)
 
@@ -208,7 +193,7 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
 
   routes.post('/login', async (c) => {
     const body = await readJsonBody(c)
-    const ipKey = `ip:${clientKey(c)}`
+    const ipKey = `ip:${clientKey(c, deps.trustProxy)}`
 
     if (body === undefined) {
       throttle.recordAttempt(ipKey)

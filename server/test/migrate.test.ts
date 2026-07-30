@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { Db } from '../src/db/index.ts'
 import { DB_FILENAME, MIGRATIONS_DIR, openDatabase } from '../src/db/index.ts'
 import { DEFAULT_EMAIL_TEMPLATES, SEEDED_AT_KEY } from '../src/db/seed.ts'
-import { emailTemplates, leads, pipelines, settings, stages } from '../src/db/schema.ts'
+import { emailTemplates, intakeForms, leads, pipelines, settings, stages } from '../src/db/schema.ts'
 
 interface Journal {
   entries: { idx: number; tag: string }[]
@@ -150,6 +150,26 @@ describe('upgrading an existing database', () => {
     expect(db.select().from(pipelines).all()).toMatchObject([{ name: 'Recruiting' }])
     expect(db.select().from(stages).all()).toMatchObject([{ name: 'Applied' }])
     expect(db.select().from(emailTemplates).all()).toHaveLength(DEFAULT_EMAIL_TEMPLATES.length)
+  })
+})
+
+describe('the default intake form', () => {
+  it('reaches an install upgraded from an earlier schema', () => {
+    const dataDir = tempDir('philo-upgrade-')
+    seedSchemaDatabase(dataDir)
+    const db = openTracked(dataDir)
+    expect(db.select().from(intakeForms).all()).toMatchObject([{ name: 'Default' }])
+  })
+
+  it('is not added to an install that already made its own', () => {
+    const dataDir = tempDir('philo-upgrade-')
+    seedSchemaDatabase(dataDir)
+    const sqlite = new Database(join(dataDir, DB_FILENAME))
+    drizzle(sqlite).insert(intakeForms).values({ name: 'Careers', formKey: 'existing-key' }).run()
+    sqlite.close()
+
+    const db = openTracked(dataDir)
+    expect(db.select().from(intakeForms).all()).toMatchObject([{ formKey: 'existing-key' }])
   })
 })
 

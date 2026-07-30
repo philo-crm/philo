@@ -21,12 +21,14 @@ export interface ThrottleOptions {
  * Per-key attempt tracker that answers with a *delay*, never a refusal.
  *
  * Refusing outright is the obvious design and it is wrong here: the deployment in
- * DESIGN.md (Architecture) sits behind a TLS-terminating proxy, so every request
- * arrives from one address and shares one key. A hard cap on that key would let
- * any unauthenticated caller spend ten junk requests to deny the operator the
- * only credential Philo has — indefinitely, since the cap outlives the attempts
- * that tripped it. Slowing an attacker to a crawl costs them everything and costs
- * the operator a couple of seconds.
+ * DESIGN.md (Architecture) sits behind a TLS-terminating proxy, and unless the
+ * operator sets `PHILO_TRUSTED_PROXY` every request arrives from one address and
+ * shares one key. A hard cap on that key would let any unauthenticated caller
+ * spend ten junk requests to deny the operator the only credential Philo has —
+ * indefinitely, since the cap outlives the attempts that tripped it. Slowing an
+ * attacker to a crawl costs them everything and costs the operator a couple of
+ * seconds. The delay is right either way, so nothing here depends on that setting
+ * being on.
  *
  * Counting *attempts* rather than failures, before the work rather than after, is
  * what makes the delay bite under load. Counting failures afterwards would let

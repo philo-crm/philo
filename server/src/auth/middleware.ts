@@ -14,6 +14,12 @@ export interface AuthDeps {
    * back, which would present as "login silently does nothing".
    */
   cookieSecure: boolean
+  /**
+   * Reverse proxies in front of this process, from the config of the same name.
+   * Only the login and setup throttles read it — a caller behind a proxy would
+   * otherwise share one bucket with everyone else, including an attacker.
+   */
+  trustProxy: boolean
 }
 
 export interface AuthEnv {

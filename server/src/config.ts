@@ -7,6 +7,12 @@ export interface Config {
   dataDir: string
   /** Externally reachable origin, used to build absolute links. No trailing slash. */
   publicBaseUrl: string
+  /**
+   * Whether a reverse proxy sits in front of this process, so `X-Forwarded-For`
+   * may be believed. False — the default — means the socket's peer address is the
+   * caller. See `resolveClientAddress` for exactly how far the trust extends.
+   */
+  trustProxy: boolean
 }
 
 const DEFAULT_PORT = 3000
@@ -37,6 +43,19 @@ function parsePublicBaseUrl(raw: string | undefined, port: number): string {
   return url.origin + url.pathname.replace(/\/$/, '')
 }
 
+/**
+ * Strict rather than truthy. `PHILO_TRUSTED_PROXY=flase` silently meaning "yes"
+ * would decide a security question by typo, and this setting is only ever set on
+ * purpose, so there is nothing to be lenient for.
+ */
+function parseTrustProxy(raw: string | undefined): boolean {
+  if (raw === undefined || raw === '') return false
+  const value = raw.trim().toLowerCase()
+  if (value === 'true' || value === '1') return true
+  if (value === 'false' || value === '0') return false
+  throw new ConfigError(`PHILO_TRUSTED_PROXY must be true or false, got ${JSON.stringify(raw)}`)
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const port = parsePort(env['PHILO_PORT'])
   // An empty value counts as unset — `-e PHILO_DATA_DIR=` or an unexpanded
@@ -46,5 +65,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port,
     dataDir: resolve(dataDir),
     publicBaseUrl: parsePublicBaseUrl(env['PHILO_PUBLIC_BASE_URL'], port),
+    trustProxy: parseTrustProxy(env['PHILO_TRUSTED_PROXY']),
   }
 }
