@@ -265,8 +265,9 @@ main {
   flex-wrap: wrap;
 }
 
+/* 18rem is 288px — it still fits the narrowest phone, and the toolbar wraps. */
 .toolbar input[type='search'] {
-  min-width: min(18rem, 100%);
+  min-width: 18rem;
 }
 
 .empty {
@@ -314,6 +315,9 @@ main {
 
 .grid {
   width: 100%;
+  /* Below this the columns squeeze until every cell wraps and the rows go
+     three lines tall; scrolling the box is the better trade. */
+  min-width: 44rem;
   border-collapse: collapse;
   background: var(--surface);
   border: 1px solid var(--border);
