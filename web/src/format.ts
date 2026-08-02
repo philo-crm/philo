@@ -11,8 +11,18 @@ export function humanizeKey(key: string): string {
     .replace(/([a-z\d])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ')
     .trim()
-  if (words === '') return key
-  return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word !== '')
+  if (words.length === 0) return key
+  return words
+    // An all-caps word is left alone: this funnel is full of acronyms, and
+    // "Cdl class" is worse than the inconsistency of not lowercasing it.
+    .map((word, index) => {
+      if (word.length > 1 && word === word.toUpperCase()) return word
+      const lower = word.toLowerCase()
+      return index === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower
+    })
+    .join(' ')
 }
 
 /**

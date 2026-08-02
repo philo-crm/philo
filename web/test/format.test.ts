@@ -20,6 +20,11 @@ describe('humanizeKey', () => {
     expect(humanizeKey('yearsExperience')).toBe('Years experience')
   })
 
+  it('leaves acronyms alone, which a recruiting funnel is full of', () => {
+    expect(humanizeKey('CDL_class')).toBe('CDL class')
+    expect(humanizeKey('has_TWIC_card')).toBe('Has TWIC card')
+  })
+
   it('falls back to the raw key when there is nothing to humanize', () => {
     expect(humanizeKey('___')).toBe('___')
   })
