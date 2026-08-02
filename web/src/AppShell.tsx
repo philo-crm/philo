@@ -65,7 +65,8 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
           Philo
         </Link>
         <nav aria-label="Sections">
-          {/* A lead detail is reached from the list, so it keeps Leads lit. */}
+          {/* A lead has no section of its own, and is opened from both the list
+              and the board, so its detail screen keeps Leads lit either way. */}
           <Link to="/" aria-current={path === '/spam' || path === '/board' ? undefined : 'page'}>
             Leads
           </Link>

@@ -57,11 +57,19 @@ export function StageColumn({
     if (await onEditStage(stage.id, { name: trimmed, isTerminal })) setEditing(false)
   }
 
+  /**
+   * A card this column would actually take: one that is being dragged, and that
+   * is not already sitting here. Both the highlight and the drop ask, so that
+   * the accent border never offers a drop the drop handler will refuse.
+   */
+  function accepts(id: number | undefined): id is number {
+    return id !== undefined && !column.leads.some((lead) => lead.id === id)
+  }
+
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault()
     setOver(false)
-    if (draggingId === undefined) return
-    if (column.leads.some((lead) => lead.id === draggingId)) return
+    if (!accepts(draggingId)) return
     onMoveLead(draggingId, stage.id)
   }
 
@@ -77,7 +85,7 @@ export function StageColumn({
       className={`board-column${stage.isTerminal ? ' is-terminal' : ''}${over ? ' is-over' : ''}`}
       aria-label={stage.name}
       onDragOver={(event) => {
-        if (draggingId === undefined) return
+        if (!accepts(draggingId)) return
         // Without this the browser refuses the drop and animates the card home.
         event.preventDefault()
         setOver(true)

@@ -100,6 +100,11 @@ describe('FunnelBoard', () => {
     const card = (await screen.findByText('Dana Okafor')).closest('li')
 
     dragStart(card as HTMLElement)
+    fireEvent.dragOver(column('New'))
+    // The column it came from must not light up as a drop target either — an
+    // accent border offering a drop that the drop handler refuses is a lie.
+    expect(column('New').className).not.toContain('is-over')
+
     fireEvent.drop(column('New'))
 
     // The request would have gone out on the drop, so there is nothing to wait
