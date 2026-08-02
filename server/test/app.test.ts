@@ -62,11 +62,12 @@ describe('static PWA', () => {
     expect(res.headers.get('content-type')).toContain('application/manifest+json')
   })
 
-  it.each(['/sw.js', '/manifest.webmanifest'])(
+  it.each(['/sw.js', '/manifest.webmanifest', '/icon-512.png', '/favicon.svg'])(
     '404s %s when the build did not emit it, instead of answering with the shell',
     async (path) => {
-      // HTML where a script or a manifest was asked for fails inside the
-      // browser, where nothing reports it — a 404 at least says what happened.
+      // HTML where a script, a manifest or an icon was asked for fails inside
+      // the browser, where nothing reports it — a 404 at least says what
+      // happened, and a half-deployed PWA stops hiding.
       const bare = createTestApp({ publicDir: createPublicDir({ withPwaFiles: false }) })
       const res = await bare.app.request(path)
       expect(res.status).toBe(404)

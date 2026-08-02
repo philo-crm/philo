@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { loadServiceWorker, makeClient, ORIGIN, pushEvent } from './support/service-worker.ts'
+import {
+  loadServiceWorker,
+  makeClient,
+  ORIGIN,
+  pushEvent,
+  TEST_PRECACHE,
+} from './support/service-worker.ts'
 
 function navigation(path: string) {
   return { request: { url: `${ORIGIN}${path}`, method: 'GET', mode: 'navigate' } }
@@ -14,13 +20,25 @@ function html(body: string): Response {
 }
 
 describe('install and activate', () => {
-  it('precaches the app shell and takes over immediately', async () => {
+  it('precaches the whole shell — not just the page — and takes over', async () => {
     const worker = loadServiceWorker()
     await worker.dispatch('install', {})
 
     expect(worker.skippedWaiting).toBe(true)
     const cache = worker.caches.get(worker.cacheName)
-    await expect(cache?.match('/')).resolves.toBeDefined()
+    // A shell cached without its bundle is a blank screen offline.
+    for (const path of TEST_PRECACHE) {
+      await expect(cache?.match(path)).resolves.toBeDefined()
+    }
+  })
+
+  it('fails install rather than taking over with a half-cached shell', async () => {
+    const worker = loadServiceWorker(async (input) =>
+      String(input).endsWith('.js') ? new Response('gone', { status: 404 }) : new Response('ok'),
+    )
+
+    await expect(worker.dispatch('install', {})).rejects.toThrow()
+    expect(worker.skippedWaiting).toBe(false)
   })
 
   it('drops caches from previous builds and claims open pages', async () => {
@@ -51,7 +69,9 @@ describe('fetch', () => {
   it('does not let a navigation that is not the shell become the shell', async () => {
     // /version is a URL an operator types in, and it answers JSON. Cached under
     // the shell key it would be the whole app the next time the network is out.
-    const worker = loadServiceWorker(async () => Response.json({ name: 'philo' }))
+    const worker = loadServiceWorker(async (input) =>
+      String(input).endsWith('/version') ? Response.json({ name: 'philo' }) : html('shell from network'),
+    )
     await worker.dispatch('install', {})
 
     await worker.dispatch('fetch', navigation('/version'))
@@ -61,10 +81,12 @@ describe('fetch', () => {
   })
 
   it('falls back to the cached shell when the network is gone', async () => {
-    const worker = loadServiceWorker(async () => {
-      throw new TypeError('offline')
-    })
+    // Installed while online, then the network drops — the sequence a phone in
+    // a yard with no signal actually goes through.
+    const fetchImpl = vi.fn(async () => html('shell from network'))
+    const worker = loadServiceWorker(fetchImpl as unknown as typeof fetch)
     await worker.dispatch('install', {})
+    fetchImpl.mockRejectedValue(new TypeError('offline'))
 
     const response = (await worker.dispatch('fetch', navigation('/board'))) as Response
     await expect(response.text()).resolves.toBe('shell from network')
@@ -78,14 +100,41 @@ describe('fetch', () => {
     await expect(worker.dispatch('fetch', navigation('/'))).rejects.toThrow('offline')
   })
 
-  it('serves a content-hashed asset from cache after the first hit', async () => {
-    const fetchImpl = vi.fn(async () => new Response('bundle'))
+  it('serves a precached asset without going to the network at all', async () => {
+    const fetchImpl = vi.fn(async () => html('bundle'))
+    const worker = loadServiceWorker(fetchImpl as unknown as typeof fetch)
+    await worker.dispatch('install', {})
+    fetchImpl.mockClear()
+
+    await worker.dispatch('fetch', assetRequest('/assets/index-abc123.js'))
+
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('caches an asset the precache missed, once', async () => {
+    const fetchImpl = vi.fn(async () => new Response('lazy chunk'))
     const worker = loadServiceWorker(fetchImpl as unknown as typeof fetch)
 
-    await worker.dispatch('fetch', assetRequest('/assets/index-abc123.js'))
-    await worker.dispatch('fetch', assetRequest('/assets/index-abc123.js'))
+    await worker.dispatch('fetch', assetRequest('/assets/later-def456.js'))
+    await worker.dispatch('fetch', assetRequest('/assets/later-def456.js'))
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('still answers when the cache refuses the write', async () => {
+    // Quota is a real limit on a phone, and it is not a reason to fail a
+    // request whose response has already come back.
+    const worker = loadServiceWorker(async () => new Response('bundle'))
+    await worker.dispatch('install', {})
+    const cache = worker.caches.get(worker.cacheName)
+    if (cache !== undefined) {
+      cache.put = () => Promise.reject(new DOMException('quota', 'QuotaExceededError'))
+    }
+
+    const asset = (await worker.dispatch('fetch', assetRequest('/assets/later-def456.js'))) as Response
+    await expect(asset.text()).resolves.toBe('bundle')
+    const shell = (await worker.dispatch('fetch', navigation('/'))) as Response
+    expect(shell.status).toBe(200)
   })
 
   it.each([

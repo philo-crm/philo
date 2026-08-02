@@ -8,7 +8,7 @@ import SOURCE from '../../src/sw.js?raw'
 
 export interface FakeCache {
   entries: Map<string, Response>
-  add: (request: string) => Promise<void>
+  addAll: (requests: string[]) => Promise<void>
   put: (request: Request | string, response: Response) => Promise<void>
   match: (request: Request | string) => Promise<Response | undefined>
 }
@@ -38,14 +38,25 @@ export interface WorkerHarness {
 
 export const ORIGIN = 'https://philo.example.com'
 
-function makeCache(): FakeCache {
+/**
+ * `addAll` goes through the same injected fetch the worker uses, and rejects as
+ * a whole if any request fails — the browser behaviour install depends on.
+ */
+function makeCache(fetchImpl: typeof fetch): FakeCache {
   const entries = new Map<string, Response>()
   const key = (request: Request | string) =>
     typeof request === 'string' ? new URL(request, ORIGIN).href : request.url
   return {
     entries,
-    add: async (request) => {
-      entries.set(key(request), new Response('shell from network'))
+    addAll: async (requests) => {
+      const fetched = await Promise.all(
+        requests.map(async (request) => {
+          const response = await fetchImpl(new URL(request, ORIGIN).href)
+          if (!response.ok) throw new TypeError(`addAll failed for ${request}`)
+          return [key(request), response] as const
+        }),
+      )
+      for (const [url, response] of fetched) entries.set(url, response)
     },
     put: async (request, response) => {
       entries.set(key(request), response)
@@ -72,11 +83,24 @@ export function makeClient(url: string): FakeClient {
   return client
 }
 
+/** What vite.config.ts stamps in at build time, fixed so assertions can name it. */
+export const TEST_BUILD = 'testbuild001'
+export const TEST_PRECACHE = ['/', '/assets/index-abc123.css', '/assets/index-abc123.js']
+
+/** The shipped text, stamped exactly as the plugin stamps it. */
+const STAMPED = SOURCE.replaceAll('__PHILO_BUILD__', TEST_BUILD).replaceAll(
+  '__PHILO_PRECACHE__',
+  JSON.stringify(TEST_PRECACHE),
+)
+
+const defaultFetch: typeof fetch = async () =>
+  new Response('shell from network', { headers: { 'content-type': 'text/html; charset=utf-8' } })
+
 /**
  * Evaluates the worker source against fresh fakes and hands back everything the
  * assertions need to look at.
  */
-export function loadServiceWorker(fetchImpl: typeof fetch = async () => new Response('network')): WorkerHarness {
+export function loadServiceWorker(fetchImpl: typeof fetch = defaultFetch): WorkerHarness {
   const handlers: Handlers = {}
   const cacheStore = new Map<string, FakeCache>()
   const harness: Partial<WorkerHarness> = {
@@ -93,7 +117,7 @@ export function loadServiceWorker(fetchImpl: typeof fetch = async () => new Resp
     open: async (name: string) => {
       const existing = cacheStore.get(name)
       if (existing !== undefined) return existing
-      const created = makeCache()
+      const created = makeCache(fetchImpl)
       cacheStore.set(name, created)
       return created
     },
@@ -126,8 +150,7 @@ export function loadServiceWorker(fetchImpl: typeof fetch = async () => new Resp
     },
   }
 
-  // eslint-disable-next-line no-new-func
-  const run = new Function('self', 'caches', 'fetch', 'Response', 'URL', SOURCE)
+  const run = new Function('self', 'caches', 'fetch', 'Response', 'URL', STAMPED)
   run(self, cachesApi, fetchImpl, Response, URL)
 
   const pending: unknown[] = []
@@ -146,12 +169,7 @@ export function loadServiceWorker(fetchImpl: typeof fetch = async () => new Resp
     return responded === undefined ? undefined : await responded
   }
 
-  // The cache name is stamped at build time; tests read it back off the store
-  // after `install` rather than duplicating the placeholder.
-  Object.defineProperty(harness, 'cacheName', {
-    get: () => [...cacheStore.keys()].find((name) => name.startsWith('philo-')) ?? '',
-  })
-
+  harness.cacheName = `philo-${TEST_BUILD}`
   return harness as WorkerHarness
 }
 

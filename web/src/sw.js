@@ -1,7 +1,8 @@
 /*
  * Philo's service worker. Not bundled: vite.config.ts emits this file verbatim
- * at /sw.js with __PHILO_BUILD__ replaced by a hash of the build, so every
- * deploy gets its own cache and `activate` can drop the previous one whole.
+ * at /sw.js, filling in the two placeholders below from the build it just made.
+ * Every deploy therefore names its own cache, and `activate` can drop the
+ * previous one whole.
  *
  * Two jobs, both deliberately small:
  *   1. Keep the app shell openable when the network is not there.
@@ -10,6 +11,9 @@
 
 const CACHE = 'philo-__PHILO_BUILD__'
 
+/** The shell and the hashed files it pulls in — enough to boot with no network. */
+const PRECACHE = __PHILO_PRECACHE__
+
 /** The one navigation response worth keeping: the server answers every client-side route with it. */
 const SHELL = '/'
 
@@ -17,7 +21,9 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.add(SHELL))
+      // All or nothing: a shell cached without its bundle is a blank screen,
+      // and failing here leaves the previous worker in charge.
+      .then((cache) => cache.addAll(PRECACHE))
       .then(() => self.skipWaiting()),
   )
 })
@@ -52,18 +58,19 @@ self.addEventListener('fetch', (event) => {
 
 async function shellFirstFromNetwork(request) {
   const cache = await caches.open(CACHE)
+  let response
   try {
-    const response = await fetch(request)
-    // Not every navigation lands on the shell — /version answers JSON to an
-    // operator who types it in — and caching one of those under SHELL would
-    // hand that back as the app the next time the network is gone.
-    if (response.ok && isHtml(response)) await cache.put(SHELL, response.clone())
-    return response
+    response = await fetch(request)
   } catch (error) {
     const cached = await cache.match(SHELL)
     if (cached) return cached
     throw error
   }
+  // Not every navigation lands on the shell — /version answers JSON to an
+  // operator who types it in — and caching one of those under SHELL would hand
+  // that back as the app the next time the network is gone.
+  if (response.ok && isHtml(response)) await store(cache, SHELL, response)
+  return response
 }
 
 function isHtml(response) {
@@ -75,8 +82,20 @@ async function cacheFirst(request) {
   const cached = await cache.match(request)
   if (cached) return cached
   const response = await fetch(request)
-  if (response.ok) await cache.put(request, response.clone())
+  if (response.ok) await store(cache, request, response)
   return response
+}
+
+/**
+ * Writing to the cache is best-effort. Storage can be full or evicted mid-write,
+ * and neither is a reason to fail a request whose answer is already in hand.
+ */
+async function store(cache, key, response) {
+  try {
+    await cache.put(key, response.clone())
+  } catch {
+    // Nothing to do: the response still goes back, just without being kept.
+  }
 }
 
 /*
