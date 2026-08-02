@@ -5,7 +5,10 @@ import { csrf } from 'hono/csrf'
 import { fileURLToPath } from 'node:url'
 import { requireAuth, sessionMiddleware, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
 import { createAuthRoutes, type AuthTuning } from './auth/routes.ts'
-import { createIntakeRoutes, type CreatedLead, type IntakeTuning } from './intake/routes.ts'
+import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
+import { createLeadRoutes } from './leads/routes.ts'
+import type { LeadCreatedHook } from './notify.ts'
+import { createStageRoutes } from './stages/routes.ts'
 import { VERSION } from './version.ts'
 
 /** Where the Vite build lands — see web/vite.config.ts `build.outDir`. */
@@ -50,8 +53,11 @@ export interface AppOptions extends AuthDeps {
   authTuning?: AuthTuning
   /** Intake rate limit and dedupe window. Defaults are the production ones. */
   intakeTuning?: IntakeTuning | undefined
-  /** Notifications for an accepted, non-spam lead. Email (#11) and push (#13) attach here. */
-  onLeadCreated?: ((lead: CreatedLead) => void) | undefined
+  /**
+   * Notifications for a lead entering the pipeline: accepted and non-spam at
+   * intake, or promoted out of quarantine. Email (#11) and push (#13) attach here.
+   */
+  onLeadCreated?: LeadCreatedHook | undefined
 }
 
 /**
@@ -137,6 +143,11 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   })
 
   app.route(`${API_PREFIX}/auth`, createAuthRoutes(deps, options.authTuning ?? {}))
+  app.route(
+    `${API_PREFIX}/leads`,
+    createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated }),
+  )
+  app.route(`${API_PREFIX}/stages`, createStageRoutes({ db: options.db }))
 
   // Deliberately unauthenticated, cross-origin, and form-encoding-friendly: the
   // caller is a visitor's browser on the business's own website. It carries its

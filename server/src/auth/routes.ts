@@ -5,6 +5,7 @@ import { Hono, type Context } from 'hono'
 import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
+import { readJsonBody } from '../json-body.ts'
 import {
   clearSessionCookie,
   currentUser,
@@ -46,24 +47,6 @@ interface UserResponse {
 
 function toUserResponse(user: SessionUser): UserResponse {
   return { id: user.id, email: user.email, name: user.name }
-}
-
-/**
- * The content-type check here is belt to the middleware's braces — app.ts rejects
- * a non-JSON state change before any handler runs, and that is where the CSRF
- * reasoning lives. This only has to turn a malformed body into a 400.
- */
-async function readJsonBody(c: Context): Promise<Record<string, unknown> | undefined> {
-  const contentType = c.req.header('content-type')?.toLowerCase() ?? ''
-  if (!contentType.startsWith('application/json')) return undefined
-  let body: unknown
-  try {
-    body = await c.req.json()
-  } catch {
-    return undefined
-  }
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined
-  return body as Record<string, unknown>
 }
 
 /**

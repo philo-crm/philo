@@ -586,16 +586,16 @@ describe('route guard', () => {
   it('guards a route added after createApp, without a per-route opt-in', async () => {
     const testApp = createTestApp()
     // Registered before the first request: Hono freezes its router once one arrives.
-    testApp.app.get('/api/v1/leads', (c) => c.json({ leads: [] }))
+    testApp.app.get('/api/v1/later', (c) => c.json({ later: true }))
     const cookie = await setupAdmin(testApp)
 
-    const anonymous = await testApp.app.request('/api/v1/leads')
+    const anonymous = await testApp.app.request('/api/v1/later')
     expect(anonymous.status).toBe(401)
     await expect(anonymous.json()).resolves.toEqual({ error: 'unauthorized' })
 
-    const authenticated = await testApp.app.request('/api/v1/leads', { headers: { cookie } })
+    const authenticated = await testApp.app.request('/api/v1/later', { headers: { cookie } })
     expect(authenticated.status).toBe(200)
-    await expect(authenticated.json()).resolves.toEqual({ leads: [] })
+    await expect(authenticated.json()).resolves.toEqual({ later: true })
   })
 
   it('answers unauthenticated API requests in JSON rather than the app shell', async () => {

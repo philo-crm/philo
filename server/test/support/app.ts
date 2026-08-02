@@ -8,7 +8,8 @@ import { loadOrCreateSessionKey } from '../../src/auth/session-key.ts'
 import { SESSION_COOKIE_NAME } from '../../src/auth/session.ts'
 import { openDatabase, type Db } from '../../src/db/index.ts'
 import { intakeForms } from '../../src/db/schema.ts'
-import type { CreatedLead, IntakeTuning } from '../../src/intake/routes.ts'
+import type { IntakeTuning } from '../../src/intake/routes.ts'
+import type { CreatedLead } from '../../src/notify.ts'
 
 export interface TestApp {
   app: ReturnType<typeof createApp>
