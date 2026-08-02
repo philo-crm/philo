@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { AppShell } from './AppShell.tsx'
 import { AuthForm } from './AuthForm.tsx'
 import { fetchCurrentUser, fetchStatus, submitLogout, type User } from './auth.ts'
 
@@ -45,6 +46,13 @@ export function App() {
     setScreen(await resolveScreen())
   }, [resolveScreen])
 
+  /**
+   * A 401 from a screen behind the shell. Straight to login rather than back
+   * through `resolveScreen`: an instance that has handed out a session cannot
+   * be one that still needs setup, so there is nothing left to ask the server.
+   */
+  const handleSessionExpired = useCallback(() => setScreen({ kind: 'login' }), [])
+
   if (screen.kind === 'loading') {
     return (
       <main>
@@ -86,12 +94,10 @@ export function App() {
   }
 
   return (
-    <main>
-      <h1>Philo</h1>
-      <p>Signed in as {screen.user.name ?? screen.user.email}.</p>
-      <button type="button" onClick={() => void handleLogout()}>
-        Sign out
-      </button>
-    </main>
+    <AppShell
+      user={screen.user}
+      onSignOut={() => void handleLogout()}
+      onSessionExpired={handleSessionExpired}
+    />
   )
 }

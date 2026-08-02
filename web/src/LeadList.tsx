@@ -1,0 +1,206 @@
+import { useCallback, useEffect, useState } from 'react'
+import {
+  apiErrorMessage,
+  fetchLeads,
+  fetchStages,
+  promoteLead,
+  PAGE_SIZE,
+  type LeadRecord,
+} from './api.ts'
+import { formatDateTime, leadTitle } from './format.ts'
+import { Link } from './router.tsx'
+import { useResource, useSessionGuard } from './useResource.ts'
+
+export interface LeadListProps {
+  /** The spam view is the same list over the quarantine — see DESIGN.md (Intake endpoint). */
+  isSpam: boolean
+  onSessionExpired: () => void
+}
+
+/** Long enough that typing a name is one query, short enough to feel live. */
+const SEARCH_DEBOUNCE_MS = 250
+
+const ALL_STAGES = 'all'
+
+function contactOf(lead: LeadRecord): string {
+  const parts = [lead.email, lead.phone].filter((part): part is string => part !== null)
+  return parts.length === 0 ? '—' : parts.join(' · ')
+}
+
+export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
+  const [stageId, setStageId] = useState<number | undefined>(undefined)
+  const [offset, setOffset] = useState(0)
+  const [actionError, setActionError] = useState<unknown>(undefined)
+  const [promotingId, setPromotingId] = useState<number | undefined>(undefined)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput.trim())
+      // A narrowed result set has no page three; staying on it would show an
+      // empty table for a search that matched plenty.
+      setOffset(0)
+    }, SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [searchInput])
+
+  const loadLeads = useCallback(
+    (signal: AbortSignal) =>
+      fetchLeads({ isSpam, stageId, search, limit: PAGE_SIZE, offset }, signal),
+    [isSpam, stageId, search, offset],
+  )
+  const page = useResource(loadLeads)
+
+  const loadStages = useCallback((signal: AbortSignal) => fetchStages(signal), [])
+  const stages = useResource(loadStages)
+
+  useSessionGuard(page.error ?? stages.error ?? actionError, onSessionExpired)
+
+  // Promoting the last lead on a page leaves the caller looking at nothing;
+  // step back rather than make them find the pagination control themselves.
+  const pageData = page.data
+  useEffect(() => {
+    if (pageData !== undefined && pageData.leads.length === 0 && pageData.offset > 0) {
+      setOffset(Math.max(0, pageData.offset - PAGE_SIZE))
+    }
+  }, [pageData])
+
+  async function handlePromote(id: number) {
+    setPromotingId(id)
+    setActionError(undefined)
+    try {
+      await promoteLead(id)
+      // The lead leaves this list on success, so the page has to be refetched
+      // rather than patched in place.
+      page.reload()
+    } catch (error) {
+      setActionError(error)
+    } finally {
+      setPromotingId(undefined)
+    }
+  }
+
+  const leads = page.data?.leads ?? []
+  const total = page.data?.total ?? 0
+  const first = leads.length === 0 ? 0 : offset + 1
+  const last = offset + leads.length
+  const error = page.error ?? actionError
+
+  return (
+    <section className="screen">
+      <header className="screen-head">
+        <h1>{isSpam ? 'Spam' : 'Leads'}</h1>
+        <p className="count" aria-live="polite">
+          {page.loading && page.data === undefined
+            ? 'Loading…'
+            : `${total} ${total === 1 ? 'lead' : 'leads'}`}
+        </p>
+      </header>
+
+      <div className="toolbar">
+        <label className="field">
+          <span className="field-label">Search</span>
+          <input
+            type="search"
+            value={searchInput}
+            placeholder="Name, email, phone, answers"
+            onChange={(event) => setSearchInput(event.target.value)}
+          />
+        </label>
+
+        {!isSpam && (
+          <label className="field">
+            <span className="field-label">Stage</span>
+            <select
+              value={stageId === undefined ? ALL_STAGES : String(stageId)}
+              onChange={(event) => {
+                const value = event.target.value
+                setStageId(value === ALL_STAGES ? undefined : Number(value))
+                setOffset(0)
+              }}
+            >
+              <option value={ALL_STAGES}>All stages</option>
+              {(stages.data ?? []).map((stage) => (
+                <option key={stage.id} value={String(stage.id)}>
+                  {stage.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+
+      {error !== undefined && (
+        <p className="notice notice-error" role="alert">
+          {apiErrorMessage(error)}
+        </p>
+      )}
+
+      {leads.length === 0 && !page.loading ? (
+        <p className="empty">
+          {isSpam
+            ? 'Nothing is quarantined.'
+            : search !== '' || stageId !== undefined
+              ? 'No leads match those filters.'
+              : 'No leads yet. They appear here as the intake form is submitted.'}
+        </p>
+      ) : (
+        <table className="grid">
+          <thead>
+            <tr>
+              <th scope="col">Lead</th>
+              <th scope="col">Contact</th>
+              {!isSpam && <th scope="col">Stage</th>}
+              <th scope="col">Source</th>
+              <th scope="col">Received</th>
+              {isSpam && <th scope="col">Action</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {leads.map((lead) => (
+              <tr key={lead.id}>
+                <td>
+                  <Link to={`/leads/${lead.id}`}>{leadTitle(lead)}</Link>
+                </td>
+                <td className="muted">{contactOf(lead)}</td>
+                {!isSpam && (
+                  <td>
+                    <span className="tag">{lead.stageName}</span>
+                  </td>
+                )}
+                <td className="muted">{lead.source ?? '—'}</td>
+                <td className="muted numeric">{formatDateTime(lead.createdAt)}</td>
+                {isSpam && (
+                  <td>
+                    <button
+                      type="button"
+                      disabled={promotingId === lead.id}
+                      onClick={() => void handlePromote(lead.id)}
+                    >
+                      {promotingId === lead.id ? 'Promoting…' : 'Not spam'}
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {total > PAGE_SIZE && (
+        <nav className="pager" aria-label="Pagination">
+          <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>
+            Previous
+          </button>
+          <span className="muted numeric">
+            {first}–{last} of {total}
+          </span>
+          <button type="button" disabled={last >= total} onClick={() => setOffset(offset + PAGE_SIZE)}>
+            Next
+          </button>
+        </nav>
+      )}
+    </section>
+  )
+}
