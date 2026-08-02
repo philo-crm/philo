@@ -88,6 +88,14 @@ describe('caching', () => {
     expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
   })
 
+  it('never caches a missing asset as if it were the asset', async () => {
+    // A 404 here is a deploy still in flight. Cached for a year, and `public`
+    // so in shared caches too, it outlives the deploy that fixes it.
+    const res = await app.request('/assets/not-built-yet-abc123.js')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+  })
+
   it('does not mark unhashed root files immutable', async () => {
     const res = await app.request('/app.js')
     expect(res.headers.get('cache-control')).toBeNull()
