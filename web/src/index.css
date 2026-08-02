@@ -266,7 +266,7 @@ main {
 }
 
 .toolbar input[type='search'] {
-  min-width: 18rem;
+  min-width: min(18rem, 100%);
 }
 
 .empty {
@@ -306,6 +306,11 @@ main {
 }
 
 /* ---- record grid ------------------------------------------------------- */
+
+/* The grid scrolls inside its own box on a narrow screen; the page never does. */
+.grid-scroll {
+  overflow-x: auto;
+}
 
 .grid {
   width: 100%;

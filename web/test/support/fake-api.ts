@@ -54,8 +54,15 @@ export function makeLead(overrides: Partial<LeadDetail> & { id: number }): LeadD
   }
 }
 
+/**
+ * The body is snapshotted, never aliased. Handing back a live reference into
+ * `api.leads` would make a screen appear to update on any re-render even if the
+ * client threw the response away — which is exactly what the mutation tests are
+ * here to catch.
+ */
 function jsonResponse(status: number, body: unknown): Response {
-  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response
+  const snapshot = structuredClone(body)
+  return { ok: status >= 200 && status < 300, status, json: async () => snapshot } as Response
 }
 
 function searchable(lead: LeadDetail): string {

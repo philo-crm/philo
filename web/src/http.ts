@@ -64,3 +64,12 @@ export function sendJson<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, b
 export function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401
 }
+
+/**
+ * The failure a screen with several requests in flight should act on. A 401
+ * wins wherever it sits: it is the only one with an answer other than a
+ * message, and a network blip on a side request must not hide it.
+ */
+export function firstFailure(...errors: unknown[]): unknown {
+  return errors.find(isUnauthorized) ?? errors.find((error) => error !== undefined)
+}

@@ -9,7 +9,7 @@ import {
   MAX_NOTE_LENGTH,
   type LeadDetail as LeadDetailRecord,
 } from './api.ts'
-import { ApiError } from './http.ts'
+import { ApiError, firstFailure } from './http.ts'
 import { actorLabel, describeEvent, formatDateTime, formatFieldValue, humanizeKey, leadTitle } from './format.ts'
 import { Link } from './router.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
@@ -32,7 +32,10 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
   const loadStages = useCallback((signal: AbortSignal) => fetchStages(signal), [])
   const stages = useResource(loadStages)
 
-  useSessionGuard(lead.error ?? stages.error ?? actionError, onSessionExpired)
+  // A 401 anywhere wins over an earlier non-401, so a blip on the funnel
+  // request cannot leave the reader stranded on an authenticated screen.
+  const error = firstFailure(lead.error, stages.error, actionError)
+  useSessionGuard(error, onSessionExpired)
 
   /** Every mutation answers with the whole lead, so the screen updates from the response. */
   async function run(action: () => Promise<LeadDetailRecord>) {
@@ -41,8 +44,8 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
     try {
       lead.set(await action())
       return true
-    } catch (error) {
-      setActionError(error)
+    } catch (caught) {
+      setActionError(caught)
       return false
     } finally {
       setBusy(false)
@@ -83,7 +86,6 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
   const fieldEntries = Object.entries(record.fields)
   // Newest first: the reason to open a lead is almost always what just happened.
   const events = record.events.toReversed()
-  const error = actionError
 
   return (
     <section className="screen">

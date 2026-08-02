@@ -8,6 +8,7 @@ import {
   type LeadRecord,
 } from './api.ts'
 import { formatDateTime, leadTitle } from './format.ts'
+import { firstFailure } from './http.ts'
 import { Link } from './router.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
@@ -55,7 +56,11 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   const loadStages = useCallback((signal: AbortSignal) => fetchStages(signal), [])
   const stages = useResource(loadStages)
 
-  useSessionGuard(page.error ?? stages.error ?? actionError, onSessionExpired)
+  // One error for the screen. A failed funnel load counts: it leaves the stage
+  // filter with nothing in it, and a filter that silently cannot filter is
+  // worse than one that says why.
+  const error = firstFailure(page.error, stages.error, actionError)
+  useSessionGuard(error, onSessionExpired)
 
   // Promoting the last lead on a page leaves the caller looking at nothing;
   // step back rather than make them find the pagination control themselves.
@@ -74,8 +79,8 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
       // The lead leaves this list on success, so the page has to be refetched
       // rather than patched in place.
       page.reload()
-    } catch (error) {
-      setActionError(error)
+    } catch (caught) {
+      setActionError(caught)
     } finally {
       setPromotingId(undefined)
     }
@@ -83,9 +88,12 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
 
   const leads = page.data?.leads ?? []
   const total = page.data?.total ?? 0
-  const first = leads.length === 0 ? 0 : offset + 1
-  const last = offset + leads.length
-  const error = page.error ?? actionError
+  // The offset that produced the rows on screen, not the one being requested —
+  // during an in-flight page change those differ, and the label describes what
+  // the reader can actually see.
+  const shown = page.data?.offset ?? offset
+  const first = leads.length === 0 ? 0 : shown + 1
+  const last = shown + leads.length
 
   return (
     <section className="screen">
@@ -146,46 +154,49 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
               : 'No leads yet. They appear here as the intake form is submitted.'}
         </p>
       ) : (
-        <table className="grid">
-          <thead>
-            <tr>
-              <th scope="col">Lead</th>
-              <th scope="col">Contact</th>
-              {!isSpam && <th scope="col">Stage</th>}
-              <th scope="col">Source</th>
-              <th scope="col">Received</th>
-              {isSpam && <th scope="col">Action</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {leads.map((lead) => (
-              <tr key={lead.id}>
-                <td>
-                  <Link to={`/leads/${lead.id}`}>{leadTitle(lead)}</Link>
-                </td>
-                <td className="muted">{contactOf(lead)}</td>
-                {!isSpam && (
-                  <td>
-                    <span className="tag">{lead.stageName}</span>
-                  </td>
-                )}
-                <td className="muted">{lead.source ?? '—'}</td>
-                <td className="muted numeric">{formatDateTime(lead.createdAt)}</td>
-                {isSpam && (
-                  <td>
-                    <button
-                      type="button"
-                      disabled={promotingId === lead.id}
-                      onClick={() => void handlePromote(lead.id)}
-                    >
-                      {promotingId === lead.id ? 'Promoting…' : 'Not spam'}
-                    </button>
-                  </td>
-                )}
+        // Wrapped so a narrow screen scrolls the grid rather than the page.
+        <div className="grid-scroll">
+          <table className="grid">
+            <thead>
+              <tr>
+                <th scope="col">Lead</th>
+                <th scope="col">Contact</th>
+                {!isSpam && <th scope="col">Stage</th>}
+                <th scope="col">Source</th>
+                <th scope="col">Received</th>
+                {isSpam && <th scope="col">Action</th>}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {leads.map((lead) => (
+                <tr key={lead.id}>
+                  <td>
+                    <Link to={`/leads/${lead.id}`}>{leadTitle(lead)}</Link>
+                  </td>
+                  <td className="muted">{contactOf(lead)}</td>
+                  {!isSpam && (
+                    <td>
+                      <span className="tag">{lead.stageName}</span>
+                    </td>
+                  )}
+                  <td className="muted">{lead.source ?? '—'}</td>
+                  <td className="muted numeric">{formatDateTime(lead.createdAt)}</td>
+                  {isSpam && (
+                    <td>
+                      <button
+                        type="button"
+                        disabled={promotingId === lead.id}
+                        onClick={() => void handlePromote(lead.id)}
+                      >
+                        {promotingId === lead.id ? 'Promoting…' : 'Not spam'}
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {total > PAGE_SIZE && (
