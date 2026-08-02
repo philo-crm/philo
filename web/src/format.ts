@@ -54,6 +54,12 @@ export function leadTitle(lead: Pick<LeadRecord, 'id' | 'name' | 'email' | 'phon
   return lead.name ?? lead.email ?? lead.phone ?? `Lead ${lead.id}`
 }
 
+/** Both ways to reach a lead on one line, for a row or a card. */
+export function leadContact(lead: Pick<LeadRecord, 'email' | 'phone'>): string {
+  const parts = [lead.email, lead.phone].filter((part): part is string => part !== null)
+  return parts.length === 0 ? '—' : parts.join(' · ')
+}
+
 /**
  * Who did it. Intake writes `form:<form_key>` and that key is the unguessable
  * secret the public endpoint is addressed by (DESIGN.md, Intake endpoint), so

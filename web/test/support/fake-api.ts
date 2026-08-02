@@ -108,6 +108,77 @@ function listLeads(api: FakeApi, query: URLSearchParams) {
   }
 }
 
+/**
+ * Counts derived from the leads on hand rather than stored, spam included —
+ * that is what the server counts, and it is what makes `leadCount === 0` mean
+ * "deletable" here too.
+ */
+function stagesWithCounts(api: FakeApi): StageRecord[] {
+  return api.stages
+    .map((stage) => ({
+      ...stage,
+      leadCount: api.leads.filter((lead) => lead.stageId === stage.id).length,
+    }))
+    .toSorted((a, b) => a.position - b.position || a.id - b.id)
+}
+
+/** `undefined` when the path is not the funnel's, so `handle` can carry on. */
+function handleStages(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+  const payload = (body ?? {}) as Record<string, unknown>
+  const name = typeof payload['name'] === 'string' ? payload['name'].trim() : undefined
+
+  if (method === 'GET' && path === '/api/v1/stages') {
+    return jsonResponse(200, { stages: stagesWithCounts(api) })
+  }
+  if (method === 'POST' && path === '/api/v1/stages') {
+    if (name === undefined || name === '') return jsonResponse(400, { error: 'invalid_name' })
+    const id = api.stages.reduce((next, stage) => Math.max(next, stage.id + 1), 1)
+    const position = api.stages.reduce((next, stage) => Math.max(next, stage.position + 1), 0)
+    api.stages.push({ id, name, position, isTerminal: payload['isTerminal'] === true, leadCount: 0 })
+    return jsonResponse(201, { stage: stagesWithCounts(api).find((stage) => stage.id === id) })
+  }
+  if (method === 'POST' && path === '/api/v1/stages/reorder') {
+    const stageIds = payload['stageIds']
+    // The server refuses a partial order; so does this, or the client could get
+    // away with sending one.
+    if (!Array.isArray(stageIds) || stageIds.length !== api.stages.length) {
+      return jsonResponse(400, { error: 'invalid_order' })
+    }
+    for (const [position, id] of stageIds.entries()) {
+      const stage = api.stages.find((row) => row.id === id)
+      if (stage === undefined) return jsonResponse(400, { error: 'invalid_order' })
+      stage.position = position
+    }
+    return jsonResponse(200, { stages: stagesWithCounts(api) })
+  }
+
+  const match = /^\/api\/v1\/stages\/(\d+)$/.exec(path)
+  if (match === null) return undefined
+  const stage = api.stages.find((row) => row.id === Number(match[1]))
+  if (stage === undefined) return jsonResponse(404, { error: 'not_found' })
+
+  if (method === 'PATCH') {
+    if (payload['name'] !== undefined) {
+      if (name === undefined || name === '') return jsonResponse(400, { error: 'invalid_name' })
+      stage.name = name
+      // The denormalised name every lead carries moves with it, as it does in
+      // the server's join.
+      for (const lead of api.leads) if (lead.stageId === stage.id) lead.stageName = name
+    }
+    if (typeof payload['isTerminal'] === 'boolean') stage.isTerminal = payload['isTerminal']
+    return jsonResponse(200, { stage: stagesWithCounts(api).find((row) => row.id === stage.id) })
+  }
+  if (method === 'DELETE') {
+    if (api.stages.length <= 1) return jsonResponse(409, { error: 'last_stage' })
+    if (api.leads.some((lead) => lead.stageId === stage.id)) {
+      return jsonResponse(409, { error: 'stage_not_empty' })
+    }
+    api.stages = api.stages.filter((row) => row.id !== stage.id)
+    return jsonResponse(200, { stages: stagesWithCounts(api) })
+  }
+  return undefined
+}
+
 function handle(api: FakeApi, method: string, path: string, query: URLSearchParams, body: unknown): Response {
   if (method === 'GET' && path === '/api/v1/auth/status') {
     return jsonResponse(200, { needsSetup: false, authenticated: api.user !== undefined })
@@ -128,8 +199,9 @@ function handle(api: FakeApi, method: string, path: string, query: URLSearchPara
 
   if (api.expired) return jsonResponse(401, { error: 'unauthorized' })
 
-  if (method === 'GET' && path === '/api/v1/stages') return jsonResponse(200, { stages: api.stages })
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
+  const stageAnswer = handleStages(api, method, path, body)
+  if (stageAnswer !== undefined) return stageAnswer
 
   const match = /^\/api\/v1\/leads\/(\d+)(\/[a-z-]+)?$/.exec(path)
   const lead = match?.[1] === undefined ? undefined : api.leads.find((row) => row.id === Number(match[1]))
@@ -191,6 +263,9 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
     calls: [],
     ...overrides,
   }
+  // Owned outright: the funnel handlers rename, reorder and delete in place,
+  // and TEST_STAGES is one array shared by every test in the run.
+  api.stages = structuredClone(api.stages)
 
   vi.stubGlobal('fetch', async (input: unknown, init?: RequestInit) => {
     const url = new URL(String(input), 'http://philo.example.com')
