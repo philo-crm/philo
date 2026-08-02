@@ -56,25 +56,21 @@ self.addEventListener('fetch', (event) => {
   }
 })
 
+/**
+ * The network answer goes straight back, and the cache is left alone. What is
+ * in it is this build's shell alongside this build's assets, and a deploy that
+ * landed a minute ago would overwrite the first without the second — a shell
+ * asking for bundles that are not there, which is a blank screen offline. The
+ * new build gets its own cache when its own worker installs.
+ */
 async function shellFirstFromNetwork(request) {
-  const cache = await caches.open(CACHE)
-  let response
   try {
-    response = await fetch(request)
+    return await fetch(request)
   } catch (error) {
-    const cached = await cache.match(SHELL)
+    const cached = await caches.open(CACHE).then((cache) => cache.match(SHELL))
     if (cached) return cached
     throw error
   }
-  // Not every navigation lands on the shell — /version answers JSON to an
-  // operator who types it in — and caching one of those under SHELL would hand
-  // that back as the app the next time the network is gone.
-  if (response.ok && isHtml(response)) await store(cache, SHELL, response)
-  return response
-}
-
-function isHtml(response) {
-  return response.headers.get('content-type')?.startsWith('text/html') === true
 }
 
 async function cacheFirst(request) {

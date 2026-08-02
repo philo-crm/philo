@@ -54,27 +54,29 @@ describe('install and activate', () => {
 })
 
 describe('fetch', () => {
-  it('serves navigations from the network and refreshes the cached shell', async () => {
-    const fetchImpl = vi.fn(async () => html('fresh shell'))
+  it('serves navigations from the network, so a deploy lands on the next load', async () => {
+    const fetchImpl = vi.fn(async () => html('shell from network'))
     const worker = loadServiceWorker(fetchImpl as unknown as typeof fetch)
     await worker.dispatch('install', {})
+    fetchImpl.mockResolvedValue(html('shell from the deploy that just landed'))
 
     const response = (await worker.dispatch('fetch', navigation('/leads/42'))) as Response
-    await expect(response.text()).resolves.toBe('fresh shell')
-
-    const cached = await worker.caches.get(worker.cacheName)?.match('/')
-    await expect(cached?.text()).resolves.toBe('fresh shell')
+    await expect(response.text()).resolves.toBe('shell from the deploy that just landed')
   })
 
-  it('does not let a navigation that is not the shell become the shell', async () => {
-    // /version is a URL an operator types in, and it answers JSON. Cached under
-    // the shell key it would be the whole app the next time the network is out.
-    const worker = loadServiceWorker(async (input) =>
-      String(input).endsWith('/version') ? Response.json({ name: 'philo' }) : html('shell from network'),
-    )
+  it.each([
+    ['a newer deploy', 'text/html'],
+    ['a navigation that is not the shell at all, like /version', 'application/json'],
+  ])('never rewrites the precached shell from %s', async (_label, contentType) => {
+    // The cache holds this build's shell beside this build's assets. Half of a
+    // newer build in there is a shell asking for bundles that are not present —
+    // a blank screen offline, which is what the precache exists to prevent.
+    const fetchImpl = vi.fn(async () => html('shell from network'))
+    const worker = loadServiceWorker(fetchImpl as unknown as typeof fetch)
     await worker.dispatch('install', {})
+    fetchImpl.mockResolvedValue(new Response('something else', { headers: { 'content-type': contentType } }))
 
-    await worker.dispatch('fetch', navigation('/version'))
+    await worker.dispatch('fetch', navigation('/'))
 
     const cached = await worker.caches.get(worker.cacheName)?.match('/')
     await expect(cached?.text()).resolves.toBe('shell from network')
@@ -133,8 +135,6 @@ describe('fetch', () => {
 
     const asset = (await worker.dispatch('fetch', assetRequest('/assets/later-def456.js'))) as Response
     await expect(asset.text()).resolves.toBe('bundle')
-    const shell = (await worker.dispatch('fetch', navigation('/'))) as Response
-    expect(shell.status).toBe(200)
   })
 
   it.each([

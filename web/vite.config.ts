@@ -18,17 +18,26 @@ const PRECACHE_TOKEN = '__PHILO_PRECACHE__'
  * in the worker is bundled or transpiled; it ships as written, which is the
  * point of keeping it small enough to read.
  */
-export function serviceWorker(): Plugin {
+export interface ServiceWorkerSources {
+  /** The worker text to stamp and emit. */
+  worker: string
+  /** Carries no content hash of its own, so its source goes into the build hash. */
+  html: string
+}
+
+export function serviceWorker(
+  sources: ServiceWorkerSources = { worker: SERVICE_WORKER_SOURCE, html: INDEX_HTML },
+): Plugin {
   return {
     name: 'philo:service-worker',
     apply: 'build',
     async generateBundle(_options, bundle) {
-      const source = await readFile(SERVICE_WORKER_SOURCE, 'utf8')
+      const source = await readFile(sources.worker, 'utf8')
       // Shipping every deploy under one cache name is exactly the bug a
       // versioned cache exists to prevent, so a rename fails the build.
       for (const token of [BUILD_TOKEN, PRECACHE_TOKEN]) {
         if (!source.includes(token)) {
-          this.error(`${SERVICE_WORKER_SOURCE} no longer contains ${token}`)
+          this.error(`${sources.worker} no longer contains ${token}`)
         }
       }
 
@@ -49,7 +58,7 @@ export function serviceWorker(): Plugin {
       // an edit that touches nothing else.
       const build = createHash('sha256')
         .update(source)
-        .update(await readFile(INDEX_HTML, 'utf8'))
+        .update(await readFile(sources.html, 'utf8'))
         .update(precache.join('\n'))
         .digest('hex')
         .slice(0, 12)
