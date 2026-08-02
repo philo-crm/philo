@@ -66,8 +66,12 @@ export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
   })
 
   /**
-   * Registered before `/:id`, which would otherwise match "reorder" as an id and
-   * hand the handler a 400 instead of the reorder it asked for.
+   * A named action rather than a PATCH on the collection, because it takes the
+   * whole funnel at once — see reorderStages for why a partial order is refused.
+   *
+   * Nothing else answers POST under this router besides `/`, so it is not
+   * competing with `/:id` for the path; keep it above them anyway, so adding a
+   * `POST /:id/...` route later cannot quietly turn "reorder" into an id.
    */
   routes.post('/reorder', async (c) => {
     const body = await readJsonBody(c)
