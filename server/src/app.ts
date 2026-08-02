@@ -106,10 +106,12 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
       // Only when the file was actually there. A 404 under /assets is a deploy
       // still in flight, and `immutable` would outlive the deploy that fixes it
       // — `public`, so in shared caches too — with the client never asking again.
-      const served = c.res.status === 200 || c.res.status === 304
+      // Anything short of an error is the file: 200, a 206 for a ranged read,
+      // a 304 for a conditional one.
+      const failed = c.res.status >= 400
       c.res.headers.set(
         'Cache-Control',
-        served ? 'public, max-age=31536000, immutable' : 'no-store',
+        failed ? 'no-store' : 'public, max-age=31536000, immutable',
       )
     } else if (PWA_ROOT_FILES.has(c.req.path)) {
       c.res.headers.set('Cache-Control', 'no-cache')

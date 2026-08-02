@@ -88,6 +88,13 @@ describe('caching', () => {
     expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
   })
 
+  it('caches a ranged read of a hashed asset too', async () => {
+    // A partial read is still the file, and the file is still content-hashed.
+    const res = await app.request('/assets/index-abc123.js', { headers: { range: 'bytes=0-3' } })
+    expect(res.status).toBe(206)
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
   it('never caches a missing asset as if it were the asset', async () => {
     // A 404 here is a deploy still in flight. Cached for a year, and `public`
     // so in shared caches too, it outlives the deploy that fixes it.
