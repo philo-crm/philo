@@ -251,6 +251,17 @@ describe('GET /api/v1/leads (FTS5 search)', () => {
     expect(res.status).toBe(200)
   })
 
+  it.each([
+    ['an empty search', '?search='],
+    ['a whitespace-only search', '?search=%20%20'],
+  ])('treats %s as no search rather than a search that matched nothing', async (_label, query) => {
+    const testApp = createTestApp()
+    const cookie = await setupAdmin(testApp)
+    await submit(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    expect((await list(testApp, cookie, query)).total).toBe(1)
+  })
+
   it('matches nothing when the search has no tokens at all', async () => {
     const testApp = createTestApp()
     const cookie = await setupAdmin(testApp)

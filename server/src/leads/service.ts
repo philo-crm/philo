@@ -180,10 +180,14 @@ function buildFilters(filters: ListLeadsFilters, match: string | undefined): SQL
  * that never changes underfoot beats two that do.
  */
 export function listLeads(db: Db, filters: ListLeadsFilters): LeadPage {
-  const match = filters.search === undefined ? undefined : toMatchQuery(filters.search)
-  // A search that tokenized to nothing matched nothing — which is not the same
+  // An empty or blank `search` is no search at all — a client that clears its
+  // search box still sends the key — so it is not the "matched nothing" case
+  // below. Getting that wrong answers the funnel's main screen with "no leads".
+  const search = filters.search?.trim() ?? ''
+  const match = search.length === 0 ? undefined : toMatchQuery(search)
+  // A search that tokenized to nothing matched nothing, which is not the same
   // answer as running the query with no search filter at all.
-  if (filters.search !== undefined && match === undefined) {
+  if (search.length > 0 && match === undefined) {
     return { leads: [], total: 0, limit: filters.limit, offset: filters.offset }
   }
 
