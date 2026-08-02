@@ -53,6 +53,20 @@ describe('App', () => {
     expect(await screen.findByText('Bot Submission')).toBeDefined()
   })
 
+  it('reaches the funnel board from the shell', async () => {
+    installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Leads' })
+
+    fireEvent.click(screen.getByRole('link', { name: 'Funnel' }))
+
+    expect(await screen.findByRole('heading', { name: 'Funnel' })).toBeDefined()
+    expect(window.location.pathname).toBe('/board')
+    // A card on the board opens the same lead screen the list does.
+    fireEvent.click(await screen.findByRole('link', { name: 'Dana Okafor' }))
+    expect(await screen.findByRole('heading', { name: 'Dana Okafor' })).toBeDefined()
+  })
+
   it('returns to the login screen when the session expires mid-session', async () => {
     const api = installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
     render(<App />)

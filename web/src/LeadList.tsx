@@ -5,9 +5,8 @@ import {
   fetchStages,
   promoteLead,
   PAGE_SIZE,
-  type LeadRecord,
 } from './api.ts'
-import { formatDateTime, leadTitle } from './format.ts'
+import { formatDateTime, leadContact, leadTitle } from './format.ts'
 import { firstFailure } from './http.ts'
 import { Link } from './router.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
@@ -22,11 +21,6 @@ export interface LeadListProps {
 const SEARCH_DEBOUNCE_MS = 250
 
 const ALL_STAGES = 'all'
-
-function contactOf(lead: LeadRecord): string {
-  const parts = [lead.email, lead.phone].filter((part): part is string => part !== null)
-  return parts.length === 0 ? '—' : parts.join(' · ')
-}
 
 export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   const [searchInput, setSearchInput] = useState('')
@@ -188,7 +182,7 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
                   <td>
                     <Link to={`/leads/${lead.id}`}>{leadTitle(lead)}</Link>
                   </td>
-                  <td className="muted">{contactOf(lead)}</td>
+                  <td className="muted">{leadContact(lead)}</td>
                   {!isSpam && (
                     <td>
                       <span className="tag">{lead.stageName}</span>

@@ -1,4 +1,5 @@
 import type { User } from './auth.ts'
+import { FunnelBoard } from './FunnelBoard.tsx'
 import { LeadDetail } from './LeadDetail.tsx'
 import { LeadList } from './LeadList.tsx'
 import { Link, usePath } from './router.tsx'
@@ -22,6 +23,9 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
     // Keyed apart from the funnel list so switching views resets its filters
     // rather than carrying a stage filter into a screen that has no stages.
     return <LeadList key="spam" isSpam onSessionExpired={onSessionExpired} />
+  }
+  if (path === '/board') {
+    return <FunnelBoard onSessionExpired={onSessionExpired} />
   }
 
   const match = LEAD_PATH.exec(path)
@@ -53,7 +57,6 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
 
 export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
   const path = usePath()
-  const isSpam = path === '/spam'
 
   return (
     <div className="app">
@@ -62,10 +65,15 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
           Philo
         </Link>
         <nav aria-label="Sections">
-          <Link to="/" aria-current={isSpam ? undefined : 'page'}>
+          {/* A lead has no section of its own, and is opened from both the list
+              and the board, so its detail screen keeps Leads lit either way. */}
+          <Link to="/" aria-current={path === '/spam' || path === '/board' ? undefined : 'page'}>
             Leads
           </Link>
-          <Link to="/spam" aria-current={isSpam ? 'page' : undefined}>
+          <Link to="/board" aria-current={path === '/board' ? 'page' : undefined}>
+            Funnel
+          </Link>
+          <Link to="/spam" aria-current={path === '/spam' ? 'page' : undefined}>
             Spam
           </Link>
         </nav>

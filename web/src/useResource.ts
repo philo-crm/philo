@@ -47,7 +47,16 @@ export function useResource<T>(load: (signal: AbortSignal) => Promise<T>): Resou
     return () => controller.abort()
   }, [load, nonce])
 
-  const reload = useCallback(() => setNonce((value) => value + 1), [])
+  /**
+   * Marks the load in flight here rather than leaving it to the effect below,
+   * which does not run until after the commit. A caller that clears its own
+   * "busy" flag in the same tick would otherwise get one painted frame with
+   * every control enabled over the data the reload is about to replace.
+   */
+  const reload = useCallback(() => {
+    setState((previous) => ({ ...previous, loading: true }))
+    setNonce((value) => value + 1)
+  }, [])
   const set = useCallback((value: T) => setState({ data: value, loading: false }), [])
 
   return { data: state.data, error: state.error, loading: state.loading, reload, set }
