@@ -51,7 +51,9 @@ export function StageColumn({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const trimmed = name.trim()
-    if (trimmed === '') return
+    // Enter in the name box submits too, and the Save button being disabled does
+    // not stop it — so the in-flight check belongs here, not only on the button.
+    if (busy || trimmed === '') return
     if (await onEditStage(stage.id, { name: trimmed, isTerminal })) setEditing(false)
   }
 
@@ -80,7 +82,14 @@ export function StageColumn({
         event.preventDefault()
         setOver(true)
       }}
-      onDragLeave={() => setOver(false)}
+      onDragLeave={(event) => {
+        // dragleave bubbles up from every card, so the pointer crossing onto one
+        // would otherwise read as leaving the column and blink the highlight off
+        // at each card boundary. relatedTarget is null when the drag leaves the
+        // window entirely, which does mean leaving.
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        setOver(false)
+      }}
       onDrop={handleDrop}
     >
       <header className="board-column-head">
@@ -143,7 +152,6 @@ export function StageColumn({
                 type="button"
                 aria-label={`Delete ${stage.name}`}
                 disabled={busy || !deletable}
-                title={deletable ? undefined : 'Only an empty stage can be deleted.'}
                 onClick={() => onDeleteStage(stage.id)}
               >
                 Delete
@@ -152,6 +160,20 @@ export function StageColumn({
           </>
         )}
       </header>
+
+      {/*
+        Why Delete is off, when the column itself does not already say so. A
+        column showing cards explains itself; an empty-looking one that refuses
+        to go does not, and a `title` on a disabled button is no help — browsers
+        suppress pointer events on those, so the tooltip never appears.
+      */}
+      {!deletable && column.total === 0 && !editing && (
+        <p className="board-note muted">
+          {columnCount <= 1
+            ? 'A funnel keeps its last stage.'
+            : `Holds ${stage.leadCount} quarantined ${stage.leadCount === 1 ? 'lead' : 'leads'}.`}
+        </p>
+      )}
 
       {column.leads.length === 0 ? (
         <p className="board-empty muted">No leads here.</p>

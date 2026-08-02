@@ -486,7 +486,8 @@ main {
 }
 
 .board-empty,
-.board-more {
+.board-more,
+.board-note {
   margin: 0;
   font-size: 0.8rem;
 }

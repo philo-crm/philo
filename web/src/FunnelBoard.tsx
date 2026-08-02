@@ -123,8 +123,8 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
           />
         ))}
 
-        {/* The last column is always the one that adds another, so an instance
-            whose funnel somehow has no stages is still repairable from here. */}
+        {/* A column of its own, at the end, so adding a stage is where the
+            stage will land rather than somewhere in the page furniture. */}
         <section className="board-column board-add" aria-label="Add a stage">
           <form className="stage-form" onSubmit={(event) => void handleCreateStage(event)}>
             <label className="field">

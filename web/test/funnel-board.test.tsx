@@ -199,9 +199,24 @@ describe('FunnelBoard', () => {
 
     const contacted = await screen.findByRole('region', { name: 'Contacted' })
     // The board shows none of them, so the column counts zero — but the stage
-    // is not empty and the server would refuse the delete.
+    // is not empty and the server would refuse the delete. A column that looks
+    // empty and refuses to go has to say why, in the column itself: a `title`
+    // on the disabled button would never be shown.
     expect(within(contacted).getByText('0')).toBeDefined()
+    expect(within(contacted).getByText('Holds 1 quarantined lead.')).toBeDefined()
     expect(screen.getByRole('button', { name: 'Delete Contacted' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('says why the last stage of a funnel cannot be deleted', async () => {
+    installFakeApi({
+      stages: [{ id: 1, name: 'New', position: 0, isTerminal: false, leadCount: 0 }],
+      leads: [],
+    })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+
+    const only = await screen.findByRole('region', { name: 'New' })
+    expect(within(only).getByText('A funnel keeps its last stage.')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Delete New' }).hasAttribute('disabled')).toBe(true)
   })
 
   it('explains a rejected stage edit in the funnel’s own words', async () => {
