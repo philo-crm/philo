@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { AuthError, MIN_PASSWORD_LENGTH, submitLogin, submitSetup, type User } from './auth.ts'
+import { authErrorMessage, MIN_PASSWORD_LENGTH, submitLogin, submitSetup, type User } from './auth.ts'
+import { ApiError } from './http.ts'
 
 interface AuthFormProps {
   /** Setup collects a confirmation and a name; login does not. */
@@ -10,11 +11,6 @@ interface AuthFormProps {
    * account first. Without this the screen would sit there repeating a 409.
    */
   onSetupSuperseded?: () => void
-}
-
-function messageFor(error: unknown): string {
-  if (error instanceof AuthError) return error.message
-  return 'Could not reach the server. Check your connection and try again.'
 }
 
 export function AuthForm({ mode, onAuthenticated, onSetupSuperseded }: AuthFormProps) {
@@ -48,17 +44,21 @@ export function AuthForm({ mode, onAuthenticated, onSetupSuperseded }: AuthFormP
         : await submitLogin({ email, password })
       onAuthenticated(user)
     } catch (caught) {
-      if (caught instanceof AuthError && caught.status === 409 && onSetupSuperseded !== undefined) {
+      // Cleared before the callback, not after: App swaps `mode` on the same
+      // component in the same tree position, so React keeps this state, and a
+      // still-pending form would hand back a sign-in screen whose only button
+      // is permanently disabled.
+      setPending(false)
+      if (caught instanceof ApiError && caught.status === 409 && onSetupSuperseded !== undefined) {
         onSetupSuperseded()
         return
       }
-      setError(messageFor(caught))
-      setPending(false)
+      setError(authErrorMessage(caught))
     }
   }
 
   return (
-    <form onSubmit={handleSubmit} noValidate>
+    <form className="auth-form" onSubmit={handleSubmit} noValidate>
       <h1>{isSetup ? 'Set up Philo' : 'Sign in'}</h1>
       <p>
         {isSetup
