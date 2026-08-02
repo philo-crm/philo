@@ -106,8 +106,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
       // Only when the file was actually there. A 404 under /assets is a deploy
       // still in flight, and `immutable` would outlive the deploy that fixes it
       // — `public`, so in shared caches too — with the client never asking again.
-      // Anything short of an error is the file: 200, a 206 for a ranged read,
-      // a 304 for a conditional one.
+      // Anything short of an error is the file: a 200, or a 206 for a ranged read.
       const failed = c.res.status >= 400
       c.res.headers.set(
         'Cache-Control',
