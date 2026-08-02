@@ -31,6 +31,14 @@ const INTAKE_PREFIX = '/api/intake'
  */
 const MAX_BODY_BYTES = 64 * 1024
 
+/**
+ * PWA files served unhashed from the root, and read on every launch. They must
+ * revalidate — a cached service worker is a deploy that never lands — and they
+ * must 404 rather than fall through to the app shell, since a browser that asked
+ * for a script or a manifest and got HTML fails in a way nothing reports.
+ */
+const PWA_ROOT_FILES: ReadonlySet<string> = new Set(['/sw.js', '/manifest.webmanifest'])
+
 /** Methods that change nothing, and so need neither an origin nor a JSON body. */
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS'])
 
@@ -88,6 +96,8 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
       c.res.headers.set('Cache-Control', 'no-cache')
     } else if (c.req.path.startsWith('/assets/')) {
       c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+    } else if (PWA_ROOT_FILES.has(c.req.path)) {
+      c.res.headers.set('Cache-Control', 'no-cache')
     }
   })
 
@@ -173,6 +183,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
 
   app.notFound(async (c) => {
     if (isMachinePath(c.req.path)) return c.json({ error: 'not_found' }, 404)
+    if (PWA_ROOT_FILES.has(c.req.path)) return c.text('Not Found', 404)
     // Everything else is a client-side route: hand back the app shell.
     const res = await serveIndexHtml(c, async () => {})
     return res ?? c.text('Not Found', 404)

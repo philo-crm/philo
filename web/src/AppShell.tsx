@@ -1,5 +1,8 @@
+import { useState } from 'react'
 import type { User } from './auth.ts'
 import { FunnelBoard } from './FunnelBoard.tsx'
+import { dismissInstallPrompt, isInstallPromptDismissed, shouldOfferInstall } from './install.ts'
+import { InstallHelper } from './InstallHelper.tsx'
 import { LeadDetail } from './LeadDetail.tsx'
 import { LeadList } from './LeadList.tsx'
 import { Link, usePath } from './router.tsx'
@@ -26,6 +29,9 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   }
   if (path === '/board') {
     return <FunnelBoard onSessionExpired={onSessionExpired} />
+  }
+  if (path === '/install') {
+    return <InstallHelper />
   }
 
   const match = LEAD_PATH.exec(path)
@@ -57,6 +63,16 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
 
 export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
   const path = usePath()
+  // Read once per mount: neither the browser nor the dismissal changes under us,
+  // and re-checking on every render would re-run the user-agent sniffing.
+  const [offerInstall, setOfferInstall] = useState(
+    () => shouldOfferInstall() && !isInstallPromptDismissed(),
+  )
+
+  function handleDismissInstall() {
+    dismissInstallPrompt()
+    setOfferInstall(false)
+  }
 
   return (
     <div className="app">
@@ -84,7 +100,18 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
           </button>
         </div>
       </header>
-      <main>{screenFor(path, { user, onSessionExpired })}</main>
+      <main>
+        {offerInstall && path !== '/install' && (
+          <p className="notice notice-warn install-banner">
+            <span>Add Philo to your Home Screen to open it full screen and get notifications.</span>
+            <Link to="/install">How</Link>
+            <button type="button" onClick={handleDismissInstall}>
+              Dismiss
+            </button>
+          </p>
+        )}
+        {screenFor(path, { user, onSessionExpired })}
+      </main>
     </div>
   )
 }

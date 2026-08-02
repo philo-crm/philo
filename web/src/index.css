@@ -311,6 +311,25 @@ main {
   border-color: var(--warn-border);
 }
 
+/* ---- install helper ---------------------------------------------------- */
+
+.install-banner {
+  margin-bottom: var(--gap);
+}
+
+/* Pushes the two controls to the far end, so the sentence keeps the left edge
+   the screen below it uses. */
+.install-banner span {
+  margin-right: auto;
+}
+
+.steps {
+  margin: 0.75rem 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.375rem;
+}
+
 /* ---- record grid ------------------------------------------------------- */
 
 /* The grid scrolls inside its own box on a narrow screen; the page never does. */

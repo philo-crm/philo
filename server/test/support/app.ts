@@ -27,14 +27,21 @@ export function cleanupTestApps(): void {
   for (const dir of dataDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 }
 
-/** A minimal stand-in for the Vite build, so static-asset routes have something to serve. */
-export function createPublicDir(): string {
+/**
+ * A minimal stand-in for the Vite build, so static-asset routes have something
+ * to serve. `withPwaFiles: false` models a build that never emitted them.
+ */
+export function createPublicDir({ withPwaFiles = true } = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'philo-public-'))
   dataDirs.push(dir)
   mkdirSync(join(dir, 'assets'))
   writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Philo</title>')
   writeFileSync(join(dir, 'app.js'), 'console.log("philo")')
   writeFileSync(join(dir, 'assets', 'index-abc123.js'), 'console.log("hashed")')
+  if (withPwaFiles) {
+    writeFileSync(join(dir, 'sw.js'), 'self.addEventListener("push", () => {})')
+    writeFileSync(join(dir, 'manifest.webmanifest'), '{"name":"Philo","short_name":"Philo"}')
+  }
   return dir
 }
 
@@ -51,13 +58,14 @@ export function createTestApp(
     intakeTuning?: IntakeTuning | undefined
     onLeadCreated?: ((lead: CreatedLead) => void) | undefined
     trustProxy?: boolean
+    publicDir?: string
   } = {},
 ): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
   dataDirs.push(dataDir)
   const db = openDatabase(dataDir)
   openDbs.push(db)
-  const publicDir = createPublicDir()
+  const publicDir = options.publicDir ?? createPublicDir()
   const tuning = options.authTuning ?? {}
   const app = createApp({
     db,
