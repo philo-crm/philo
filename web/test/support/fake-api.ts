@@ -14,8 +14,18 @@ export interface FakeApi {
   leads: LeadDetail[]
   /** Flip to make every authenticated call answer 401, as an expired session does. */
   expired: boolean
+  /** Set to a pending promise to hold every answer until it resolves. */
+  hold: Promise<unknown> | undefined
+  /** Paths matching this answer as if the network dropped, for partial-failure tests. */
+  offline: RegExp | undefined
   /** Every request the app made, in order. */
-  calls: { method: string; path: string; query: URLSearchParams; body: unknown }[]
+  calls: {
+    method: string
+    path: string
+    query: URLSearchParams
+    body: unknown
+    contentType: string | undefined
+  }[]
 }
 
 export const TEST_USER: User = { id: 7, email: 'owner@example.com', name: 'Owner' }
@@ -163,12 +173,21 @@ function handle(api: FakeApi, method: string, path: string, query: URLSearchPara
   return jsonResponse(404, { error: 'not_found' })
 }
 
+function headerOf(init: RequestInit | undefined, name: string): string | undefined {
+  const headers = init?.headers
+  if (headers === undefined) return undefined
+  const entries = headers instanceof Headers ? [...headers] : Object.entries(headers as Record<string, string>)
+  return entries.find(([key]) => key.toLowerCase() === name)?.[1]
+}
+
 export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
   const api: FakeApi = {
     user: TEST_USER,
     stages: TEST_STAGES,
     leads: [],
     expired: false,
+    hold: undefined,
+    offline: undefined,
     calls: [],
     ...overrides,
   }
@@ -177,7 +196,15 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
     const url = new URL(String(input), 'http://philo.example.com')
     const method = init?.method ?? 'GET'
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
-    api.calls.push({ method, path: url.pathname, query: url.searchParams, body })
+    api.calls.push({
+      method,
+      path: url.pathname,
+      query: url.searchParams,
+      body,
+      contentType: headerOf(init, 'content-type'),
+    })
+    if (api.offline?.test(url.pathname) === true) throw new TypeError('Failed to fetch')
+    if (api.hold !== undefined) await api.hold
     return handle(api, method, url.pathname, url.searchParams, body)
   })
 

@@ -94,6 +94,32 @@ describe('LeadDetail', () => {
     expect(screen.getByText('System note')).toBeDefined()
   })
 
+  it('still hands back to login when a 401 arrives behind an unrelated failure', async () => {
+    const onSessionExpired = vi.fn()
+    const api = installFakeApi({ leads: [applicant()], offline: /\/stages$/ })
+    render(
+      <LeadDetail leadId={5} currentUserId={TEST_USER.id} onSessionExpired={onSessionExpired} />,
+    )
+    await screen.findByRole('heading', { name: 'Dana Okafor' })
+
+    // The funnel request already failed for an ordinary reason; the session
+    // ending afterwards must still win, or the reader is stranded here.
+    api.expired = true
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Called back.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add note' }))
+
+    await waitFor(() => expect(onSessionExpired).toHaveBeenCalled())
+  })
+
+  it('says so when the funnel fails to load, rather than a select that cannot move', async () => {
+    installFakeApi({ leads: [applicant()], offline: /\/stages$/ })
+    renderDetail()
+
+    expect(await screen.findByRole('alert')).toBeDefined()
+    // The lead itself loaded; it is stage movement that is unavailable.
+    expect(screen.getByRole('heading', { name: 'Dana Okafor' })).toBeDefined()
+  })
+
   it('says so when the lead is gone rather than showing an empty record', async () => {
     installFakeApi({ leads: [] })
     renderDetail(404)

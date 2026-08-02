@@ -82,6 +82,34 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Not found' })).toBeDefined()
   })
 
+  it('leaves a usable sign-in form when setup was claimed by someone else', async () => {
+    // `needsSetup` is answered before the account exists; by the time this
+    // browser posts, the other one has won. The server documents the race.
+    vi.stubGlobal('fetch', async (input: unknown) => {
+      const path = new URL(String(input), 'http://philo.example.com').pathname
+      if (path === '/api/v1/auth/status') {
+        return { ok: true, status: 200, json: async () => ({ needsSetup: true, authenticated: false }) } as Response
+      }
+      if (path === '/api/v1/auth/setup') {
+        return { ok: false, status: 409, json: async () => ({ error: 'setup_already_complete' }) } as Response
+      }
+      return { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) } as Response
+    })
+
+    render(<App />)
+    fireEvent.change(await screen.findByLabelText('Email'), { target: { value: 'owner@example.com' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a-long-enough-passphrase' } })
+    fireEvent.change(screen.getByLabelText('Confirm password'), {
+      target: { value: 'a-long-enough-passphrase' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    const signIn = await screen.findByRole('button', { name: 'Sign in' })
+    // React keeps this form's state across the mode swap, so a still-pending
+    // one would hand back a screen nobody can sign in from.
+    expect(signIn.hasAttribute('disabled')).toBe(false)
+  })
+
   it('offers a retry when the server cannot be reached at all', async () => {
     vi.stubGlobal(
       'fetch',

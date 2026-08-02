@@ -44,12 +44,16 @@ export function AuthForm({ mode, onAuthenticated, onSetupSuperseded }: AuthFormP
         : await submitLogin({ email, password })
       onAuthenticated(user)
     } catch (caught) {
+      // Cleared before the callback, not after: App swaps `mode` on the same
+      // component in the same tree position, so React keeps this state, and a
+      // still-pending form would hand back a sign-in screen whose only button
+      // is permanently disabled.
+      setPending(false)
       if (caught instanceof ApiError && caught.status === 409 && onSetupSuperseded !== undefined) {
         onSetupSuperseded()
         return
       }
       setError(authErrorMessage(caught))
-      setPending(false)
     }
   }
 

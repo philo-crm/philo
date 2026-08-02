@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { LeadList } from '../src/LeadList.tsx'
 import { installFakeApi, makeLead } from './support/fake-api.ts'
 
+/** Comfortably past the list's 250ms search debounce. */
+const SETTLE_MS = 400
+
 function leads() {
   return [
     makeLead({ id: 1, name: 'Dana Okafor', phone: '555-0100', fields: { endorsements: 'hazmat' } }),
@@ -94,18 +97,55 @@ describe('LeadList', () => {
     expect(screen.queryByRole('button', { name: 'Next' })).toBeNull()
   })
 
+  it('stays on the page being read once the debounce has settled', async () => {
+    const many = Array.from({ length: 60 }, (_, index) => makeLead({ id: index + 1 }))
+    installFakeApi({ leads: many })
+    render(<LeadList isSpam={false} onSessionExpired={vi.fn()} />)
+    await screen.findByText('1–50 of 60')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    await screen.findByText('51–60 of 60')
+
+    // The search debounce must not fire on mount; if it does, it resets the
+    // page under the reader a quarter-second after they turned it.
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS))
+    expect(screen.getByText('51–60 of 60')).toBeDefined()
+  })
+
+  it('labels the rows on screen, not the page being fetched', async () => {
+    const many = Array.from({ length: 60 }, (_, index) => makeLead({ id: index + 1 }))
+    const api = installFakeApi({ leads: many })
+    render(<LeadList isSpam={false} onSessionExpired={vi.fn()} />)
+    await screen.findByText('1–50 of 60')
+
+    let release: (() => void) | undefined
+    api.hold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    // Page two is still in flight, so the label must still describe page one.
+    expect(screen.getByText('1–50 of 60')).toBeDefined()
+    api.hold = undefined
+    release?.()
+    expect(await screen.findByText('51–60 of 60')).toBeDefined()
+  })
+
   it('says so when the funnel itself fails to load', async () => {
-    const api = installFakeApi({ leads: leads() })
-    const realFetch = globalThis.fetch
-    vi.stubGlobal('fetch', (input: unknown, init?: RequestInit) =>
-      String(input).includes('/stages')
-        ? Promise.reject(new TypeError('Failed to fetch'))
-        : (realFetch as typeof fetch)(input as RequestInfo, init),
-    )
+    installFakeApi({ leads: leads(), offline: /\/stages$/ })
     render(<LeadList isSpam={false} onSessionExpired={vi.fn()} />)
 
     expect(await screen.findByRole('alert')).toBeDefined()
-    expect(api.calls.length).toBeGreaterThan(0)
+    // The leads themselves still arrived; it is the filter that is broken.
+    expect(await screen.findByText('Dana Okafor')).toBeDefined()
+  })
+
+  it('does not fetch the funnel for a view that has no stage filter', async () => {
+    const api = installFakeApi({ leads: [makeLead({ id: 3, isSpam: true })] })
+    render(<LeadList isSpam onSessionExpired={vi.fn()} />)
+    await screen.findByRole('button', { name: 'Not spam' })
+
+    expect(api.calls.some((call) => call.path === '/api/v1/stages')).toBe(false)
   })
 
   it('hands back to the login screen when the session has expired', async () => {

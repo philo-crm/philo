@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   apiErrorMessage,
   fetchLeads,
@@ -36,9 +36,19 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   const [actionError, setActionError] = useState<unknown>(undefined)
   const [promotingId, setPromotingId] = useState<number | undefined>(undefined)
 
+  /**
+   * The search that is actually applied. Compared against before scheduling
+   * anything, so the effect is inert on mount and on a StrictMode re-run —
+   * without that, a timer fires 250ms after the list appears and resets the
+   * page, throwing anyone who paged quickly back to the first one.
+   */
+  const applied = useRef(search)
   useEffect(() => {
+    const next = searchInput.trim()
+    if (next === applied.current) return
     const timer = window.setTimeout(() => {
-      setSearch(searchInput.trim())
+      applied.current = next
+      setSearch(next)
       // A narrowed result set has no page three; staying on it would show an
       // empty table for a search that matched plenty.
       setOffset(0)
@@ -53,7 +63,12 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   )
   const page = useResource(loadLeads)
 
-  const loadStages = useCallback((signal: AbortSignal) => fetchStages(signal), [])
+  // Not fetched in the spam view, which shows no stage filter — a request whose
+  // answer nothing renders is one more thing that can fail for no reason.
+  const loadStages = useCallback(
+    (signal: AbortSignal) => (isSpam ? Promise.resolve([]) : fetchStages(signal)),
+    [isSpam],
+  )
   const stages = useResource(loadStages)
 
   // One error for the screen. A failed funnel load counts: it leaves the stage
