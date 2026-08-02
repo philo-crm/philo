@@ -1,3 +1,5 @@
+import { ApiError, getJson, sendJson } from './http.ts'
+
 export interface User {
   id: number
   email: string
@@ -14,16 +16,6 @@ export const MIN_PASSWORD_LENGTH = 12
 
 const AUTH_BASE = '/api/v1/auth'
 
-export class AuthError extends Error {
-  readonly status: number
-
-  constructor(status: number, message: string) {
-    super(message)
-    this.name = 'AuthError'
-    this.status = status
-  }
-}
-
 const MESSAGES: Record<string, string> = {
   invalid_credentials: 'That email and password do not match an account.',
   invalid_email: 'Enter a valid email address.',
@@ -33,67 +25,48 @@ const MESSAGES: Record<string, string> = {
   unauthorized: 'Your session has expired. Sign in again.',
 }
 
-interface ErrorBody {
-  error?: unknown
-  retryAfterSeconds?: unknown
-}
-
-async function toAuthError(res: Response): Promise<AuthError> {
-  let body: ErrorBody = {}
-  try {
-    body = (await res.json()) as ErrorBody
-  } catch {
-    // A non-JSON error body (a proxy's 502 page, say) leaves the generic message.
+/**
+ * What the auth screens show a person. Anything that is not an API answer at
+ * all — a dropped connection, a DNS failure — is a connection problem, not a
+ * credentials problem, and must not be reported as one.
+ */
+export function authErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return 'Could not reach the server. Check your connection and try again.'
   }
-
-  if (res.status === 429) {
-    const seconds = typeof body.retryAfterSeconds === 'number' ? body.retryAfterSeconds : 0
+  if (error.status === 429) {
+    const seconds = error.retryAfterSeconds ?? 0
     const wait = seconds > 60 ? `${Math.ceil(seconds / 60)} minutes` : `${Math.max(1, seconds)} seconds`
-    return new AuthError(res.status, `Too many failed attempts. Try again in ${wait}.`)
+    return `Too many failed attempts. Try again in ${wait}.`
   }
-
-  const code = typeof body.error === 'string' ? body.error : ''
-  return new AuthError(res.status, MESSAGES[code] ?? `Something went wrong (HTTP ${res.status}).`)
+  return MESSAGES[error.code] ?? `Something went wrong (HTTP ${error.status}).`
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${AUTH_BASE}${path}`, {
-    method: 'POST',
-    // The content type is load-bearing: the server refuses state-changing
-    // requests that are not JSON, as one of its CSRF layers.
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) throw await toAuthError(res)
-  if (res.status === 204) return undefined as T
-  return (await res.json()) as T
-}
-
-export async function fetchStatus(signal?: AbortSignal): Promise<AuthStatus> {
-  const res = await fetch(`${AUTH_BASE}/status`, signal ? { signal } : {})
-  if (!res.ok) throw await toAuthError(res)
-  return (await res.json()) as AuthStatus
+export function fetchStatus(signal?: AbortSignal): Promise<AuthStatus> {
+  return getJson<AuthStatus>(`${AUTH_BASE}/status`, signal)
 }
 
 /** Resolves to undefined when nobody is signed in, rather than throwing. */
 export async function fetchCurrentUser(signal?: AbortSignal): Promise<User | undefined> {
-  const res = await fetch(`${AUTH_BASE}/session`, signal ? { signal } : {})
-  if (res.status === 401) return undefined
-  if (!res.ok) throw await toAuthError(res)
-  const body = (await res.json()) as { user: User }
-  return body.user
+  try {
+    const body = await getJson<{ user: User }>(`${AUTH_BASE}/session`, signal)
+    return body.user
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) return undefined
+    throw error
+  }
 }
 
 export async function submitSetup(input: { email: string; password: string; name?: string }): Promise<User> {
-  const body = await postJson<{ user: User }>('/setup', input)
+  const body = await sendJson<{ user: User }>('POST', `${AUTH_BASE}/setup`, input)
   return body.user
 }
 
 export async function submitLogin(input: { email: string; password: string }): Promise<User> {
-  const body = await postJson<{ user: User }>('/login', input)
+  const body = await sendJson<{ user: User }>('POST', `${AUTH_BASE}/login`, input)
   return body.user
 }
 
 export function submitLogout(): Promise<void> {
-  return postJson<void>('/logout', {})
+  return sendJson<void>('POST', `${AUTH_BASE}/logout`)
 }
