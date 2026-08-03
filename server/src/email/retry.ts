@@ -31,10 +31,20 @@ export const SWEEP_WINDOW_MS = 24 * 60 * 60 * 1000
 /** Ceiling on one sweep, so a burst of leads cannot make a boot crawl. */
 export const SWEEP_LIMIT = 500
 
+/**
+ * How far a wait is spread either side of the curve. A boot sweep can book
+ * hundreds of chains inside a second when the mail server is refusing
+ * connections outright, and without this they stay in lockstep for every
+ * attempt after that — arriving as one burst at a server that just came back.
+ */
+export const RETRY_JITTER_RATIO = 0.25
+
 export interface RetryTuning {
   baseDelayMs?: number
   maxDelayMs?: number
   maxAttempts?: number
+  /** Zero makes the curve exact, which is what the tests assert against. */
+  jitterRatio?: number
 }
 
 export function maxAttempts(tuning: RetryTuning = {}): number {
@@ -43,16 +53,22 @@ export function maxAttempts(tuning: RetryTuning = {}): number {
 
 /**
  * Wait before the next attempt. `attempt` is the one that just failed, so the
- * first wait is the base delay: 1, 2, 4, 8 minutes, then the cap.
- *
- * No jitter, deliberately. Jitter exists to stop many senders retrying in
- * lockstep, and a single-tenant instance sending a handful of messages a day is
- * the one caller its own mail server has.
+ * first wait is the base delay: 1, 2, 4, 8 minutes, then the cap — each spread
+ * by the jitter above.
  */
-export function retryDelayMs(attempt: number, tuning: RetryTuning = {}): number {
+export function retryDelayMs(
+  attempt: number,
+  tuning: RetryTuning = {},
+  random: () => number = Math.random,
+): number {
   const base = tuning.baseDelayMs ?? RETRY_BASE_DELAY_MS
   const max = tuning.maxDelayMs ?? RETRY_MAX_DELAY_MS
-  return Math.min(base * 2 ** (attempt - 1), max)
+  const delay = Math.min(base * 2 ** (attempt - 1), max)
+
+  const ratio = tuning.jitterRatio ?? RETRY_JITTER_RATIO
+  if (ratio <= 0) return delay
+  const spread = delay * ratio
+  return Math.round(delay - spread + random() * spread * 2)
 }
 
 /** How a delayed retry is booked. Tests pass one that runs immediately. */

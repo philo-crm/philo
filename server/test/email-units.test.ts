@@ -123,19 +123,21 @@ describe('renderSubject', () => {
 
 describe('retryDelayMs', () => {
   it('doubles per attempt', () => {
-    const tuning = { baseDelayMs: 1_000, maxDelayMs: 60_000 }
+    const tuning = { baseDelayMs: 1_000, maxDelayMs: 60_000, jitterRatio: 0 }
     expect([1, 2, 3, 4].map((attempt) => retryDelayMs(attempt, tuning))).toEqual([
       1_000, 2_000, 4_000, 8_000,
     ])
   })
 
   it('stops doubling at the cap', () => {
-    const tuning = { baseDelayMs: 1_000, maxDelayMs: 5_000 }
+    const tuning = { baseDelayMs: 1_000, maxDelayMs: 5_000, jitterRatio: 0 }
     expect(retryDelayMs(10, tuning)).toBe(5_000)
   })
 
   it('spans a useful stretch on the production curve', () => {
-    const total = Array.from({ length: MAX_SEND_ATTEMPTS - 1 }, (_, index) => retryDelayMs(index + 1))
+    const total = Array.from({ length: MAX_SEND_ATTEMPTS - 1 }, (_, index) =>
+      retryDelayMs(index + 1, { jitterRatio: 0 }),
+    )
     // Long enough for greylisting to clear, short enough that an operator is
     // not told about a dead mail server an hour after the lead arrived.
     expect(total.reduce((sum, delay) => sum + delay, 0)).toBeGreaterThan(10 * 60 * 1000)

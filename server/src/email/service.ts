@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte } from 'drizzle-orm'
+import { and, asc, eq, gte } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { emailTemplates, leadEvents, leads, users } from '../db/schema.ts'
 import { getLead, type LeadDetail, type LeadEventRecord } from '../leads/service.ts'
@@ -83,6 +83,22 @@ function alreadySent(events: LeadEventRecord[], trigger: EmailTrigger): boolean 
   return events.some((event) => event.type === 'email_sent' && event.payload['template'] === trigger)
 }
 
+/**
+ * Whether this trigger was already given up on. Durable for the same reason the
+ * sent record is: the attempt budget lives in memory, so without a mark on the
+ * timeline every boot's sweep would spend the whole budget again and append
+ * another identical note — the per-attempt spam that `recordGaveUp` exists to
+ * avoid, arriving one boot at a time instead.
+ */
+function gaveUp(events: LeadEventRecord[], trigger: EmailTrigger): boolean {
+  return events.some((event) => event.payload['emailFailed'] === trigger)
+}
+
+/** Nothing more is owed for this trigger, whether it got through or not. */
+function settled(events: LeadEventRecord[], trigger: EmailTrigger): boolean {
+  return alreadySent(events, trigger) || gaveUp(events, trigger)
+}
+
 function recordSent(db: Db, leadId: number, trigger: EmailTrigger, subject: string, to: string[]): void {
   db.insert(leadEvents)
     .values({
@@ -117,8 +133,14 @@ function recordGaveUp(db: Db, leadId: number, failure: SendFailure, attempts: nu
       leadId,
       type: 'note_added',
       payload: JSON.stringify({
-        note: `Could not send the ${failure.trigger} email after ${attempts} attempt${attempts === 1 ? '' : 's'}: ${reason}`,
+        note:
+          `Could not send the ${failure.trigger} email after ` +
+          `${attempts} attempt${attempts === 1 ? '' : 's'}: ${reason}. ` +
+          'Philo will not try this one again.',
         system: true,
+        // Machine-readable alongside the sentence: this is what `gaveUp` reads,
+        // so a later sweep knows the decision was already made.
+        emailFailed: failure.trigger,
       }),
       actor: 'system',
     })
@@ -181,7 +203,7 @@ async function sendOne(
   plan: SendPlan,
 ): Promise<SendOutcome> {
   if (plan.to.length === 0) return SKIPPED
-  if (alreadySent(lead.events, plan.trigger)) return SKIPPED
+  if (settled(lead.events, plan.trigger)) return SKIPPED
 
   const template = templates.get(plan.trigger)
   // An operator who switched a template off has decided something; a missing
@@ -295,6 +317,9 @@ const inFlight = new Set<number>()
  * and nothing awaits them, so a caller never waits on a retry.
  */
 export async function sendNewLeadEmails(deps: EmailDeps, leadId: number, attempt = 1): Promise<void> {
+  // Dropping this call rather than queueing it is safe because the pass already
+  // running will book its own retry for anything it fails to send — so the lead
+  // stays covered by that chain instead of gaining a second one.
   if (inFlight.has(leadId)) return
   inFlight.add(leadId)
   let failures: SendFailure[]
@@ -342,7 +367,10 @@ export function leadsAwaitingEmail(db: Db, since: Date, limit = SWEEP_LIMIT): nu
     .select({ id: leads.id })
     .from(leads)
     .where(and(eq(leads.isSpam, false), gte(leads.createdAt, since)))
-    .orderBy(desc(leads.createdAt))
+    // Oldest first, so the cap drops the newest rather than the oldest. The
+    // oldest are the ones about to fall out of the window and never be looked
+    // at again; the newest are still inside it at the next boot.
+    .orderBy(asc(leads.createdAt))
     .limit(limit)
     .all()
     .map((row) => row.id)

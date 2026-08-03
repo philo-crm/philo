@@ -88,7 +88,7 @@ function onceDeps(testApp: TestApp, factory: EmailSenderFactory): EmailDeps {
     db: testApp.db,
     publicBaseUrl: PUBLIC_BASE_URL,
     createSender: factory,
-    retry: { maxAttempts: 1 },
+    retry: { maxAttempts: 1, jitterRatio: 0 },
   }
 }
 
@@ -290,7 +290,8 @@ describe('sendNewLeadEmails', () => {
         sent.push(email)
         return { accepted: email.to }
       }),
-      retry: { maxAttempts: 2 },
+      retry: { maxAttempts: 2, jitterRatio: 0 },
+      scheduleRetry: () => {},
     }
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
@@ -383,7 +384,7 @@ describe('retrying a failed send', () => {
       db: testApp.db,
       publicBaseUrl: PUBLIC_BASE_URL,
       createSender: factory,
-      retry: { maxAttempts: attempts },
+      retry: { maxAttempts: attempts, jitterRatio: 0 },
       scheduleRetry: schedule,
     }
   }
@@ -429,7 +430,7 @@ describe('retrying a failed send', () => {
     await clock.drain()
 
     // Four waits for five attempts, doubling.
-    expect(clock.delays).toEqual([1, 2, 3, 4].map((attempt) => retryDelayMs(attempt)))
+    expect(clock.delays).toEqual([1, 2, 3, 4].map((attempt) => retryDelayMs(attempt, { jitterRatio: 0 })))
   })
 
   it('gives up after the last attempt, and says so exactly once', async () => {
@@ -451,6 +452,34 @@ describe('retrying a failed send', () => {
     expect(notes[0]).toContain('after 3 attempts')
     expect(notes[0]).toContain('mailbox unavailable')
     expect(sentEvents(testApp, leadId)).toEqual([])
+  })
+
+  it('does not send twice when two callers reach the same lead at once', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    let release: (() => void) | undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const sent: OutgoingEmail[] = []
+    // Holds the first pass open, so the second call arrives while the first is
+    // still in flight — before any `email_sent` row exists to catch it.
+    const factory: EmailSenderFactory = () => async (email) => {
+      await held
+      sent.push(email)
+      return { accepted: email.to }
+    }
+    const deps = onceDeps(testApp, factory)
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    const first = sendNewLeadEmails(deps, leadId)
+    await sendNewLeadEmails(deps, leadId)
+    release?.()
+    await first
+
+    expect(sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
   })
 
   it('does not retry an instance that has no SMTP settings', async () => {
@@ -498,6 +527,29 @@ describe('sweepUnsentEmails', () => {
 
     expect(sender.sent).toHaveLength(2)
     expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+
+  it('does not spend the budget again on a lead it already gave up on', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    let attempts = 0
+    const factory: EmailSenderFactory = () => () => {
+      attempts += 1
+      return Promise.reject(new Error('535 authentication failed'))
+    }
+    const deps = onceDeps(testApp, factory)
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    // Three boots against a mail server that refuses everything.
+    await sweepUnsentEmails(deps)
+    await sweepUnsentEmails(deps)
+    await sweepUnsentEmails(deps)
+
+    // The give-up is on the timeline, so later boots read the decision rather
+    // than making it again — two attempts and two notes, not six of each.
+    expect(attempts).toBe(2)
+    expect(systemNotes(testApp, leadId)).toHaveLength(2)
   })
 
   it('leaves quarantined leads alone', async () => {
