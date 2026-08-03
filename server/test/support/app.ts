@@ -8,6 +8,12 @@ import { loadOrCreateSessionKey } from '../../src/auth/session-key.ts'
 import { SESSION_COOKIE_NAME } from '../../src/auth/session.ts'
 import { openDatabase, type Db } from '../../src/db/index.ts'
 import { intakeForms } from '../../src/db/schema.ts'
+import {
+  writeEmailSettings,
+  DEFAULT_EMAIL_SETTINGS,
+  type EmailSettings,
+} from '../../src/email/settings.ts'
+import type { EmailSenderFactory, OutgoingEmail } from '../../src/email/transport.ts'
 import type { IntakeTuning } from '../../src/intake/routes.ts'
 import type { CreatedLead } from '../../src/notify.ts'
 
@@ -57,6 +63,7 @@ export function createTestApp(
     authTuning?: AuthTuning
     intakeTuning?: IntakeTuning | undefined
     onLeadCreated?: ((lead: CreatedLead) => void) | undefined
+    createEmailSender?: EmailSenderFactory | undefined
     trustProxy?: boolean
     publicDir?: string
   } = {},
@@ -76,8 +83,57 @@ export function createTestApp(
     authTuning: { ...tuning, throttle: { ...FAST_THROTTLE, ...tuning.throttle } },
     intakeTuning: options.intakeTuning,
     onLeadCreated: options.onLeadCreated,
+    createEmailSender: options.createEmailSender,
   })
   return { app, db, dataDir, publicDir }
+}
+
+/** Enough stored settings for `isEmailConfigured` to be true. */
+export const TEST_EMAIL_SETTINGS: EmailSettings = {
+  ...DEFAULT_EMAIL_SETTINGS,
+  smtpHost: 'smtp.example.com',
+  smtpUsername: 'apikey',
+  smtpPassword: 'secret-token',
+  fromName: 'Example Co',
+  fromAddress: 'no-reply@example.com',
+  replyTo: 'hello@example.com',
+  businessName: 'Example Co',
+}
+
+export function configureEmail(testApp: TestApp, overrides: Partial<EmailSettings> = {}): EmailSettings {
+  const config = { ...TEST_EMAIL_SETTINGS, ...overrides }
+  writeEmailSettings(testApp.db, config)
+  return config
+}
+
+export interface RecordingSender {
+  sent: OutgoingEmail[]
+  factory: EmailSenderFactory
+}
+
+/**
+ * A sender that records instead of connecting.
+ *
+ * `failOn` makes a send reject outright, which is how the failure-isolation
+ * cases are built. `rejectRecipient` models the subtler one: SMTP answers RCPT
+ * per address, so a server can take one recipient, refuse another, and report
+ * the whole thing as sent.
+ */
+export function recordingSender(
+  options: {
+    failOn?: (email: OutgoingEmail) => boolean
+    rejectRecipient?: (address: string) => boolean
+  } = {},
+): RecordingSender {
+  const sent: OutgoingEmail[] = []
+  return {
+    sent,
+    factory: () => async (email) => {
+      if (options.failOn?.(email) === true) throw new Error('smtp refused the message')
+      sent.push(email)
+      return { accepted: email.to.filter((address) => options.rejectRecipient?.(address) !== true) }
+    },
+  }
 }
 
 /**

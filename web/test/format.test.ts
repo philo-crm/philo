@@ -82,6 +82,24 @@ describe('describeEvent', () => {
     ).toBe('System note')
   })
 
+  it('shows the subject a sent email went out with', () => {
+    expect(
+      describeEvent(
+        event({
+          type: 'email_sent',
+          payload: { template: 'new_lead_ack', subject: 'Thanks for getting in touch' },
+          actor: 'system',
+        }),
+      ),
+    ).toMatchObject({ label: 'Email sent', detail: '“Thanks for getting in touch”' })
+  })
+
+  it('falls back to the template when a send recorded no subject', () => {
+    expect(
+      describeEvent(event({ type: 'email_sent', payload: { template: 'new_lead_notify' } })).detail,
+    ).toBe('new_lead_notify')
+  })
+
   it('still renders an event type it has never seen', () => {
     expect(describeEvent(event({ type: 'call_logged' })).label).toBe('Call logged')
   })

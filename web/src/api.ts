@@ -68,9 +68,14 @@ export const MAX_NOTE_LENGTH = 5_000
 /** Mirrors MAX_STAGE_NAME_LENGTH in server/src/stages/service.ts, same reason. */
 export const MAX_STAGE_NAME_LENGTH = 80
 
+/** Mirrors MAX_NAME_LENGTH in server/src/email/settings.ts. */
+export const MAX_SETTINGS_NAME_LENGTH = 200
+
 const LEADS_BASE = '/api/v1/leads'
 
 const STAGES_BASE = '/api/v1/stages'
+
+const EMAIL_SETTINGS_BASE = '/api/v1/settings/email'
 
 const MESSAGES: Record<string, string> = {
   not_found: 'That lead no longer exists.',
@@ -219,4 +224,74 @@ export function addLeadNote(id: number, note: string): Promise<LeadDetail> {
 /** The spam view's "not spam": clears the flag and fires the held-back pipeline. */
 export function promoteLead(id: number): Promise<LeadDetail> {
   return mutateLead(`${LEADS_BASE}/${id}/not-spam`)
+}
+
+/**
+ * Mirrors the response shape in server/src/settings/routes.ts. There is no
+ * `smtpPassword` and there is not meant to be one: the credential is
+ * write-only, and `smtpPasswordSet` is everything a form needs to know.
+ */
+export interface EmailSettings {
+  smtpHost: string
+  smtpPort: number
+  smtpSecure: boolean
+  smtpUsername: string
+  smtpPasswordSet: boolean
+  fromName: string
+  fromAddress: string
+  replyTo: string
+  businessName: string
+}
+
+/** Patch semantics: a key left out keeps its stored value. */
+export type EmailSettingsPatch = Partial<
+  Omit<EmailSettings, 'smtpPasswordSet'> & { smtpPassword: string }
+>
+
+const SETTINGS_MESSAGES: Record<string, string> = {
+  invalid_smtp_host: 'Enter the SMTP host your provider gave you.',
+  invalid_smtp_port: 'A port is a whole number between 1 and 65535.',
+  invalid_smtp_secure: 'The server could not read that request.',
+  invalid_smtp_username: 'That username is too long.',
+  invalid_smtp_password: 'That password is too long.',
+  invalid_from_name: `A sender name has to fit within ${MAX_SETTINGS_NAME_LENGTH} characters.`,
+  invalid_from_address: 'The sender address has to be a valid email address.',
+  invalid_reply_to: 'The reply-to address has to be a valid email address.',
+  invalid_business_name: `A business name has to fit within ${MAX_SETTINGS_NAME_LENGTH} characters.`,
+  invalid_email: 'Enter the address the test should be sent to.',
+  not_configured: 'Fill in an SMTP host and a sender address first, then save.',
+  send_failed: 'The mail server refused the message.',
+}
+
+/**
+ * A settings failure in words. `send_failed` appends whatever the SMTP server
+ * said, because that sentence — not the code — is the thing an operator needs
+ * in order to fix their configuration.
+ */
+export function settingsErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    const message = SETTINGS_MESSAGES[error.code]
+    if (message !== undefined) {
+      return error.detail === undefined ? message : `${message} ${error.detail}`
+    }
+  }
+  return apiErrorMessage(error)
+}
+
+export async function fetchEmailSettings(signal?: AbortSignal): Promise<EmailSettings> {
+  const body = await getJson<{ settings: EmailSettings }>(EMAIL_SETTINGS_BASE, signal)
+  return body.settings
+}
+
+export async function updateEmailSettings(patch: EmailSettingsPatch): Promise<EmailSettings> {
+  const body = await sendJson<{ settings: EmailSettings }>('PATCH', EMAIL_SETTINGS_BASE, patch)
+  return body.settings
+}
+
+/**
+ * Sends with the settings as stored, so the screen saves first — a green test
+ * against unsaved values would say nothing about the next real lead.
+ */
+export async function sendTestEmail(to: string): Promise<void> {
+  await sendJson<{ ok: true }>('POST', `${EMAIL_SETTINGS_BASE}/test`, { to })
 }

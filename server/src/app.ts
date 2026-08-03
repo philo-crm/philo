@@ -5,9 +5,11 @@ import { csrf } from 'hono/csrf'
 import { fileURLToPath } from 'node:url'
 import { requireAuth, sessionMiddleware, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
 import { createAuthRoutes, type AuthTuning } from './auth/routes.ts'
+import type { EmailSenderFactory } from './email/transport.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
 import type { LeadCreatedHook } from './notify.ts'
+import { createSettingsRoutes } from './settings/routes.ts'
 import { createStageRoutes } from './stages/routes.ts'
 import { VERSION } from './version.ts'
 
@@ -64,6 +66,11 @@ export interface AppOptions extends AuthDeps {
    * intake, or promoted out of quarantine. Email (#11) and push (#13) attach here.
    */
   onLeadCreated?: LeadCreatedHook | undefined
+  /**
+   * How the settings screen's test-send reaches an SMTP server. Unset means the
+   * real one, built from the stored settings; tests substitute their own.
+   */
+  createEmailSender?: EmailSenderFactory | undefined
 }
 
 /**
@@ -174,6 +181,10 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated }),
   )
   app.route(`${API_PREFIX}/stages`, createStageRoutes({ db: options.db }))
+  app.route(
+    `${API_PREFIX}/settings`,
+    createSettingsRoutes({ db: options.db, createEmailSender: options.createEmailSender }),
+  )
 
   // Deliberately unauthenticated, cross-origin, and form-encoding-friendly: the
   // caller is a visitor's browser on the business's own website. It carries its

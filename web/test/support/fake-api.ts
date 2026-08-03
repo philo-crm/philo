@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import type { LeadDetail, LeadEventRecord, StageRecord } from '../../src/api.ts'
+import type { EmailSettings, LeadDetail, LeadEventRecord, StageRecord } from '../../src/api.ts'
 import type { User } from '../../src/auth.ts'
 
 /**
@@ -18,6 +18,16 @@ export interface FakeApi {
   hold: Promise<unknown> | undefined
   /** Paths matching this answer as if the network dropped, for partial-failure tests. */
   offline: RegExp | undefined
+  /**
+   * Stored email settings, including the write-only password the server keeps
+   * and never hands back — held here so a test can assert on what was actually
+   * saved, which is the only place that distinction is visible.
+   */
+  emailSettings: StoredEmailSettings
+  /** Set to make the test-send answer as a refusing SMTP server does. */
+  testEmailFailure: string | undefined
+  /** Every address a test-send was accepted for, in order. */
+  testEmailsSent: string[]
   /** Every request the app made, in order. */
   calls: {
     method: string
@@ -29,6 +39,24 @@ export interface FakeApi {
 }
 
 export const TEST_USER: User = { id: 7, email: 'owner@example.com', name: 'Owner' }
+
+/** What the server stores. `smtpPasswordSet` is derived on the way out, never held. */
+export type StoredEmailSettings = Omit<EmailSettings, 'smtpPasswordSet'> & { smtpPassword: string }
+
+export const TEST_EMAIL_SETTINGS: StoredEmailSettings = {
+  smtpHost: 'smtp.example.com',
+  smtpPort: 587,
+  smtpSecure: false,
+  smtpUsername: 'apikey',
+  smtpPassword: 'stored-secret',
+  fromName: 'Example Co',
+  fromAddress: 'no-reply@example.com',
+  replyTo: 'hello@example.com',
+  businessName: 'Example Co',
+}
+
+/** Matches the server's deliberately loose check — see email/settings.ts. */
+const ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const TEST_STAGES: StageRecord[] = [
   { id: 1, name: 'New', position: 0, isTerminal: false, leadCount: 2 },
@@ -179,6 +207,70 @@ function handleStages(api: FakeApi, method: string, path: string, body: unknown)
   return undefined
 }
 
+function toSettingsResponse(stored: StoredEmailSettings): EmailSettings {
+  const { smtpPassword, ...rest } = stored
+  return { ...rest, smtpPasswordSet: smtpPassword !== '' }
+}
+
+/**
+ * Patch semantics and per-field refusals, as the server has them — so a client
+ * that stopped sending `smtpPassword` correctly, or sent a bad address, fails
+ * here the way it would in production rather than passing on a lenient stub.
+ */
+function handleEmailSettings(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+  const payload = (body ?? {}) as Record<string, unknown>
+
+  if (path === '/api/v1/settings/email' && method === 'GET') {
+    return jsonResponse(200, { settings: toSettingsResponse(api.emailSettings) })
+  }
+
+  if (path === '/api/v1/settings/email' && method === 'PATCH') {
+    if ('smtpPort' in payload && !Number.isInteger(payload['smtpPort'])) {
+      return jsonResponse(400, { error: 'invalid_smtp_port' })
+    }
+    for (const [key, code] of [
+      ['fromAddress', 'invalid_from_address'],
+      ['replyTo', 'invalid_reply_to'],
+    ] as const) {
+      const value = payload[key]
+      if (typeof value === 'string' && value.trim() !== '' && !ADDRESS.test(value.trim())) {
+        return jsonResponse(400, { error: code })
+      }
+    }
+
+    const stored = api.emailSettings
+    for (const key of Object.keys(stored) as (keyof StoredEmailSettings)[]) {
+      if (!(key in payload)) continue
+      const value = payload[key]
+      if (key === 'fromAddress' || key === 'replyTo') {
+        stored[key] = String(value).trim().toLowerCase()
+      } else if (key === 'smtpPort') {
+        stored.smtpPort = value as number
+      } else if (key === 'smtpSecure') {
+        stored.smtpSecure = value as boolean
+      } else {
+        stored[key] = value as string
+      }
+    }
+    return jsonResponse(200, { settings: toSettingsResponse(stored) })
+  }
+
+  if (path === '/api/v1/settings/email/test' && method === 'POST') {
+    const to = typeof payload['to'] === 'string' ? payload['to'].trim().toLowerCase() : ''
+    if (!ADDRESS.test(to)) return jsonResponse(400, { error: 'invalid_email' })
+    if (api.emailSettings.smtpHost === '' || api.emailSettings.fromAddress === '') {
+      return jsonResponse(409, { error: 'not_configured' })
+    }
+    if (api.testEmailFailure !== undefined) {
+      return jsonResponse(502, { error: 'send_failed', detail: api.testEmailFailure })
+    }
+    api.testEmailsSent.push(to)
+    return jsonResponse(200, { ok: true, to })
+  }
+
+  return undefined
+}
+
 function handle(api: FakeApi, method: string, path: string, query: URLSearchParams, body: unknown): Response {
   if (method === 'GET' && path === '/api/v1/auth/status') {
     return jsonResponse(200, { needsSetup: false, authenticated: api.user !== undefined })
@@ -202,6 +294,8 @@ function handle(api: FakeApi, method: string, path: string, query: URLSearchPara
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
   const stageAnswer = handleStages(api, method, path, body)
   if (stageAnswer !== undefined) return stageAnswer
+  const settingsAnswer = handleEmailSettings(api, method, path, body)
+  if (settingsAnswer !== undefined) return settingsAnswer
 
   const match = /^\/api\/v1\/leads\/(\d+)(\/[a-z-]+)?$/.exec(path)
   const lead = match?.[1] === undefined ? undefined : api.leads.find((row) => row.id === Number(match[1]))
@@ -260,12 +354,16 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
     expired: false,
     hold: undefined,
     offline: undefined,
+    emailSettings: TEST_EMAIL_SETTINGS,
+    testEmailFailure: undefined,
+    testEmailsSent: [],
     calls: [],
     ...overrides,
   }
-  // Owned outright: the funnel handlers rename, reorder and delete in place,
-  // and TEST_STAGES is one array shared by every test in the run.
+  // Owned outright: the funnel and settings handlers mutate in place, and both
+  // defaults are one object shared by every test in the run.
   api.stages = structuredClone(api.stages)
+  api.emailSettings = structuredClone(api.emailSettings)
 
   vi.stubGlobal('fetch', async (input: unknown, init?: RequestInit) => {
     const url = new URL(String(input), 'http://philo.example.com')

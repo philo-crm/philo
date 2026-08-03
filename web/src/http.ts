@@ -9,19 +9,27 @@ export class ApiError extends Error {
   readonly code: string
   /** Only the login and intake throttles send this. */
   readonly retryAfterSeconds: number | undefined
+  /**
+   * A sentence from something the server was talking to, when the code alone
+   * cannot say what went wrong — today only the SMTP test-send, where "535
+   * authentication failed" is the entire value of the answer.
+   */
+  readonly detail: string | undefined
 
-  constructor(status: number, code: string, retryAfterSeconds?: number) {
+  constructor(status: number, code: string, retryAfterSeconds?: number, detail?: string) {
     super(`HTTP ${status}${code === '' ? '' : ` (${code})`}`)
     this.name = 'ApiError'
     this.status = status
     this.code = code
     this.retryAfterSeconds = retryAfterSeconds
+    this.detail = detail
   }
 }
 
 interface ErrorBody {
   error?: unknown
   retryAfterSeconds?: unknown
+  detail?: unknown
 }
 
 async function toApiError(res: Response): Promise<ApiError> {
@@ -33,7 +41,8 @@ async function toApiError(res: Response): Promise<ApiError> {
   }
   const code = typeof body.error === 'string' ? body.error : ''
   const retryAfter = typeof body.retryAfterSeconds === 'number' ? body.retryAfterSeconds : undefined
-  return new ApiError(res.status, code, retryAfter)
+  const detail = typeof body.detail === 'string' && body.detail !== '' ? body.detail : undefined
+  return new ApiError(res.status, code, retryAfter, detail)
 }
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {

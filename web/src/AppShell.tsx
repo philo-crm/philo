@@ -6,6 +6,7 @@ import { InstallHelper } from './InstallHelper.tsx'
 import { LeadDetail } from './LeadDetail.tsx'
 import { LeadList } from './LeadList.tsx'
 import { Link, usePath } from './router.tsx'
+import { Settings } from './Settings.tsx'
 
 export interface AppShellProps {
   user: User
@@ -15,6 +16,13 @@ export interface AppShellProps {
 }
 
 const LEAD_PATH = /^\/leads\/(\d+)$/
+
+/**
+ * Sections with a nav entry of their own. A lead has none, and is opened from
+ * both the list and the board, so its detail screen keeps Leads lit either way
+ * — which is what makes this the set to check rather than the path itself.
+ */
+const SECTION_PATHS: ReadonlySet<string> = new Set(['/board', '/spam', '/settings'])
 
 function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   const { user, onSessionExpired } = props
@@ -29,6 +37,9 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   }
   if (path === '/board') {
     return <FunnelBoard onSessionExpired={onSessionExpired} />
+  }
+  if (path === '/settings') {
+    return <Settings onSessionExpired={onSessionExpired} />
   }
   if (path === '/install') {
     return <InstallHelper />
@@ -81,9 +92,7 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
           Philo
         </Link>
         <nav aria-label="Sections">
-          {/* A lead has no section of its own, and is opened from both the list
-              and the board, so its detail screen keeps Leads lit either way. */}
-          <Link to="/" aria-current={path === '/spam' || path === '/board' ? undefined : 'page'}>
+          <Link to="/" aria-current={SECTION_PATHS.has(path) ? undefined : 'page'}>
             Leads
           </Link>
           <Link to="/board" aria-current={path === '/board' ? 'page' : undefined}>
@@ -91,6 +100,9 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
           </Link>
           <Link to="/spam" aria-current={path === '/spam' ? 'page' : undefined}>
             Spam
+          </Link>
+          <Link to="/settings" aria-current={path === '/settings' ? 'page' : undefined}>
+            Settings
           </Link>
         </nav>
         <div className="session">

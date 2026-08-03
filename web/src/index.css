@@ -311,6 +311,13 @@ main {
   border-color: var(--warn-border);
 }
 
+/* Deliberately uncoloured. There is one accent on this screen and it is not
+   spent on "that worked" — a confirmation is read once and then ignored. */
+.notice-ok {
+  background: var(--surface-sunken);
+  border-color: var(--border);
+}
+
 /* ---- install helper ---------------------------------------------------- */
 
 .install-banner {
@@ -619,4 +626,44 @@ main {
 .timeline-meta {
   font-size: 0.8rem;
   margin-top: 0.15rem;
+}
+
+/* ---- settings ---------------------------------------------------------- */
+
+.settings-form {
+  display: grid;
+  gap: var(--gap);
+}
+
+.fields {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+/* Boxes that hold a host name or an address are read across, not down, so they
+   take the panel's full width rather than the browser's default size. */
+.fields input:not([type='checkbox']) {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.test-form {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: var(--gap);
+  max-width: 26rem;
 }

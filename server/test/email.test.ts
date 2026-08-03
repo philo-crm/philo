@@ -1,0 +1,727 @@
+import { eq } from 'drizzle-orm'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { emailTemplates, leadEvents, leads, users } from '../src/db/schema.ts'
+import { MAX_SUBJECT_LENGTH } from '../src/email/render.ts'
+import {
+  createLeadEmailHook,
+  sendNewLeadEmails,
+  sendTestEmail,
+  sweepUnsentEmails,
+  type EmailDeps,
+} from '../src/email/service.ts'
+import { retryDelayMs, type ScheduleRetry } from '../src/email/retry.ts'
+import { DEFAULT_EMAIL_SETTINGS } from '../src/email/settings.ts'
+import type { EmailSenderFactory, OutgoingEmail } from '../src/email/transport.ts'
+import { HONEYPOT_FIELD } from '../src/intake/payload.ts'
+import type { CreatedLead } from '../src/notify.ts'
+import {
+  cleanupTestApps,
+  configureEmail,
+  createTestApp,
+  defaultFormKey,
+  recordingSender,
+  setupAdmin,
+  TEST_EMAIL_SETTINGS,
+  TEST_ORIGIN,
+  type TestApp,
+} from './support/app.ts'
+
+const PUBLIC_BASE_URL = 'https://crm.example.com'
+
+beforeEach(() => {
+  // The service logs every skip and every failure. Tests assert on behaviour,
+  // and a passing run should not look like a broken one.
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+})
+
+afterEach(() => {
+  cleanupTestApps()
+  vi.restoreAllMocks()
+})
+
+/** Submits through the public form with no hook attached, so nothing is sent yet. */
+async function submitLead(testApp: TestApp, body: Record<string, unknown>): Promise<number> {
+  const res = await testApp.app.request(`/api/intake/${defaultFormKey(testApp)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (res.status !== 201) throw new Error(`intake failed: ${res.status}`)
+  const [lead] = testApp.db.select({ id: leads.id }).from(leads).all().toReversed()
+  if (lead === undefined) throw new Error('intake created no lead')
+  return lead.id
+}
+
+function sentEvents(testApp: TestApp, leadId: number) {
+  return testApp.db
+    .select({ payload: leadEvents.payload, actor: leadEvents.actor })
+    .from(leadEvents)
+    .where(eq(leadEvents.leadId, leadId))
+    .all()
+    .filter((event) => event.payload.includes('"template"'))
+    .map((event) => ({ actor: event.actor, payload: JSON.parse(event.payload) as Record<string, unknown> }))
+}
+
+/** The notes the service writes itself — how a failed send reaches a reader. */
+function systemNotes(testApp: TestApp, leadId: number): string[] {
+  return testApp.db
+    .select({ payload: leadEvents.payload, type: leadEvents.type, actor: leadEvents.actor })
+    .from(leadEvents)
+    .where(eq(leadEvents.leadId, leadId))
+    .all()
+    .filter((event) => event.type === 'note_added' && event.actor === 'system')
+    .map((event) => String((JSON.parse(event.payload) as { note?: unknown }).note))
+}
+
+function byTemplate(sent: OutgoingEmail[], subjectFragment: string): OutgoingEmail | undefined {
+  return sent.find((email) => email.subject.includes(subjectFragment))
+}
+
+/**
+ * Deps for a single attempt. Most cases here are about what one pass does, and
+ * leaving the production budget on would have them book a real 60-second timer
+ * instead of reaching the give-up path the assertion is about.
+ */
+function onceDeps(testApp: TestApp, factory: EmailSenderFactory): EmailDeps {
+  return {
+    db: testApp.db,
+    publicBaseUrl: PUBLIC_BASE_URL,
+    createSender: factory,
+    retry: { maxAttempts: 1, jitterRatio: 0 },
+  }
+}
+
+/** A transport that never gets anything through. */
+function alwaysFails(reason: string): EmailSenderFactory {
+  return () => () => Promise.reject(new Error(reason))
+}
+
+/**
+ * A stand-in for the timer. Retries are queued rather than waited out, and
+ * `drain` runs them in order — so a test can assert on the schedule itself
+ * (how many, how far apart) as well as on what eventually got sent.
+ */
+function fakeSchedule() {
+  const queued: (() => void)[] = []
+  const delays: number[] = []
+  return {
+    delays,
+    schedule: ((run, delayMs) => {
+      queued.push(run)
+      delays.push(delayMs)
+    }) as ScheduleRetry,
+    async drain(): Promise<void> {
+      // Bounded rather than `while`: a retry that reschedules itself forever is
+      // a bug this should surface as a failure, not hang on.
+      for (let step = 0; step < 20 && queued.length > 0; step += 1) {
+        queued.shift()?.()
+        // The queued call is `void`ed inside the service, so let its chain of
+        // in-memory sends settle before looking for the next one.
+        await new Promise((resolve) => setImmediate(resolve))
+      }
+    },
+  }
+}
+
+describe('sendNewLeadEmails', () => {
+  it('sends the notification and the acknowledgment, and records each on the timeline', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(sender.sent).toHaveLength(2)
+    const notify = byTemplate(sender.sent, 'New lead')
+    const ack = byTemplate(sender.sent, 'Thanks for getting in touch')
+    expect(notify?.to).toEqual(['admin@example.com'])
+    expect(notify?.subject).toBe('New lead: Dana Rivers')
+    expect(notify?.html).toContain(`${PUBLIC_BASE_URL}/leads/${leadId}`)
+    expect(ack?.to).toEqual(['dana@example.com'])
+    // DESIGN.md (Email): replies to the acknowledgment go to a real inbox.
+    expect(ack?.replyTo).toBe(TEST_EMAIL_SETTINGS.replyTo)
+    expect(ack?.html).toContain('Example Co')
+
+    const events = sentEvents(testApp, leadId)
+    expect(events.map((event) => event.payload['template']).toSorted()).toEqual([
+      'new_lead_ack',
+      'new_lead_notify',
+    ])
+    expect(events.every((event) => event.actor === 'system')).toBe(true)
+    expect(events.map((event) => event.payload['subject'])).toContain('New lead: Dana Rivers')
+  })
+
+  it('sends nothing twice when the hook fires again for the same lead', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const deps = onceDeps(testApp, sender.factory)
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(deps, leadId)
+    await sendNewLeadEmails(deps, leadId)
+
+    expect(sender.sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+
+  it('sends nothing for a quarantined lead', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, {
+      name: 'Bot',
+      email: 'bot@example.com',
+      [HONEYPOT_FIELD]: 'gotcha',
+    })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(sender.sent).toEqual([])
+    expect(sentEvents(testApp, leadId)).toEqual([])
+  })
+
+  it('sends nothing when SMTP is not configured', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(sender.sent).toEqual([])
+    expect(sentEvents(testApp, leadId)).toEqual([])
+  })
+
+  it('respects a template that has been switched off', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    testApp.db
+      .update(emailTemplates)
+      .set({ enabled: false })
+      .where(eq(emailTemplates.trigger, 'new_lead_ack'))
+      .run()
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(sender.sent).toHaveLength(1)
+    expect(sender.sent[0]?.subject).toBe('New lead: Dana Rivers')
+    expect(sentEvents(testApp, leadId).map((event) => event.payload['template'])).toEqual([
+      'new_lead_notify',
+    ])
+  })
+
+  it('still notifies the operator when the lead left no email address', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', phone: '555-0100' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
+  })
+
+  it('sends the acknowledgment even when nobody has a login yet', async () => {
+    const testApp = createTestApp()
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(sender.sent.map((email) => email.to)).toEqual([['dana@example.com']])
+  })
+
+  it('will not send to an address a stranger wrote headers into', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    // Intake stores the address as submitted — it does no format check by
+    // design (intake/payload.ts), so this is the boundary that has to.
+    const leadId = await submitLead(testApp, {
+      name: 'Dana Rivers',
+      email: 'dana@example.com\r\nBcc: attacker@example.com',
+    })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    // The operator still hears about the lead; only the acknowledgment is dropped.
+    expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
+    expect(sentEvents(testApp, leadId).map((event) => event.payload['template'])).toEqual([
+      'new_lead_notify',
+    ])
+  })
+
+  it('isolates one failed send from the other, and records no event for it', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender({ failOn: (email) => email.to.includes('dana@example.com') })
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
+    expect(sentEvents(testApp, leadId).map((event) => event.payload['template'])).toEqual([
+      'new_lead_notify',
+    ])
+  })
+
+  it('retries the failed half on a later run, without repeating the delivered one', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    let failing = true
+    const sent: OutgoingEmail[] = []
+    const deps = {
+      ...onceDeps(testApp, () => async (email: OutgoingEmail) => {
+        if (failing && email.to.includes('dana@example.com')) throw new Error('greylisted')
+        sent.push(email)
+        return { accepted: email.to }
+      }),
+      retry: { maxAttempts: 2, jitterRatio: 0 },
+      scheduleRetry: () => {},
+    }
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(deps, leadId)
+    failing = false
+    await sendNewLeadEmails(deps, leadId, 2)
+
+    expect(sent.map((email) => email.to)).toEqual([['admin@example.com'], ['dana@example.com']])
+  })
+
+  it('records only the recipients the server actually took', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    // A second login, so the notification has a recipient list to be partial on.
+    testApp.db.insert(users).values({ email: 'ops@example.com', passwordHash: 'x' }).run()
+    configureEmail(testApp)
+    const sender = recordingSender({ rejectRecipient: (address) => address === 'ops@example.com' })
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    const notify = sentEvents(testApp, leadId).find(
+      (event) => event.payload['template'] === 'new_lead_notify',
+    )
+    // nodemailer resolves a partial delivery as success, so without the
+    // accepted list this would claim ops@example.com was notified.
+    expect(notify?.payload['to']).toBe('admin@example.com')
+  })
+
+  it('treats a send nobody accepted as a failure', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender({ rejectRecipient: () => true })
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(sentEvents(testApp, leadId)).toEqual([])
+  })
+
+  it('puts a failed send on the lead’s timeline, not only in the log', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender({ failOn: (email) => email.to.includes('dana@example.com') })
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    const notes = systemNotes(testApp, leadId)
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain('new_lead_ack')
+    expect(notes[0]).toContain('smtp refused the message')
+  })
+
+  it('caps a subject a stranger made enormous', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, {
+      name: 'D'.repeat(20_000),
+      email: 'dana@example.com',
+    })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    // Asserted before the loop: without it a change that stopped either send
+    // would leave the loop body unrun and this test green over no coverage.
+    expect(sender.sent).toHaveLength(2)
+    for (const email of sender.sent) {
+      expect(email.subject.length).toBeLessThanOrEqual(MAX_SUBJECT_LENGTH)
+    }
+  })
+
+  it('does nothing for a lead that no longer exists', async () => {
+    const testApp = createTestApp()
+    configureEmail(testApp)
+    const sender = recordingSender()
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), 9999)
+    expect(sender.sent).toEqual([])
+  })
+})
+
+describe('retrying a failed send', () => {
+  /** Deps whose retries queue on the fake schedule instead of a real timer. */
+  function retryDeps(testApp: TestApp, factory: EmailSenderFactory, schedule: ScheduleRetry, attempts = 5) {
+    return {
+      db: testApp.db,
+      publicBaseUrl: PUBLIC_BASE_URL,
+      createSender: factory,
+      retry: { maxAttempts: attempts, jitterRatio: 0 },
+      scheduleRetry: schedule,
+    }
+  }
+
+  it('gets the message through on a later attempt', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const clock = fakeSchedule()
+    let attempts = 0
+    const sent: OutgoingEmail[] = []
+    // Greylisting: refused the first two times, taken the third — the exact
+    // case a single attempt loses to.
+    const factory: EmailSenderFactory = () => async (email) => {
+      attempts += 1
+      if (attempts <= 2) throw new Error('greylisted, try again later')
+      sent.push(email)
+      return { accepted: email.to }
+    }
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', phone: '555-0100' })
+
+    await sendNewLeadEmails(retryDeps(testApp, factory, clock.schedule), leadId)
+    expect(sent).toEqual([])
+
+    await clock.drain()
+
+    expect(sent.map((email) => email.to)).toEqual([['admin@example.com']])
+    expect(sentEvents(testApp, leadId).map((event) => event.payload['template'])).toEqual([
+      'new_lead_notify',
+    ])
+    // Nothing was given up on, so nothing says so.
+    expect(systemNotes(testApp, leadId)).toEqual([])
+  })
+
+  it('backs off between attempts instead of hammering the server', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const clock = fakeSchedule()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', phone: '555-0100' })
+
+    await sendNewLeadEmails(retryDeps(testApp, alwaysFails('smtp is down'), clock.schedule), leadId)
+    await clock.drain()
+
+    // Four waits for five attempts, doubling.
+    expect(clock.delays).toEqual([1, 2, 3, 4].map((attempt) => retryDelayMs(attempt, { jitterRatio: 0 })))
+  })
+
+  it('gives up after the last attempt, and says so exactly once', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const clock = fakeSchedule()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(retryDeps(testApp, alwaysFails('mailbox unavailable'), clock.schedule, 3), leadId)
+    await clock.drain()
+
+    // One note per trigger, not one per attempt — a greylisting loop must not
+    // put three identical notes on a timeline a person reads.
+    const notes = systemNotes(testApp, leadId)
+    expect(notes).toHaveLength(2)
+    expect(notes.filter((note) => note.includes('new_lead_notify'))).toHaveLength(1)
+    expect(notes.filter((note) => note.includes('new_lead_ack'))).toHaveLength(1)
+    expect(notes[0]).toContain('after 3 attempts')
+    expect(notes[0]).toContain('mailbox unavailable')
+    expect(sentEvents(testApp, leadId)).toEqual([])
+  })
+
+  it('does not send twice when two callers reach the same lead at once', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    let release: (() => void) | undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const sent: OutgoingEmail[] = []
+    // Holds the first pass open, so the second call arrives while the first is
+    // still in flight — before any `email_sent` row exists to catch it.
+    const factory: EmailSenderFactory = () => async (email) => {
+      await held
+      sent.push(email)
+      return { accepted: email.to }
+    }
+    const deps = onceDeps(testApp, factory)
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    const first = sendNewLeadEmails(deps, leadId)
+    await sendNewLeadEmails(deps, leadId)
+    release?.()
+    await first
+
+    expect(sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+
+  it('does not retry an instance that has no SMTP settings', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const clock = fakeSchedule()
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(retryDeps(testApp, sender.factory, clock.schedule), leadId)
+
+    // Waiting a minute changes nothing about an unconfigured mail server; the
+    // next boot's sweep is what picks this lead up.
+    expect(clock.delays).toEqual([])
+    expect(systemNotes(testApp, leadId)).toEqual([])
+  })
+})
+
+describe('sweepUnsentEmails', () => {
+  it('sends what a previous run of the process left owed', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const sender = recordingSender()
+    // Arrived before SMTP was filled in, so nothing was sent at the time.
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+    configureEmail(testApp)
+
+    const swept = await sweepUnsentEmails(onceDeps(testApp, sender.factory))
+
+    expect(swept).toBe(1)
+    expect(sender.sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+
+  it('sends nothing for a lead whose emails already went out', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+    expect(sender.sent).toHaveLength(2)
+
+    await sweepUnsentEmails(onceDeps(testApp, sender.factory))
+
+    expect(sender.sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+
+  it('does not spend the budget again on a lead it already gave up on', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    let attempts = 0
+    const factory: EmailSenderFactory = () => () => {
+      attempts += 1
+      return Promise.reject(new Error('535 authentication failed'))
+    }
+    const deps = onceDeps(testApp, factory)
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    // Three boots against a mail server that refuses everything.
+    await sweepUnsentEmails(deps)
+    await sweepUnsentEmails(deps)
+    await sweepUnsentEmails(deps)
+
+    // The give-up is on the timeline, so later boots read the decision rather
+    // than making it again — two attempts and two notes, not six of each.
+    expect(attempts).toBe(2)
+    expect(systemNotes(testApp, leadId)).toHaveLength(2)
+  })
+
+  it('leaves quarantined leads alone', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    await submitLead(testApp, {
+      name: 'Bot',
+      email: 'bot@example.com',
+      [HONEYPOT_FIELD]: 'gotcha',
+    })
+
+    expect(await sweepUnsentEmails(onceDeps(testApp, sender.factory))).toBe(0)
+    expect(sender.sent).toEqual([])
+  })
+
+  it('does not resurrect a lead older than the window', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+    // Two days old: nobody wants an acknowledgment that late.
+    testApp.db
+      .update(leads)
+      .set({ createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) })
+      .where(eq(leads.id, leadId))
+      .run()
+
+    expect(await sweepUnsentEmails(onceDeps(testApp, sender.factory))).toBe(0)
+    expect(sender.sent).toEqual([])
+  })
+})
+
+describe('createLeadEmailHook', () => {
+  it('never lets a send failure reach the caller', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+    const hook = createLeadEmailHook(
+      onceDeps(testApp, () => () => Promise.reject(new Error('smtp is down'))),
+    )
+
+    const lead: CreatedLead = { id: leadId, formId: null, isSpam: false }
+    expect(() => hook(lead)).not.toThrow()
+    // Let the fire-and-forget send settle; an unhandled rejection would fail here.
+    await new Promise((resolve) => setImmediate(resolve))
+  })
+})
+
+describe('intake with email attached', () => {
+  it('answers 201 even when every send fails', async () => {
+    let pending: Promise<void> = Promise.resolve()
+    const testApp = createTestApp({
+      onLeadCreated: (lead) => {
+        pending = sendNewLeadEmails(
+          onceDeps(testApp, () => () => Promise.reject(new Error('smtp is down'))),
+          lead.id,
+        )
+      },
+    })
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+
+    const res = await testApp.app.request(`/api/intake/${defaultFormKey(testApp)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Dana Rivers', email: 'dana@example.com' }),
+    })
+
+    expect(res.status).toBe(201)
+    expect(await res.json()).toEqual({ ok: true })
+    await expect(pending).resolves.toBeUndefined()
+  })
+})
+
+describe('promotion out of quarantine', () => {
+  it('sends the pair that was held back, and only on the call that promotes', async () => {
+    let pending: Promise<void> = Promise.resolve()
+    const sender = recordingSender()
+    const testApp = createTestApp({
+      onLeadCreated: (lead) => {
+        pending = sendNewLeadEmails(onceDeps(testApp, sender.factory), lead.id)
+      },
+    })
+    const cookie = await setupAdmin(testApp)
+    configureEmail(testApp)
+    const leadId = await submitLead(testApp, {
+      name: 'Dana Rivers',
+      email: 'dana@example.com',
+      [HONEYPOT_FIELD]: 'gotcha',
+    })
+    expect(sender.sent).toEqual([])
+
+    const promote = () =>
+      testApp.app.request(`/api/v1/leads/${leadId}/not-spam`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: TEST_ORIGIN, cookie },
+        body: '{}',
+      })
+
+    expect((await promote()).status).toBe(200)
+    await pending
+    expect(sender.sent.map((email) => email.to)).toEqual([
+      ['admin@example.com'],
+      ['dana@example.com'],
+    ])
+
+    // A second click promotes nothing, so it must send nothing.
+    expect((await promote()).status).toBe(200)
+    await pending
+    expect(sender.sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+})
+
+describe('sendTestEmail', () => {
+  it('sends to the address it was given', async () => {
+    const sender = recordingSender()
+    const result = await sendTestEmail({ createSender: sender.factory }, TEST_EMAIL_SETTINGS, 'Ops@Example.com')
+
+    expect(result).toEqual({ ok: true, to: 'ops@example.com' })
+    expect(sender.sent[0]?.to).toEqual(['ops@example.com'])
+  })
+
+  it('refuses an address that is not one', async () => {
+    const sender = recordingSender()
+    for (const to of ['not-an-address', '', 42]) {
+      expect(await sendTestEmail({ createSender: sender.factory }, TEST_EMAIL_SETTINGS, to)).toEqual({
+        ok: false,
+        error: 'invalid_email',
+      })
+    }
+    expect(sender.sent).toEqual([])
+  })
+
+  it('reports that nothing is configured rather than attempting a send', async () => {
+    const sender = recordingSender()
+    const result = await sendTestEmail(
+      { createSender: sender.factory },
+      DEFAULT_EMAIL_SETTINGS,
+      'ops@example.com',
+    )
+
+    expect(result).toEqual({ ok: false, error: 'not_configured' })
+    expect(sender.sent).toEqual([])
+  })
+
+  it('is not a success when the server took no recipient', async () => {
+    const sender = recordingSender({ rejectRecipient: () => true })
+    const result = await sendTestEmail(
+      { createSender: sender.factory },
+      TEST_EMAIL_SETTINGS,
+      'ops@example.com',
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'send_failed',
+      detail: 'the server refused the recipient',
+    })
+  })
+
+  it('hands back why the server refused it', async () => {
+    const result = await sendTestEmail(
+      { createSender: () => () => Promise.reject(new Error('535 authentication failed')) },
+      TEST_EMAIL_SETTINGS,
+      'ops@example.com',
+    )
+
+    expect(result).toEqual({ ok: false, error: 'send_failed', detail: '535 authentication failed' })
+  })
+})
