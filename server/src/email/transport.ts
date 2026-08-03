@@ -22,7 +22,16 @@ export interface OutgoingEmail {
   replyTo?: string | undefined
 }
 
-export type SendEmail = (email: OutgoingEmail) => Promise<void>
+export interface SendResult {
+  /**
+   * Recipients the server actually took. Not the same as the ones asked for:
+   * SMTP answers RCPT per address, and a message with one good recipient and
+   * one dead one is delivered to the good one and reported as sent.
+   */
+  accepted: string[]
+}
+
+export type SendEmail = (email: OutgoingEmail) => Promise<SendResult>
 
 /** Substituted in tests; production always passes `smtpSender`. */
 export type EmailSenderFactory = (config: EmailSettings) => SendEmail
@@ -48,7 +57,7 @@ export const smtpSender: EmailSenderFactory = (config) => async (email) => {
     socketTimeout: SMTP_TIMEOUT_MS,
   })
   try {
-    await transport.sendMail({
+    const info = await transport.sendMail({
       // Structured rather than a formatted string, so a display name holding a
       // comma or a quote is encoded by nodemailer instead of by us.
       from: config.fromName === ''
@@ -59,7 +68,17 @@ export const smtpSender: EmailSenderFactory = (config) => async (email) => {
       html: email.html,
       ...(email.replyTo === undefined || email.replyTo === '' ? {} : { replyTo: email.replyTo }),
     })
+    // nodemailer only rejects when the server refused every recipient, so a
+    // partial delivery arrives here as success. Handing back what was actually
+    // accepted is what stops the timeline recording a send to an address the
+    // server turned away.
+    return { accepted: info.accepted.map(addressOf) }
   } finally {
     transport.close()
   }
+}
+
+/** nodemailer reports a recipient as either the bare address or an object. */
+function addressOf(recipient: string | { address: string }): string {
+  return typeof recipient === 'string' ? recipient : recipient.address
 }

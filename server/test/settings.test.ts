@@ -176,6 +176,7 @@ function withSender(sent: OutgoingEmail[], fail?: string) {
     createEmailSender: () => async (email) => {
       if (fail !== undefined) throw new Error(fail)
       sent.push(email)
+      return { accepted: email.to }
     },
   })
 }

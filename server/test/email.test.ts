@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { emailTemplates, leadEvents, leads } from '../src/db/schema.ts'
+import { emailTemplates, leadEvents, leads, users } from '../src/db/schema.ts'
+import { MAX_SUBJECT_LENGTH } from '../src/email/render.ts'
 import { createLeadEmailHook, sendNewLeadEmails, sendTestEmail } from '../src/email/service.ts'
 import { DEFAULT_EMAIL_SETTINGS } from '../src/email/settings.ts'
 import type { OutgoingEmail } from '../src/email/transport.ts'
@@ -14,6 +15,7 @@ import {
   recordingSender,
   setupAdmin,
   TEST_EMAIL_SETTINGS,
+  TEST_ORIGIN,
   type TestApp,
 } from './support/app.ts'
 
@@ -52,6 +54,17 @@ function sentEvents(testApp: TestApp, leadId: number) {
     .all()
     .filter((event) => event.payload.includes('"template"'))
     .map((event) => ({ actor: event.actor, payload: JSON.parse(event.payload) as Record<string, unknown> }))
+}
+
+/** The notes the service writes itself — how a failed send reaches a reader. */
+function systemNotes(testApp: TestApp, leadId: number): string[] {
+  return testApp.db
+    .select({ payload: leadEvents.payload, type: leadEvents.type, actor: leadEvents.actor })
+    .from(leadEvents)
+    .where(eq(leadEvents.leadId, leadId))
+    .all()
+    .filter((event) => event.type === 'note_added' && event.actor === 'system')
+    .map((event) => String((JSON.parse(event.payload) as { note?: unknown }).note))
 }
 
 function byTemplate(sent: OutgoingEmail[], subjectFragment: string): OutgoingEmail | undefined {
@@ -248,6 +261,7 @@ describe('sendNewLeadEmails', () => {
       createSender: () => async (email: OutgoingEmail) => {
         if (failing && email.to.includes('dana@example.com')) throw new Error('greylisted')
         sent.push(email)
+        return { accepted: email.to }
       },
     }
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
@@ -257,6 +271,81 @@ describe('sendNewLeadEmails', () => {
     await sendNewLeadEmails(deps, leadId)
 
     expect(sent.map((email) => email.to)).toEqual([['admin@example.com'], ['dana@example.com']])
+  })
+
+  it('records only the recipients the server actually took', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    // A second login, so the notification has a recipient list to be partial on.
+    testApp.db.insert(users).values({ email: 'ops@example.com', passwordHash: 'x' }).run()
+    configureEmail(testApp)
+    const sender = recordingSender({ rejectRecipient: (address) => address === 'ops@example.com' })
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(
+      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
+      leadId,
+    )
+
+    const notify = sentEvents(testApp, leadId).find(
+      (event) => event.payload['template'] === 'new_lead_notify',
+    )
+    // nodemailer resolves a partial delivery as success, so without the
+    // accepted list this would claim ops@example.com was notified.
+    expect(notify?.payload['to']).toBe('admin@example.com')
+  })
+
+  it('treats a send nobody accepted as a failure', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender({ rejectRecipient: () => true })
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(
+      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
+      leadId,
+    )
+
+    expect(sentEvents(testApp, leadId)).toEqual([])
+  })
+
+  it('puts a failed send on the lead’s timeline, not only in the log', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender({ failOn: (email) => email.to.includes('dana@example.com') })
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(
+      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
+      leadId,
+    )
+
+    const notes = systemNotes(testApp, leadId)
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain('new_lead_ack')
+    expect(notes[0]).toContain('smtp refused the message')
+  })
+
+  it('caps a subject a stranger made enormous', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, {
+      name: 'D'.repeat(20_000),
+      email: 'dana@example.com',
+    })
+
+    await sendNewLeadEmails(
+      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
+      leadId,
+    )
+
+    for (const email of sender.sent) {
+      expect(email.subject.length).toBeLessThanOrEqual(MAX_SUBJECT_LENGTH)
+    }
   })
 
   it('does nothing for a lead that no longer exists', async () => {
@@ -320,6 +409,49 @@ describe('intake with email attached', () => {
   })
 })
 
+describe('promotion out of quarantine', () => {
+  it('sends the pair that was held back, and only on the call that promotes', async () => {
+    let pending: Promise<void> = Promise.resolve()
+    const sender = recordingSender()
+    const testApp = createTestApp({
+      onLeadCreated: (lead) => {
+        pending = sendNewLeadEmails(
+          { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
+          lead.id,
+        )
+      },
+    })
+    const cookie = await setupAdmin(testApp)
+    configureEmail(testApp)
+    const leadId = await submitLead(testApp, {
+      name: 'Dana Rivers',
+      email: 'dana@example.com',
+      [HONEYPOT_FIELD]: 'gotcha',
+    })
+    expect(sender.sent).toEqual([])
+
+    const promote = () =>
+      testApp.app.request(`/api/v1/leads/${leadId}/not-spam`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: TEST_ORIGIN, cookie },
+        body: '{}',
+      })
+
+    expect((await promote()).status).toBe(200)
+    await pending
+    expect(sender.sent.map((email) => email.to)).toEqual([
+      ['admin@example.com'],
+      ['dana@example.com'],
+    ])
+
+    // A second click promotes nothing, so it must send nothing.
+    expect((await promote()).status).toBe(200)
+    await pending
+    expect(sender.sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+})
+
 describe('sendTestEmail', () => {
   it('sends to the address it was given', async () => {
     const sender = recordingSender()
@@ -350,6 +482,21 @@ describe('sendTestEmail', () => {
 
     expect(result).toEqual({ ok: false, error: 'not_configured' })
     expect(sender.sent).toEqual([])
+  })
+
+  it('is not a success when the server took no recipient', async () => {
+    const sender = recordingSender({ rejectRecipient: () => true })
+    const result = await sendTestEmail(
+      { createSender: sender.factory },
+      TEST_EMAIL_SETTINGS,
+      'ops@example.com',
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'send_failed',
+      detail: 'the server refused the recipient',
+    })
   })
 
   it('hands back why the server refused it', async () => {

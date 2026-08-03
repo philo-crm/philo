@@ -112,16 +112,26 @@ export interface RecordingSender {
 }
 
 /**
- * A sender that records instead of connecting. `failOn` makes the send for a
- * given recipient reject, which is how the failure-isolation cases are built.
+ * A sender that records instead of connecting.
+ *
+ * `failOn` makes a send reject outright, which is how the failure-isolation
+ * cases are built. `rejectRecipient` models the subtler one: SMTP answers RCPT
+ * per address, so a server can take one recipient, refuse another, and report
+ * the whole thing as sent.
  */
-export function recordingSender(options: { failOn?: (email: OutgoingEmail) => boolean } = {}): RecordingSender {
+export function recordingSender(
+  options: {
+    failOn?: (email: OutgoingEmail) => boolean
+    rejectRecipient?: (address: string) => boolean
+  } = {},
+): RecordingSender {
   const sent: OutgoingEmail[] = []
   return {
     sent,
     factory: () => async (email) => {
       if (options.failOn?.(email) === true) throw new Error('smtp refused the message')
       sent.push(email)
+      return { accepted: email.to.filter((address) => options.rejectRecipient?.(address) !== true) }
     },
   }
 }

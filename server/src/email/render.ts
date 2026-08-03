@@ -63,6 +63,14 @@ export function renderBody(source: string, context: TemplateContext): string | u
 }
 
 /**
+ * Longest subject this will emit. Well past RFC 5322's recommended 78 and well
+ * short of anything a receiver will fold into hundreds of lines — intake caps
+ * only the body it accepts, not the name inside it, so `{{lead.name}}` can carry
+ * tens of kilobytes into this header if nothing stops it.
+ */
+export const MAX_SUBJECT_LENGTH = 200
+
+/**
  * A subject is a single header field, so every newline the rendered value
  * carries is collapsed. Without this a lead who types a CRLF into the name
  * field of a public form writes headers into the operator's notification.
@@ -70,5 +78,7 @@ export function renderBody(source: string, context: TemplateContext): string | u
 export function renderSubject(source: string, context: TemplateContext): string | undefined {
   const rendered = render(source, context, true)
   if (rendered === undefined) return undefined
-  return rendered.replace(/[\r\n]+/g, ' ').trim()
+  const collapsed = rendered.replace(/[\r\n]+/g, ' ').trim()
+  if (collapsed.length <= MAX_SUBJECT_LENGTH) return collapsed
+  return `${collapsed.slice(0, MAX_SUBJECT_LENGTH - 1).trimEnd()}…`
 }

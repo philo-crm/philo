@@ -83,6 +83,29 @@ function recordSent(db: Db, leadId: number, trigger: EmailTrigger, subject: stri
     .run()
 }
 
+/**
+ * A failed send, on the lead's own timeline. ADR-0004 makes email the
+ * guaranteed channel, and a failure that exists only in stdout is one nobody
+ * reading the lead will ever know about — which is the silently-missed-lead
+ * failure that ADR is written against.
+ *
+ * Recorded as a system note rather than a new event type: the four types in
+ * DESIGN.md (Data model) are the contract, and `clearLeadSpam` already
+ * establishes that a system-authored note is how a fact reaches the timeline
+ * without changing it.
+ */
+function recordFailure(db: Db, leadId: number, trigger: EmailTrigger, error: unknown): void {
+  const reason = failureDetail(error) ?? 'no reason given'
+  db.insert(leadEvents)
+    .values({
+      leadId,
+      type: 'note_added',
+      payload: JSON.stringify({ note: `Could not send the ${trigger} email: ${reason}`, system: true }),
+      actor: 'system',
+    })
+    .run()
+}
+
 interface SendPlan {
   trigger: EmailTrigger
   to: string[]
@@ -138,10 +161,16 @@ async function sendOne(
   const html = renderBody(template.body, context)
   if (subject === undefined || html === undefined) return
 
-  await send({ to: plan.to, subject, html, replyTo: plan.replyTo })
-  // Only after the transport accepted it — an event for a message that never
-  // left would make the timeline claim something that did not happen.
-  recordSent(deps.db, lead.id, plan.trigger, subject, plan.to)
+  const { accepted } = await send({ to: plan.to, subject, html, replyTo: plan.replyTo })
+  // Only the addresses the server took — an event for a message that never
+  // left would make the timeline claim something that did not happen. A send
+  // where it took none is a failure even though the transport did not say so.
+  if (accepted.length === 0) throw new Error('no recipient was accepted')
+  if (accepted.length < plan.to.length) {
+    const refused = plan.to.filter((address) => !accepted.includes(address))
+    console.error(`lead ${lead.id}: ${plan.trigger} email refused for ${refused.join(', ')}`)
+  }
+  recordSent(deps.db, lead.id, plan.trigger, subject, accepted)
 }
 
 /**
@@ -177,6 +206,7 @@ export async function sendNewLeadEmails(deps: EmailDeps, leadId: number): Promis
         await sendOne(deps, send, lead, context, templates, plan)
       } catch (error: unknown) {
         console.error(`lead ${leadId}: ${plan.trigger} email failed`, error)
+        recordFailure(deps.db, leadId, plan.trigger, error)
       }
     }
   } catch (error: unknown) {
@@ -210,8 +240,9 @@ function failureDetail(error: unknown): string | undefined {
  * not work, and the caller is an authenticated user rather than a stranger's
  * browser.
  *
- * Sends with the settings as supplied rather than as stored, so a password
- * typed into the form can be tested before it is saved.
+ * The configuration is passed in rather than read here, and every caller passes
+ * the stored one — so the screen saves before it tests, and a green result is a
+ * statement about what the next real lead will be sent with.
  */
 export async function sendTestEmail(
   deps: { createSender?: EmailSenderFactory | undefined },
@@ -225,11 +256,14 @@ export async function sendTestEmail(
 
   const send = (deps.createSender ?? smtpSender)(config)
   try {
-    await send({
+    const { accepted } = await send({
       to: [to],
       subject: 'Philo test email',
       html: '<p>This is a test message from Philo. Your SMTP settings work.</p>',
     })
+    // A server that connected, authenticated, and then refused the recipient is
+    // not a working configuration, however cheerfully the transport returned.
+    if (accepted.length === 0) return { ok: false, error: 'send_failed', detail: 'the server refused the recipient' }
     return { ok: true, to }
   } catch (error: unknown) {
     console.error('test email failed', error)
