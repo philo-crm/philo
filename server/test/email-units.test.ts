@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildContext, renderBody, renderSubject, MAX_SUBJECT_LENGTH } from '../src/email/render.ts'
+import { retryDelayMs, MAX_SEND_ATTEMPTS } from '../src/email/retry.ts'
 import {
   DEFAULT_EMAIL_SETTINGS,
   DEFAULT_SMTP_PORT,
@@ -117,6 +118,28 @@ describe('renderSubject', () => {
     expect(renderSubject('New lead: {{lead.name}}', built)).toBe(
       'New lead: Dana Bcc: attacker@example.com',
     )
+  })
+})
+
+describe('retryDelayMs', () => {
+  it('doubles per attempt', () => {
+    const tuning = { baseDelayMs: 1_000, maxDelayMs: 60_000 }
+    expect([1, 2, 3, 4].map((attempt) => retryDelayMs(attempt, tuning))).toEqual([
+      1_000, 2_000, 4_000, 8_000,
+    ])
+  })
+
+  it('stops doubling at the cap', () => {
+    const tuning = { baseDelayMs: 1_000, maxDelayMs: 5_000 }
+    expect(retryDelayMs(10, tuning)).toBe(5_000)
+  })
+
+  it('spans a useful stretch on the production curve', () => {
+    const total = Array.from({ length: MAX_SEND_ATTEMPTS - 1 }, (_, index) => retryDelayMs(index + 1))
+    // Long enough for greylisting to clear, short enough that an operator is
+    // not told about a dead mail server an hour after the lead arrived.
+    expect(total.reduce((sum, delay) => sum + delay, 0)).toBeGreaterThan(10 * 60 * 1000)
+    expect(total.reduce((sum, delay) => sum + delay, 0)).toBeLessThan(60 * 60 * 1000)
   })
 })
 

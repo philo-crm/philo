@@ -2,9 +2,16 @@ import { eq } from 'drizzle-orm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emailTemplates, leadEvents, leads, users } from '../src/db/schema.ts'
 import { MAX_SUBJECT_LENGTH } from '../src/email/render.ts'
-import { createLeadEmailHook, sendNewLeadEmails, sendTestEmail } from '../src/email/service.ts'
+import {
+  createLeadEmailHook,
+  sendNewLeadEmails,
+  sendTestEmail,
+  sweepUnsentEmails,
+  type EmailDeps,
+} from '../src/email/service.ts'
+import { retryDelayMs, type ScheduleRetry } from '../src/email/retry.ts'
 import { DEFAULT_EMAIL_SETTINGS } from '../src/email/settings.ts'
-import type { OutgoingEmail } from '../src/email/transport.ts'
+import type { EmailSenderFactory, OutgoingEmail } from '../src/email/transport.ts'
 import { HONEYPOT_FIELD } from '../src/intake/payload.ts'
 import type { CreatedLead } from '../src/notify.ts'
 import {
@@ -71,6 +78,52 @@ function byTemplate(sent: OutgoingEmail[], subjectFragment: string): OutgoingEma
   return sent.find((email) => email.subject.includes(subjectFragment))
 }
 
+/**
+ * Deps for a single attempt. Most cases here are about what one pass does, and
+ * leaving the production budget on would have them book a real 60-second timer
+ * instead of reaching the give-up path the assertion is about.
+ */
+function onceDeps(testApp: TestApp, factory: EmailSenderFactory): EmailDeps {
+  return {
+    db: testApp.db,
+    publicBaseUrl: PUBLIC_BASE_URL,
+    createSender: factory,
+    retry: { maxAttempts: 1 },
+  }
+}
+
+/** A transport that never gets anything through. */
+function alwaysFails(reason: string): EmailSenderFactory {
+  return () => () => Promise.reject(new Error(reason))
+}
+
+/**
+ * A stand-in for the timer. Retries are queued rather than waited out, and
+ * `drain` runs them in order — so a test can assert on the schedule itself
+ * (how many, how far apart) as well as on what eventually got sent.
+ */
+function fakeSchedule() {
+  const queued: (() => void)[] = []
+  const delays: number[] = []
+  return {
+    delays,
+    schedule: ((run, delayMs) => {
+      queued.push(run)
+      delays.push(delayMs)
+    }) as ScheduleRetry,
+    async drain(): Promise<void> {
+      // Bounded rather than `while`: a retry that reschedules itself forever is
+      // a bug this should surface as a failure, not hang on.
+      for (let step = 0; step < 20 && queued.length > 0; step += 1) {
+        queued.shift()?.()
+        // The queued call is `void`ed inside the service, so let its chain of
+        // in-memory sends settle before looking for the next one.
+        await new Promise((resolve) => setImmediate(resolve))
+      }
+    },
+  }
+}
+
 describe('sendNewLeadEmails', () => {
   it('sends the notification and the acknowledgment, and records each on the timeline', async () => {
     const testApp = createTestApp()
@@ -79,10 +132,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender()
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     expect(sender.sent).toHaveLength(2)
     const notify = byTemplate(sender.sent, 'New lead')
@@ -109,7 +159,7 @@ describe('sendNewLeadEmails', () => {
     await setupAdmin(testApp)
     configureEmail(testApp)
     const sender = recordingSender()
-    const deps = { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory }
+    const deps = onceDeps(testApp, sender.factory)
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
     await sendNewLeadEmails(deps, leadId)
@@ -130,10 +180,7 @@ describe('sendNewLeadEmails', () => {
       [HONEYPOT_FIELD]: 'gotcha',
     })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     expect(sender.sent).toEqual([])
     expect(sentEvents(testApp, leadId)).toEqual([])
@@ -145,10 +192,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender()
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     expect(sender.sent).toEqual([])
     expect(sentEvents(testApp, leadId)).toEqual([])
@@ -166,10 +210,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender()
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     expect(sender.sent).toHaveLength(1)
     expect(sender.sent[0]?.subject).toBe('New lead: Dana Rivers')
@@ -185,10 +226,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender()
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', phone: '555-0100' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
   })
@@ -199,10 +237,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender()
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     expect(sender.sent.map((email) => email.to)).toEqual([['dana@example.com']])
   })
@@ -219,10 +254,7 @@ describe('sendNewLeadEmails', () => {
       email: 'dana@example.com\r\nBcc: attacker@example.com',
     })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     // The operator still hears about the lead; only the acknowledgment is dropped.
     expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
@@ -238,10 +270,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender({ failOn: (email) => email.to.includes('dana@example.com') })
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
     expect(sentEvents(testApp, leadId).map((event) => event.payload['template'])).toEqual([
@@ -256,19 +285,18 @@ describe('sendNewLeadEmails', () => {
     let failing = true
     const sent: OutgoingEmail[] = []
     const deps = {
-      db: testApp.db,
-      publicBaseUrl: PUBLIC_BASE_URL,
-      createSender: () => async (email: OutgoingEmail) => {
+      ...onceDeps(testApp, () => async (email: OutgoingEmail) => {
         if (failing && email.to.includes('dana@example.com')) throw new Error('greylisted')
         sent.push(email)
         return { accepted: email.to }
-      },
+      }),
+      retry: { maxAttempts: 2 },
     }
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
     await sendNewLeadEmails(deps, leadId)
     failing = false
-    await sendNewLeadEmails(deps, leadId)
+    await sendNewLeadEmails(deps, leadId, 2)
 
     expect(sent.map((email) => email.to)).toEqual([['admin@example.com'], ['dana@example.com']])
   })
@@ -282,10 +310,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender({ rejectRecipient: (address) => address === 'ops@example.com' })
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     const notify = sentEvents(testApp, leadId).find(
       (event) => event.payload['template'] === 'new_lead_notify',
@@ -302,10 +327,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender({ rejectRecipient: () => true })
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     expect(sentEvents(testApp, leadId)).toEqual([])
   })
@@ -317,10 +339,7 @@ describe('sendNewLeadEmails', () => {
     const sender = recordingSender({ failOn: (email) => email.to.includes('dana@example.com') })
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     const notes = systemNotes(testApp, leadId)
     expect(notes).toHaveLength(1)
@@ -338,10 +357,7 @@ describe('sendNewLeadEmails', () => {
       email: 'dana@example.com',
     })
 
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      leadId,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
 
     // Asserted before the loop: without it a change that stopped either send
     // would leave the loop body unrun and this test green over no coverage.
@@ -355,10 +371,164 @@ describe('sendNewLeadEmails', () => {
     const testApp = createTestApp()
     configureEmail(testApp)
     const sender = recordingSender()
-    await sendNewLeadEmails(
-      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-      9999,
-    )
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), 9999)
+    expect(sender.sent).toEqual([])
+  })
+})
+
+describe('retrying a failed send', () => {
+  /** Deps whose retries queue on the fake schedule instead of a real timer. */
+  function retryDeps(testApp: TestApp, factory: EmailSenderFactory, schedule: ScheduleRetry, attempts = 5) {
+    return {
+      db: testApp.db,
+      publicBaseUrl: PUBLIC_BASE_URL,
+      createSender: factory,
+      retry: { maxAttempts: attempts },
+      scheduleRetry: schedule,
+    }
+  }
+
+  it('gets the message through on a later attempt', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const clock = fakeSchedule()
+    let attempts = 0
+    const sent: OutgoingEmail[] = []
+    // Greylisting: refused the first two times, taken the third — the exact
+    // case a single attempt loses to.
+    const factory: EmailSenderFactory = () => async (email) => {
+      attempts += 1
+      if (attempts <= 2) throw new Error('greylisted, try again later')
+      sent.push(email)
+      return { accepted: email.to }
+    }
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', phone: '555-0100' })
+
+    await sendNewLeadEmails(retryDeps(testApp, factory, clock.schedule), leadId)
+    expect(sent).toEqual([])
+
+    await clock.drain()
+
+    expect(sent.map((email) => email.to)).toEqual([['admin@example.com']])
+    expect(sentEvents(testApp, leadId).map((event) => event.payload['template'])).toEqual([
+      'new_lead_notify',
+    ])
+    // Nothing was given up on, so nothing says so.
+    expect(systemNotes(testApp, leadId)).toEqual([])
+  })
+
+  it('backs off between attempts instead of hammering the server', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const clock = fakeSchedule()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', phone: '555-0100' })
+
+    await sendNewLeadEmails(retryDeps(testApp, alwaysFails('smtp is down'), clock.schedule), leadId)
+    await clock.drain()
+
+    // Four waits for five attempts, doubling.
+    expect(clock.delays).toEqual([1, 2, 3, 4].map((attempt) => retryDelayMs(attempt)))
+  })
+
+  it('gives up after the last attempt, and says so exactly once', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const clock = fakeSchedule()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(retryDeps(testApp, alwaysFails('mailbox unavailable'), clock.schedule, 3), leadId)
+    await clock.drain()
+
+    // One note per trigger, not one per attempt — a greylisting loop must not
+    // put three identical notes on a timeline a person reads.
+    const notes = systemNotes(testApp, leadId)
+    expect(notes).toHaveLength(2)
+    expect(notes.filter((note) => note.includes('new_lead_notify'))).toHaveLength(1)
+    expect(notes.filter((note) => note.includes('new_lead_ack'))).toHaveLength(1)
+    expect(notes[0]).toContain('after 3 attempts')
+    expect(notes[0]).toContain('mailbox unavailable')
+    expect(sentEvents(testApp, leadId)).toEqual([])
+  })
+
+  it('does not retry an instance that has no SMTP settings', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const clock = fakeSchedule()
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(retryDeps(testApp, sender.factory, clock.schedule), leadId)
+
+    // Waiting a minute changes nothing about an unconfigured mail server; the
+    // next boot's sweep is what picks this lead up.
+    expect(clock.delays).toEqual([])
+    expect(systemNotes(testApp, leadId)).toEqual([])
+  })
+})
+
+describe('sweepUnsentEmails', () => {
+  it('sends what a previous run of the process left owed', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const sender = recordingSender()
+    // Arrived before SMTP was filled in, so nothing was sent at the time.
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+    configureEmail(testApp)
+
+    const swept = await sweepUnsentEmails(onceDeps(testApp, sender.factory))
+
+    expect(swept).toBe(1)
+    expect(sender.sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+
+  it('sends nothing for a lead whose emails already went out', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+    expect(sender.sent).toHaveLength(2)
+
+    await sweepUnsentEmails(onceDeps(testApp, sender.factory))
+
+    expect(sender.sent).toHaveLength(2)
+    expect(sentEvents(testApp, leadId)).toHaveLength(2)
+  })
+
+  it('leaves quarantined leads alone', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    await submitLead(testApp, {
+      name: 'Bot',
+      email: 'bot@example.com',
+      [HONEYPOT_FIELD]: 'gotcha',
+    })
+
+    expect(await sweepUnsentEmails(onceDeps(testApp, sender.factory))).toBe(0)
+    expect(sender.sent).toEqual([])
+  })
+
+  it('does not resurrect a lead older than the window', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+    // Two days old: nobody wants an acknowledgment that late.
+    testApp.db
+      .update(leads)
+      .set({ createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) })
+      .where(eq(leads.id, leadId))
+      .run()
+
+    expect(await sweepUnsentEmails(onceDeps(testApp, sender.factory))).toBe(0)
     expect(sender.sent).toEqual([])
   })
 })
@@ -369,11 +539,9 @@ describe('createLeadEmailHook', () => {
     await setupAdmin(testApp)
     configureEmail(testApp)
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
-    const hook = createLeadEmailHook({
-      db: testApp.db,
-      publicBaseUrl: PUBLIC_BASE_URL,
-      createSender: () => () => Promise.reject(new Error('smtp is down')),
-    })
+    const hook = createLeadEmailHook(
+      onceDeps(testApp, () => () => Promise.reject(new Error('smtp is down'))),
+    )
 
     const lead: CreatedLead = { id: leadId, formId: null, isSpam: false }
     expect(() => hook(lead)).not.toThrow()
@@ -388,11 +556,7 @@ describe('intake with email attached', () => {
     const testApp = createTestApp({
       onLeadCreated: (lead) => {
         pending = sendNewLeadEmails(
-          {
-            db: testApp.db,
-            publicBaseUrl: PUBLIC_BASE_URL,
-            createSender: () => () => Promise.reject(new Error('smtp is down')),
-          },
+          onceDeps(testApp, () => () => Promise.reject(new Error('smtp is down'))),
           lead.id,
         )
       },
@@ -418,10 +582,7 @@ describe('promotion out of quarantine', () => {
     const sender = recordingSender()
     const testApp = createTestApp({
       onLeadCreated: (lead) => {
-        pending = sendNewLeadEmails(
-          { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
-          lead.id,
-        )
+        pending = sendNewLeadEmails(onceDeps(testApp, sender.factory), lead.id)
       },
     })
     const cookie = await setupAdmin(testApp)

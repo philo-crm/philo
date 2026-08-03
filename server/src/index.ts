@@ -3,7 +3,7 @@ import { createApp } from './app.ts'
 import { loadOrCreateSessionKey } from './auth/session-key.ts'
 import { loadConfig } from './config.ts'
 import { openDatabase } from './db/index.ts'
-import { createLeadEmailHook } from './email/service.ts'
+import { createLeadEmailHook, sweepUnsentEmails } from './email/service.ts'
 import { isEmailConfigured, readEmailSettings } from './email/settings.ts'
 import { HONEYPOT_FIELD } from './intake/payload.ts'
 import { intakeUrls } from './intake/routes.ts'
@@ -22,6 +22,8 @@ const sessionKey = loadOrCreateSessionKey(config.dataDir)
 // own base URL is what keeps localhost dev working without a special case.
 const cookieSecure = config.publicBaseUrl.startsWith('https://')
 
+const emailDeps = { db, publicBaseUrl: config.publicBaseUrl }
+
 const app = createApp({
   db,
   sessionKey,
@@ -29,7 +31,7 @@ const app = createApp({
   trustProxy: config.trustProxy,
   // Email is the guaranteed notification channel — ADR-0004. Push (#13) hangs
   // off the same hook when it lands.
-  onLeadCreated: createLeadEmailHook({ db, publicBaseUrl: config.publicBaseUrl }),
+  onLeadCreated: createLeadEmailHook(emailDeps),
 })
 
 serve({ fetch: app.fetch, port: config.port }, () => {
@@ -54,6 +56,10 @@ serve({ fetch: app.fetch, port: config.port }, () => {
   } else {
     console.warn('  note: SMTP is not configured, so no lead notifications or acknowledgments are sent. Set it up in Settings.')
   }
+  // After the socket is up, and deliberately not awaited: retry schedules live
+  // in memory, so this is what carries the guarantee across a restart — but a
+  // mail server that is down must not hold up serving.
+  void sweepUnsentEmails(emailDeps)
   if (config.trustProxy) {
     // Worth stating positively: this is the setting that decides whether a header
     // a stranger can write is allowed to name the caller.

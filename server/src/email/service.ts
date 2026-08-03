@@ -1,9 +1,18 @@
-import { asc } from 'drizzle-orm'
+import { and, asc, desc, eq, gte } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
-import { emailTemplates, leadEvents, users } from '../db/schema.ts'
+import { emailTemplates, leadEvents, leads, users } from '../db/schema.ts'
 import { getLead, type LeadDetail, type LeadEventRecord } from '../leads/service.ts'
 import type { LeadCreatedHook } from '../notify.ts'
 import { buildContext, renderBody, renderSubject, type TemplateContext } from './render.ts'
+import {
+  maxAttempts,
+  retryDelayMs,
+  scheduleWithTimer,
+  SWEEP_LIMIT,
+  SWEEP_WINDOW_MS,
+  type RetryTuning,
+  type ScheduleRetry,
+} from './retry.ts'
 import {
   isEmailConfigured,
   normalizeEmailAddress,
@@ -24,6 +33,10 @@ export interface EmailDeps {
   publicBaseUrl: string
   /** Tests substitute one. Production leaves it unset and gets SMTP. */
   createSender?: EmailSenderFactory | undefined
+  /** Attempt count and backoff curve. Defaults are the production ones. */
+  retry?: RetryTuning | undefined
+  /** How a delayed retry is booked. Tests pass one that runs without waiting. */
+  scheduleRetry?: ScheduleRetry | undefined
 }
 
 interface TemplateRow {
@@ -84,23 +97,29 @@ function recordSent(db: Db, leadId: number, trigger: EmailTrigger, subject: stri
 }
 
 /**
- * A failed send, on the lead's own timeline. ADR-0004 makes email the
- * guaranteed channel, and a failure that exists only in stdout is one nobody
- * reading the lead will ever know about — which is the silently-missed-lead
- * failure that ADR is written against.
+ * A send Philo has given up on, on the lead's own timeline. ADR-0004 makes
+ * email the guaranteed channel, and a failure that exists only in stdout is one
+ * nobody reading the lead will ever know about — which is the silently-missed
+ * lead that ADR is written against.
+ *
+ * Written once, after the last attempt, never per attempt: a greylisting loop
+ * would otherwise put five identical notes on a timeline a person reads.
  *
  * Recorded as a system note rather than a new event type: the four types in
  * DESIGN.md (Data model) are the contract, and `clearLeadSpam` already
  * establishes that a system-authored note is how a fact reaches the timeline
  * without changing it.
  */
-function recordFailure(db: Db, leadId: number, trigger: EmailTrigger, error: unknown): void {
-  const reason = failureDetail(error) ?? 'no reason given'
+function recordGaveUp(db: Db, leadId: number, failure: SendFailure, attempts: number): void {
+  const reason = failureDetail(failure.error) ?? 'no reason given'
   db.insert(leadEvents)
     .values({
       leadId,
       type: 'note_added',
-      payload: JSON.stringify({ note: `Could not send the ${trigger} email: ${reason}`, system: true }),
+      payload: JSON.stringify({
+        note: `Could not send the ${failure.trigger} email after ${attempts} attempt${attempts === 1 ? '' : 's'}: ${reason}`,
+        system: true,
+      }),
       actor: 'system',
     })
     .run()
@@ -198,24 +217,37 @@ function record(leadId: number, write: () => void): void {
   }
 }
 
+/** A trigger that was attempted and did not get through, and why. */
+interface SendFailure {
+  trigger: EmailTrigger
+  error: unknown
+}
+
 /**
- * Both new-lead emails, best effort. Never rejects and never throws: DESIGN.md
- * (Intake endpoint) puts every downstream failure behind the 201 the form
- * already got, and the two sends are independent — a bounced acknowledgment
- * must not cost the operator their notification.
+ * One pass at both emails. Returns the triggers that failed — an empty list
+ * means there is nothing left owed, whether because everything went out or
+ * because nothing was owed in the first place.
+ *
+ * Never rejects and never throws: DESIGN.md (Intake endpoint) puts every
+ * downstream failure behind the 201 the form already got, and the two sends are
+ * independent — a bounced acknowledgment must not cost the operator their
+ * notification.
  */
-export async function sendNewLeadEmails(deps: EmailDeps, leadId: number): Promise<void> {
+async function attemptNewLeadEmails(deps: EmailDeps, leadId: number): Promise<SendFailure[]> {
+  const failures: SendFailure[] = []
   try {
     const lead = getLead(deps.db, leadId)
-    if (lead === undefined) return
+    if (lead === undefined) return failures
     // Belt to the callers' braces: intake and the promotion route both withhold
     // the hook for a quarantined lead already.
-    if (lead.isSpam) return
+    if (lead.isSpam) return failures
 
     const config = readEmailSettings(deps.db)
     if (!isEmailConfigured(config)) {
+      // Not a failure to retry: nothing about waiting a minute changes it, and
+      // the next boot's sweep picks the lead up once SMTP is filled in.
       console.warn(`lead ${leadId}: no SMTP settings configured, so no email was sent`)
-      return
+      return failures
     }
 
     const templates = readTemplates(deps.db)
@@ -232,7 +264,7 @@ export async function sendNewLeadEmails(deps: EmailDeps, leadId: number): Promis
         outcome = await sendOne(send, lead, context, templates, plan)
       } catch (error: unknown) {
         console.error(`lead ${leadId}: ${plan.trigger} email failed`, error)
-        record(leadId, () => recordFailure(deps.db, leadId, plan.trigger, error))
+        failures.push({ trigger: plan.trigger, error })
         continue
       }
       if (outcome.status === 'sent') {
@@ -242,12 +274,101 @@ export async function sendNewLeadEmails(deps: EmailDeps, leadId: number): Promis
   } catch (error: unknown) {
     console.error(`lead ${leadId}: new-lead email failed`, error)
   }
+  return failures
+}
+
+/**
+ * Leads currently being worked, so the boot sweep and a live intake cannot both
+ * be mid-send for the same one. Single-tenant means one process, so a set in
+ * memory is the whole of the coordination this needs — and `alreadySent` is
+ * still the durable guard behind it.
+ */
+const inFlight = new Set<number>()
+
+/**
+ * Both new-lead emails, retried on failure until they get through or the
+ * attempt budget runs out. ADR-0004 makes email the guaranteed channel;
+ * greylisting — a receiver refusing a first-time sender and accepting the same
+ * message minutes later — is the ordinary case a single attempt loses to.
+ *
+ * Resolves as soon as one attempt is done. Later attempts are booked on a timer
+ * and nothing awaits them, so a caller never waits on a retry.
+ */
+export async function sendNewLeadEmails(deps: EmailDeps, leadId: number, attempt = 1): Promise<void> {
+  if (inFlight.has(leadId)) return
+  inFlight.add(leadId)
+  let failures: SendFailure[]
+  try {
+    failures = await attemptNewLeadEmails(deps, leadId)
+  } finally {
+    inFlight.delete(leadId)
+  }
+  if (failures.length === 0) return
+
+  const limit = maxAttempts(deps.retry)
+  if (attempt >= limit) {
+    for (const failure of failures) {
+      console.error(`lead ${leadId}: giving up on the ${failure.trigger} email after ${limit} attempts`)
+      record(leadId, () => recordGaveUp(deps.db, leadId, failure, limit))
+    }
+    return
+  }
+
+  const delay = retryDelayMs(attempt, deps.retry)
+  console.warn(`lead ${leadId}: retrying ${failures.length} email(s) in ${Math.round(delay / 1000)}s`)
+  // A retry re-reads the lead and its timeline, so a trigger that did get
+  // through on this pass is skipped by `alreadySent` on the next one.
+  ;(deps.scheduleRetry ?? scheduleWithTimer)(() => {
+    void sendNewLeadEmails(deps, leadId, attempt + 1)
+  }, delay)
 }
 
 /** What `AppOptions.onLeadCreated` is wired to in production — see src/index.ts. */
 export function createLeadEmailHook(deps: EmailDeps): LeadCreatedHook {
   return (lead) => {
     void sendNewLeadEmails(deps, lead.id)
+  }
+}
+
+/**
+ * Every non-spam lead recent enough to still be owed an email. Deliberately not
+ * a query that works out which trigger is outstanding: `sendNewLeadEmails`
+ * already decides that per lead from the timeline, and a second copy of that
+ * rule in SQL is one that can drift out of agreement with the first. For a lead
+ * that needs nothing this costs two indexed reads.
+ */
+export function leadsAwaitingEmail(db: Db, since: Date, limit = SWEEP_LIMIT): number[] {
+  return db
+    .select({ id: leads.id })
+    .from(leads)
+    .where(and(eq(leads.isSpam, false), gte(leads.createdAt, since)))
+    .orderBy(desc(leads.createdAt))
+    .limit(limit)
+    .all()
+    .map((row) => row.id)
+}
+
+/**
+ * Catches up anything the last run of the process left owed — the retry
+ * schedule lives in memory, so without this a restart mid-backoff drops it, and
+ * a lead that arrived while SMTP was misconfigured would never be revisited.
+ *
+ * Never throws: this runs at boot, and an instance that will not start because
+ * a mail server is down is worse than one that missed a notification.
+ */
+export async function sweepUnsentEmails(deps: EmailDeps, now = new Date()): Promise<number> {
+  try {
+    const since = new Date(now.getTime() - SWEEP_WINDOW_MS)
+    const pending = leadsAwaitingEmail(deps.db, since)
+    if (pending.length === SWEEP_LIMIT) {
+      // Never silently: a truncated sweep looks exactly like a complete one.
+      console.warn(`email sweep hit its ${SWEEP_LIMIT}-lead ceiling; older leads in the window were skipped`)
+    }
+    for (const leadId of pending) await sendNewLeadEmails(deps, leadId)
+    return pending.length
+  } catch (error: unknown) {
+    console.error('email sweep failed', error)
+    return 0
   }
 }
 
