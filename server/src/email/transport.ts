@@ -78,7 +78,12 @@ export const smtpSender: EmailSenderFactory = (config) => async (email) => {
   }
 }
 
-/** nodemailer reports a recipient as either the bare address or an object. */
+/**
+ * nodemailer reports a recipient as either the bare address or an object, and
+ * echoes back whatever the envelope carried. Lowercased so the caller can match
+ * these against the addresses it asked for — which `normalizeEmailAddress`
+ * already lowercased — without the comparison resting on a server's casing.
+ */
 function addressOf(recipient: string | { address: string }): string {
-  return typeof recipient === 'string' ? recipient : recipient.address
+  return (typeof recipient === 'string' ? recipient : recipient.address).toLowerCase()
 }
