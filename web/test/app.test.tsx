@@ -53,6 +53,19 @@ describe('App', () => {
     expect(await screen.findByText('Bot Submission')).toBeDefined()
   })
 
+  it('reaches settings from the shell, and stops lighting Leads', async () => {
+    installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Leads' })
+
+    fireEvent.click(screen.getByRole('link', { name: 'Settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeDefined()
+    expect(window.location.pathname).toBe('/settings')
+    expect(await screen.findByLabelText('SMTP host')).toBeDefined()
+    expect(screen.getByRole('link', { name: 'Leads' }).getAttribute('aria-current')).toBeNull()
+  })
+
   it('reaches the funnel board from the shell', async () => {
     installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
     render(<App />)
