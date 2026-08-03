@@ -74,10 +74,10 @@ describe('sendNewLeadEmails', () => {
     expect(sender.sent).toHaveLength(2)
     const notify = byTemplate(sender.sent, 'New lead')
     const ack = byTemplate(sender.sent, 'Thanks for getting in touch')
-    expect(notify?.to).toBe('admin@example.com')
+    expect(notify?.to).toEqual(['admin@example.com'])
     expect(notify?.subject).toBe('New lead: Dana Rivers')
     expect(notify?.html).toContain(`${PUBLIC_BASE_URL}/leads/${leadId}`)
-    expect(ack?.to).toBe('dana@example.com')
+    expect(ack?.to).toEqual(['dana@example.com'])
     // DESIGN.md (Email): replies to the acknowledgment go to a real inbox.
     expect(ack?.replyTo).toBe(TEST_EMAIL_SETTINGS.replyTo)
     expect(ack?.html).toContain('Example Co')
@@ -177,7 +177,7 @@ describe('sendNewLeadEmails', () => {
       leadId,
     )
 
-    expect(sender.sent.map((email) => email.to)).toEqual(['admin@example.com'])
+    expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
   })
 
   it('sends the acknowledgment even when nobody has a login yet', async () => {
@@ -191,14 +191,38 @@ describe('sendNewLeadEmails', () => {
       leadId,
     )
 
-    expect(sender.sent.map((email) => email.to)).toEqual(['dana@example.com'])
+    expect(sender.sent.map((email) => email.to)).toEqual([['dana@example.com']])
+  })
+
+  it('will not send to an address a stranger wrote headers into', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    configureEmail(testApp)
+    const sender = recordingSender()
+    // Intake stores the address as submitted — it does no format check by
+    // design (intake/payload.ts), so this is the boundary that has to.
+    const leadId = await submitLead(testApp, {
+      name: 'Dana Rivers',
+      email: 'dana@example.com\r\nBcc: attacker@example.com',
+    })
+
+    await sendNewLeadEmails(
+      { db: testApp.db, publicBaseUrl: PUBLIC_BASE_URL, createSender: sender.factory },
+      leadId,
+    )
+
+    // The operator still hears about the lead; only the acknowledgment is dropped.
+    expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
+    expect(sentEvents(testApp, leadId).map((event) => event.payload['template'])).toEqual([
+      'new_lead_notify',
+    ])
   })
 
   it('isolates one failed send from the other, and records no event for it', async () => {
     const testApp = createTestApp()
     await setupAdmin(testApp)
     configureEmail(testApp)
-    const sender = recordingSender({ failOn: (email) => email.to === 'dana@example.com' })
+    const sender = recordingSender({ failOn: (email) => email.to.includes('dana@example.com') })
     const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
 
     await sendNewLeadEmails(
@@ -206,7 +230,7 @@ describe('sendNewLeadEmails', () => {
       leadId,
     )
 
-    expect(sender.sent.map((email) => email.to)).toEqual(['admin@example.com'])
+    expect(sender.sent.map((email) => email.to)).toEqual([['admin@example.com']])
     expect(sentEvents(testApp, leadId).map((event) => event.payload['template'])).toEqual([
       'new_lead_notify',
     ])
@@ -222,7 +246,7 @@ describe('sendNewLeadEmails', () => {
       db: testApp.db,
       publicBaseUrl: PUBLIC_BASE_URL,
       createSender: () => async (email: OutgoingEmail) => {
-        if (failing && email.to === 'dana@example.com') throw new Error('greylisted')
+        if (failing && email.to.includes('dana@example.com')) throw new Error('greylisted')
         sent.push(email)
       },
     }
@@ -232,7 +256,7 @@ describe('sendNewLeadEmails', () => {
     failing = false
     await sendNewLeadEmails(deps, leadId)
 
-    expect(sent.map((email) => email.to)).toEqual(['admin@example.com', 'dana@example.com'])
+    expect(sent.map((email) => email.to)).toEqual([['admin@example.com'], ['dana@example.com']])
   })
 
   it('does nothing for a lead that no longer exists', async () => {
@@ -302,7 +326,7 @@ describe('sendTestEmail', () => {
     const result = await sendTestEmail({ createSender: sender.factory }, TEST_EMAIL_SETTINGS, 'Ops@Example.com')
 
     expect(result).toEqual({ ok: true, to: 'ops@example.com' })
-    expect(sender.sent[0]?.to).toBe('ops@example.com')
+    expect(sender.sent[0]?.to).toEqual(['ops@example.com'])
   })
 
   it('refuses an address that is not one', async () => {

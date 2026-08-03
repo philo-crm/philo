@@ -10,7 +10,12 @@ import type { EmailSettings } from './settings.ts'
 export const SMTP_TIMEOUT_MS = 10_000
 
 export interface OutgoingEmail {
-  to: string
+  /**
+   * One entry per recipient, never a pre-joined header. Nodemailer builds the
+   * header from the list, so no value here can widen it into more addresses
+   * than there are entries.
+   */
+  to: string[]
   subject: string
   html: string
   /** Where a reply should land, when it is not the From address. */

@@ -89,14 +89,28 @@ interface SendPlan {
   replyTo?: string | undefined
 }
 
+/**
+ * Recipients this is willing to hand to a mail server. Intake deliberately does
+ * not validate the address a stranger typed (see intake/payload.ts), so this is
+ * the boundary that has to: `normalizeEmailAddress` admits no whitespace, which
+ * is what stops a submitted `dana@example.com\r\nBcc: …` from writing headers.
+ * An address that fails is dropped rather than refused — the lead is filed
+ * either way, and there was never anywhere to send it.
+ */
+function deliverable(addresses: (string | null)[]): string[] {
+  return addresses
+    .map((address) => (address === null ? undefined : normalizeEmailAddress(address)))
+    .filter((address): address is string => address !== undefined)
+}
+
 function plansFor(deps: EmailDeps, lead: LeadDetail, config: EmailSettings): SendPlan[] {
   return [
-    { trigger: 'new_lead_notify', to: operatorRecipients(deps.db) },
+    { trigger: 'new_lead_notify', to: deliverable(operatorRecipients(deps.db)) },
     {
       trigger: 'new_lead_ack',
       // A lead reachable only by phone gets no acknowledgment, which is not a
       // failure — intake accepts either contact method.
-      to: lead.email === null ? [] : [lead.email],
+      to: deliverable([lead.email]),
       // DESIGN.md (Email): replies go to a real inbox. The From address is the
       // fallback because it is the only other one the instance knows.
       replyTo: config.replyTo === '' ? config.fromAddress : config.replyTo,
@@ -124,7 +138,7 @@ async function sendOne(
   const html = renderBody(template.body, context)
   if (subject === undefined || html === undefined) return
 
-  await send({ to: plan.to.join(', '), subject, html, replyTo: plan.replyTo })
+  await send({ to: plan.to, subject, html, replyTo: plan.replyTo })
   // Only after the transport accepted it — an event for a message that never
   // left would make the timeline claim something that did not happen.
   recordSent(deps.db, lead.id, plan.trigger, subject, plan.to)
@@ -212,7 +226,7 @@ export async function sendTestEmail(
   const send = (deps.createSender ?? smtpSender)(config)
   try {
     await send({
-      to,
+      to: [to],
       subject: 'Philo test email',
       html: '<p>This is a test message from Philo. Your SMTP settings work.</p>',
     })

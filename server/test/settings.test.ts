@@ -191,7 +191,7 @@ describe('POST /api/v1/settings/email/test', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true, to: 'ops@example.com' })
-    expect(sent[0]?.to).toBe('ops@example.com')
+    expect(sent[0]?.to).toEqual(['ops@example.com'])
     expect(sent[0]?.subject).toBe('Philo test email')
   })
 

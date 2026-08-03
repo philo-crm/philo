@@ -41,6 +41,14 @@ export interface EmailSettings {
   /** Implicit TLS from the first byte (port 465). False means STARTTLS. */
   smtpSecure: boolean
   smtpUsername: string
+  /**
+   * Stored as given. SMTP AUTH replays the credential on every connection, so
+   * there is no hashed form that could work — unlike a session token, which
+   * Philo issues and can therefore compare against a hash. What follows from
+   * that is that the data directory holds a live credential, which is already
+   * true of the session signing key: DESIGN.md's backup story is "copy that
+   * directory", and it has to be protected like one.
+   */
   smtpPassword: string
   /** Display name on the From header. Empty sends the bare address. */
   fromName: string
