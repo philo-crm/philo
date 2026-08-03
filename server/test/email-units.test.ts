@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { buildContext, renderBody, renderSubject } from '../src/email/render.ts'
+import { buildContext, renderBody, renderSubject, MAX_SUBJECT_LENGTH } from '../src/email/render.ts'
 import {
   DEFAULT_EMAIL_SETTINGS,
   DEFAULT_SMTP_PORT,
@@ -97,6 +97,19 @@ describe('renderSubject', () => {
   it('leaves entities alone, because a subject is not HTML', () => {
     const built = context({ name: 'Ben & Co' })
     expect(renderSubject('New lead: {{lead.name}}', built)).toBe('New lead: Ben & Co')
+  })
+
+  it('truncates a subject a stranger made enormous', () => {
+    const built = context({ name: 'D'.repeat(5_000) })
+    const subject = renderSubject('New lead: {{lead.name}}', built)
+
+    expect(subject).toHaveLength(MAX_SUBJECT_LENGTH)
+    expect(subject?.endsWith('…')).toBe(true)
+  })
+
+  it('leaves a subject that already fits exactly alone', () => {
+    const built = context({ name: 'D'.repeat(MAX_SUBJECT_LENGTH) })
+    expect(renderSubject('{{lead.name}}', built)).toBe('D'.repeat(MAX_SUBJECT_LENGTH))
   })
 
   it('collapses newlines, so a submitted name cannot write headers', () => {

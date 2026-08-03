@@ -141,25 +141,37 @@ function plansFor(deps: EmailDeps, lead: LeadDetail, config: EmailSettings): Sen
   ]
 }
 
+/**
+ * Nothing to send is not the same as a send that failed, so the two answers are
+ * distinguishable — only the second belongs on the timeline as a failure.
+ */
+type SendOutcome = { status: 'skipped' } | { status: 'sent'; subject: string; accepted: string[] }
+
+const SKIPPED = { status: 'skipped' } as const
+
+/**
+ * Renders and sends one of the pair, and reports what happened. It deliberately
+ * writes nothing: the caller records the outcome, so a database that refuses
+ * the row cannot be mistaken for a message that failed to leave.
+ */
 async function sendOne(
-  deps: EmailDeps,
   send: SendEmail,
   lead: LeadDetail,
   context: TemplateContext,
   templates: Map<string, TemplateRow>,
   plan: SendPlan,
-): Promise<void> {
-  if (plan.to.length === 0) return
-  if (alreadySent(lead.events, plan.trigger)) return
+): Promise<SendOutcome> {
+  if (plan.to.length === 0) return SKIPPED
+  if (alreadySent(lead.events, plan.trigger)) return SKIPPED
 
   const template = templates.get(plan.trigger)
   // An operator who switched a template off has decided something; a missing
   // row means it was deleted, which is the same decision by another route.
-  if (template === undefined || !template.enabled) return
+  if (template === undefined || !template.enabled) return SKIPPED
 
   const subject = renderSubject(template.subject, context)
   const html = renderBody(template.body, context)
-  if (subject === undefined || html === undefined) return
+  if (subject === undefined || html === undefined) return SKIPPED
 
   const { accepted } = await send({ to: plan.to, subject, html, replyTo: plan.replyTo })
   // Only the addresses the server took — an event for a message that never
@@ -170,7 +182,20 @@ async function sendOne(
     const refused = plan.to.filter((address) => !accepted.includes(address))
     console.error(`lead ${lead.id}: ${plan.trigger} email refused for ${refused.join(', ')}`)
   }
-  recordSent(deps.db, lead.id, plan.trigger, subject, accepted)
+  return { status: 'sent', subject, accepted }
+}
+
+/**
+ * A timeline write, isolated. The message has already left — or already failed
+ * — by the time this runs, so a refused row (a locked database during a backup,
+ * say) must not decide whether the other email is attempted.
+ */
+function record(leadId: number, write: () => void): void {
+  try {
+    write()
+  } catch (error: unknown) {
+    console.error(`lead ${leadId}: could not record the email on the timeline`, error)
+  }
 }
 
 /**
@@ -202,11 +227,16 @@ export async function sendNewLeadEmails(deps: EmailDeps, leadId: number): Promis
     const send = (deps.createSender ?? smtpSender)(config)
 
     for (const plan of plansFor(deps, lead, config)) {
+      let outcome: SendOutcome
       try {
-        await sendOne(deps, send, lead, context, templates, plan)
+        outcome = await sendOne(send, lead, context, templates, plan)
       } catch (error: unknown) {
         console.error(`lead ${leadId}: ${plan.trigger} email failed`, error)
-        recordFailure(deps.db, leadId, plan.trigger, error)
+        record(leadId, () => recordFailure(deps.db, leadId, plan.trigger, error))
+        continue
+      }
+      if (outcome.status === 'sent') {
+        record(leadId, () => recordSent(deps.db, leadId, plan.trigger, outcome.subject, outcome.accepted))
       }
     }
   } catch (error: unknown) {

@@ -343,6 +343,9 @@ describe('sendNewLeadEmails', () => {
       leadId,
     )
 
+    // Asserted before the loop: without it a change that stopped either send
+    // would leave the loop body unrun and this test green over no coverage.
+    expect(sender.sent).toHaveLength(2)
     for (const email of sender.sent) {
       expect(email.subject.length).toBeLessThanOrEqual(MAX_SUBJECT_LENGTH)
     }
