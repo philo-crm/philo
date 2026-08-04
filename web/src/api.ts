@@ -71,6 +71,10 @@ export const MAX_STAGE_NAME_LENGTH = 80
 /** Mirrors MAX_NAME_LENGTH in server/src/email/settings.ts. */
 export const MAX_SETTINGS_NAME_LENGTH = 200
 
+/** Mirrors the caps in server/src/email/templates.ts, so a box can stop first. */
+export const MAX_TEMPLATE_SUBJECT_LENGTH = 500
+export const MAX_TEMPLATE_BODY_LENGTH = 20_000
+
 const LEADS_BASE = '/api/v1/leads'
 
 const STAGES_BASE = '/api/v1/stages'
@@ -261,6 +265,18 @@ const SETTINGS_MESSAGES: Record<string, string> = {
   invalid_email: 'Enter the address the test should be sent to.',
   not_configured: 'Fill in an SMTP host and a sender address first, then save.',
   send_failed: 'The mail server refused the message.',
+  invalid_subject: `A subject needs text, and has to fit within ${MAX_TEMPLATE_SUBJECT_LENGTH} characters.`,
+  invalid_body: `A body needs text, and has to fit within ${MAX_TEMPLATE_BODY_LENGTH} characters.`,
+  invalid_enabled: 'The server could not read that request.',
+  // Both carry what Handlebars said, which `settingsErrorMessage` appends —
+  // "Parse error on line 2" is the half that says where to look.
+  invalid_subject_template: 'The subject is not valid Handlebars, so nothing was saved.',
+  invalid_body_template: 'The body is not valid Handlebars, so nothing was saved.',
+  invalid_lead: 'That lead no longer exists, so there was nothing to preview against.',
+  not_found: 'That template no longer exists. Reload and try again.',
+  // Reachable before the body's own cap bites: the server bounds the request in
+  // bytes and the box counts characters, which differ for anything non-ASCII.
+  payload_too_large: 'That is larger than the server will accept. Shorten the body.',
 }
 
 /**
@@ -294,4 +310,76 @@ export async function updateEmailSettings(patch: EmailSettingsPatch): Promise<Em
  */
 export async function sendTestEmail(to: string): Promise<void> {
   await sendJson<{ ok: true }>('POST', `${EMAIL_SETTINGS_BASE}/test`, { to })
+}
+
+/** Mirrors the row shape in server/src/email/templates.ts. */
+export interface EmailTemplate {
+  trigger: string
+  subject: string
+  body: string
+  enabled: boolean
+  updatedAt: string
+}
+
+/**
+ * The boxes as they are typed. Preview and test-send both take one, so neither
+ * needs a save first — which is what makes edit → preview a loop rather than a
+ * commit. `leadId` left out renders against the server's sample lead.
+ */
+export interface EmailTemplateDraft {
+  subject?: string
+  body?: string
+  leadId?: number
+}
+
+export interface EmailTemplatePreview {
+  subject: string
+  body: string
+  /** Null when the built-in sample lead was used. */
+  leadId: number | null
+}
+
+const TEMPLATES_BASE = `${EMAIL_SETTINGS_BASE}/templates`
+
+export async function fetchEmailTemplates(signal?: AbortSignal): Promise<EmailTemplate[]> {
+  const body = await getJson<{ templates: EmailTemplate[] }>(TEMPLATES_BASE, signal)
+  return body.templates
+}
+
+/** Refused outright if the source does not render, so nothing saves silently. */
+export async function updateEmailTemplate(
+  trigger: string,
+  patch: { subject?: string; body?: string; enabled?: boolean },
+): Promise<EmailTemplate> {
+  const body = await sendJson<{ template: EmailTemplate }>(
+    'PATCH',
+    `${TEMPLATES_BASE}/${trigger}`,
+    patch,
+  )
+  return body.template
+}
+
+export async function previewEmailTemplate(
+  trigger: string,
+  draft: EmailTemplateDraft,
+): Promise<EmailTemplatePreview> {
+  const body = await sendJson<{ preview: EmailTemplatePreview }>(
+    'POST',
+    `${TEMPLATES_BASE}/${trigger}/preview`,
+    draft,
+  )
+  return body.preview
+}
+
+/** Goes to the signed-in operator's own address — the server decides, not the screen. */
+export async function sendTemplateTestEmail(
+  trigger: string,
+  draft: EmailTemplateDraft,
+): Promise<string> {
+  const body = await sendJson<{ ok: true; to: string }>(
+    'POST',
+    `${TEMPLATES_BASE}/${trigger}/test`,
+    draft,
+  )
+  return body.to
 }

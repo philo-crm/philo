@@ -1,5 +1,11 @@
 import { vi } from 'vitest'
-import type { EmailSettings, LeadDetail, LeadEventRecord, StageRecord } from '../../src/api.ts'
+import type {
+  EmailSettings,
+  EmailTemplate,
+  LeadDetail,
+  LeadEventRecord,
+  StageRecord,
+} from '../../src/api.ts'
 import type { User } from '../../src/auth.ts'
 
 /**
@@ -28,6 +34,9 @@ export interface FakeApi {
   testEmailFailure: string | undefined
   /** Every address a test-send was accepted for, in order. */
   testEmailsSent: string[]
+  emailTemplates: EmailTemplate[]
+  /** Every template test-send that went out, rendered as the server would have. */
+  templateEmailsSent: { trigger: string; subject: string; body: string }[]
   /** Every request the app made, in order. */
   calls: {
     method: string
@@ -53,6 +62,50 @@ export const TEST_EMAIL_SETTINGS: StoredEmailSettings = {
   fromAddress: 'no-reply@example.com',
   replyTo: 'hello@example.com',
   businessName: 'Example Co',
+}
+
+export const TEST_EMAIL_TEMPLATES: EmailTemplate[] = [
+  {
+    trigger: 'new_lead_notify',
+    subject: 'New lead: {{lead.name}}',
+    body: '<p>A new lead just came in.</p>\n<p><a href="{{lead_url}}">Open the lead</a></p>',
+    enabled: true,
+    updatedAt: '2026-07-01T12:00:00.000Z',
+  },
+  {
+    trigger: 'new_lead_ack',
+    subject: 'Thanks for getting in touch',
+    body: '<p>Hi {{lead.name}},</p>\n<p>&mdash; {{business.name}}</p>',
+    enabled: true,
+    updatedAt: '2026-07-01T12:00:00.000Z',
+  },
+]
+
+/** Where the address of whoever is signed in ends up — the server picks it, not the screen. */
+const TEMPLATE_TEST_RECIPIENT = TEST_USER.email
+
+/** What the server's sample lead renders to. Matches SAMPLE_LEAD in email/templates.ts. */
+const SAMPLE_CONTEXT: Record<string, string> = {
+  'lead.name': 'Sample Applicant',
+  'lead.email': 'applicant@example.com',
+  'lead.phone': '555-0100',
+  'lead.source': 'Careers page',
+  'business.name': 'Example Co',
+  lead_url: 'http://localhost:3000/leads/1',
+}
+
+/**
+ * Enough of Handlebars to exercise the client contract: variables substitute,
+ * and a block left open fails the way the real engine's parse error does.
+ * Pulling the engine itself into the web bundle's tests would buy nothing —
+ * what these tests check is which request the screen sends and what it does
+ * with the answer.
+ */
+function renderFake(source: string): string | undefined {
+  const opened = (source.match(/\{\{#[\w.]+/g) ?? []).length
+  const closed = (source.match(/\{\{\/[\w.]+/g) ?? []).length
+  if (opened !== closed) return undefined
+  return source.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_match, key: string) => SAMPLE_CONTEXT[key] ?? '')
 }
 
 /** Matches the server's deliberately loose check — see email/settings.ts. */
@@ -271,6 +324,72 @@ function handleEmailSettings(api: FakeApi, method: string, path: string, body: u
   return undefined
 }
 
+/**
+ * The template surface, with the same refusals the server has: source that does
+ * not render is answered as a 400 carrying the engine's complaint, and neither
+ * preview nor test-send writes anything.
+ */
+function handleEmailTemplates(
+  api: FakeApi,
+  method: string,
+  path: string,
+  body: unknown,
+): Response | undefined {
+  const base = '/api/v1/settings/email/templates'
+  if (method === 'GET' && path === base) return jsonResponse(200, { templates: api.emailTemplates })
+
+  const match = new RegExp(`^${base}/([a-z_]+)(/preview|/test)?$`).exec(path)
+  if (match === null) return undefined
+  const template = api.emailTemplates.find((row) => row.trigger === match[1])
+  if (template === undefined) return jsonResponse(404, { error: 'not_found' })
+
+  const payload = (body ?? {}) as Record<string, unknown>
+  const subject = typeof payload['subject'] === 'string' ? payload['subject'] : template.subject
+  const draftBody = typeof payload['body'] === 'string' ? payload['body'] : template.body
+  if (subject.trim() === '') return jsonResponse(400, { error: 'invalid_subject' })
+  if (draftBody.trim() === '') return jsonResponse(400, { error: 'invalid_body' })
+
+  const renderedSubject = renderFake(subject)
+  if (renderedSubject === undefined) {
+    return jsonResponse(400, { error: 'invalid_subject_template', detail: 'Parse error.' })
+  }
+  const renderedBody = renderFake(draftBody)
+  if (renderedBody === undefined) {
+    return jsonResponse(400, { error: 'invalid_body_template', detail: 'Parse error.' })
+  }
+
+  if (method === 'PATCH' && match[2] === undefined) {
+    template.subject = subject.trim()
+    template.body = draftBody
+    if (typeof payload['enabled'] === 'boolean') template.enabled = payload['enabled']
+    return jsonResponse(200, { template })
+  }
+  if (method === 'POST' && match[2] === '/preview') {
+    const leadId = typeof payload['leadId'] === 'number' ? payload['leadId'] : null
+    if (leadId !== null && !api.leads.some((lead) => lead.id === leadId)) {
+      return jsonResponse(400, { error: 'invalid_lead' })
+    }
+    return jsonResponse(200, {
+      preview: { subject: renderedSubject, body: renderedBody, leadId },
+    })
+  }
+  if (method === 'POST' && match[2] === '/test') {
+    if (api.emailSettings.smtpHost === '' || api.emailSettings.fromAddress === '') {
+      return jsonResponse(409, { error: 'not_configured' })
+    }
+    if (api.testEmailFailure !== undefined) {
+      return jsonResponse(502, { error: 'send_failed', detail: api.testEmailFailure })
+    }
+    api.templateEmailsSent.push({
+      trigger: template.trigger,
+      subject: renderedSubject,
+      body: renderedBody,
+    })
+    return jsonResponse(200, { ok: true, to: TEMPLATE_TEST_RECIPIENT })
+  }
+  return undefined
+}
+
 function handle(api: FakeApi, method: string, path: string, query: URLSearchParams, body: unknown): Response {
   if (method === 'GET' && path === '/api/v1/auth/status') {
     return jsonResponse(200, { needsSetup: false, authenticated: api.user !== undefined })
@@ -294,6 +413,8 @@ function handle(api: FakeApi, method: string, path: string, query: URLSearchPara
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
   const stageAnswer = handleStages(api, method, path, body)
   if (stageAnswer !== undefined) return stageAnswer
+  const templateAnswer = handleEmailTemplates(api, method, path, body)
+  if (templateAnswer !== undefined) return templateAnswer
   const settingsAnswer = handleEmailSettings(api, method, path, body)
   if (settingsAnswer !== undefined) return settingsAnswer
 
@@ -357,13 +478,16 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
     emailSettings: TEST_EMAIL_SETTINGS,
     testEmailFailure: undefined,
     testEmailsSent: [],
+    emailTemplates: TEST_EMAIL_TEMPLATES,
+    templateEmailsSent: [],
     calls: [],
     ...overrides,
   }
-  // Owned outright: the funnel and settings handlers mutate in place, and both
-  // defaults are one object shared by every test in the run.
+  // Owned outright: the funnel, settings and template handlers mutate in place,
+  // and each default is one object shared by every test in the run.
   api.stages = structuredClone(api.stages)
   api.emailSettings = structuredClone(api.emailSettings)
+  api.emailTemplates = structuredClone(api.emailTemplates)
 
   vi.stubGlobal('fetch', async (input: unknown, init?: RequestInit) => {
     const url = new URL(String(input), 'http://philo.example.com')

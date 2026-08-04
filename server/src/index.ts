@@ -28,6 +28,7 @@ const app = createApp({
   db,
   sessionKey,
   cookieSecure,
+  publicBaseUrl: config.publicBaseUrl,
   trustProxy: config.trustProxy,
   // Email is the guaranteed notification channel — ADR-0004. Push (#13) hangs
   // off the same hook when it lands.

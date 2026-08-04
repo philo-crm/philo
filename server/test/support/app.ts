@@ -57,8 +57,12 @@ export function createPublicDir({ withPwaFiles = true } = {}): string {
  */
 const FAST_THROTTLE = { baseDelayMs: 1, maxDelayMs: 2 }
 
+/** What `{{lead_url}}` resolves against in tests, mirroring the config default. */
+export const TEST_PUBLIC_BASE_URL = 'http://localhost:3000'
+
 export function createTestApp(
   options: {
+    publicBaseUrl?: string
     cookieSecure?: boolean
     authTuning?: AuthTuning
     intakeTuning?: IntakeTuning | undefined
@@ -77,6 +81,7 @@ export function createTestApp(
   const app = createApp({
     db,
     sessionKey: loadOrCreateSessionKey(dataDir),
+    publicBaseUrl: options.publicBaseUrl ?? TEST_PUBLIC_BASE_URL,
     cookieSecure: options.cookieSecure ?? false,
     trustProxy: options.trustProxy ?? false,
     publicDir,

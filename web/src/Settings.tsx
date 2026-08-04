@@ -8,6 +8,7 @@ import {
   type EmailSettings,
   type EmailSettingsPatch,
 } from './api.ts'
+import { EmailTemplates } from './EmailTemplates.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface SettingsProps {
@@ -19,22 +20,27 @@ export function Settings({ onSessionExpired }: SettingsProps) {
   const settings = useResource(load)
   useSessionGuard(settings.error, onSessionExpired)
 
-  if (settings.data === undefined) {
-    return (
-      <section className="screen">
-        <h1>Settings</h1>
-        {settings.error === undefined ? (
-          <p className="empty">Loading…</p>
-        ) : (
-          <p className="notice notice-error" role="alert">
-            {settingsErrorMessage(settings.error)}
-          </p>
-        )}
-      </section>
-    )
-  }
-
-  return <EmailSettingsForm initial={settings.data} onSaved={settings.set} />
+  return (
+    <>
+      {settings.data === undefined ? (
+        <section className="screen">
+          <h1>Settings</h1>
+          {settings.error === undefined ? (
+            <p className="empty">Loading…</p>
+          ) : (
+            <p className="notice notice-error" role="alert">
+              {settingsErrorMessage(settings.error)}
+            </p>
+          )}
+        </section>
+      ) : (
+        <EmailSettingsForm initial={settings.data} onSaved={settings.set} />
+      )}
+      {/* Outside the branch above: a template is editable whether or not the
+          SMTP settings loaded, and the two fail independently. */}
+      <EmailTemplates onSessionExpired={onSessionExpired} />
+    </>
+  )
 }
 
 /** The editable copy. Strings throughout — the port is parsed on the way out. */

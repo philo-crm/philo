@@ -55,6 +55,11 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
 ])
 
 export interface AppOptions extends AuthDeps {
+  /**
+   * Externally reachable origin, from the config of the same name. Builds
+   * `{{lead_url}}` when the settings screen previews an email template.
+   */
+  publicBaseUrl: string
   /** Directory holding the built PWA. Overridable for tests. */
   publicDir?: string
   /** Login throttle and hash-concurrency limits. Defaults are the production ones. */
@@ -183,7 +188,11 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   app.route(`${API_PREFIX}/stages`, createStageRoutes({ db: options.db }))
   app.route(
     `${API_PREFIX}/settings`,
-    createSettingsRoutes({ db: options.db, createEmailSender: options.createEmailSender }),
+    createSettingsRoutes({
+      db: options.db,
+      publicBaseUrl: options.publicBaseUrl,
+      createEmailSender: options.createEmailSender,
+    }),
   )
 
   // Deliberately unauthenticated, cross-origin, and form-encoding-friendly: the
