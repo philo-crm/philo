@@ -370,6 +370,31 @@ describe('POST /api/v1/settings/email/templates/:trigger/test', () => {
     expect(storedTemplate(testApp, 'new_lead_ack')?.body).toBe(DEFAULT_EMAIL_TEMPLATES[1].body)
   })
 
+  it('carries the acknowledgment’s reply-to, as the real send does', async () => {
+    const sent: OutgoingEmail[] = []
+    const testApp = withSender(sent)
+    const cookie = await setupAdmin(testApp)
+    configureEmail(testApp, { replyTo: 'hello@example.com' })
+
+    await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, cookie))
+    // The notification has no reply-to in production, so its rehearsal has none.
+    await testApp.app.request(`${NOTIFY_PATH}/test`, authed('POST', {}, cookie))
+
+    expect(sent[0]?.replyTo).toBe('hello@example.com')
+    expect(sent[1]?.replyTo).toBeUndefined()
+  })
+
+  it('falls back to the from address when no reply-to is set', async () => {
+    const sent: OutgoingEmail[] = []
+    const testApp = withSender(sent)
+    const cookie = await setupAdmin(testApp)
+    configureEmail(testApp, { replyTo: '' })
+
+    await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, cookie))
+
+    expect(sent[0]?.replyTo).toBe('no-reply@example.com')
+  })
+
   it('says so when SMTP has not been set up', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)

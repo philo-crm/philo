@@ -46,7 +46,10 @@ export function buildContext(
  * template — "Parse error on line 3" is what tells them where the typo is —
  * so it is carried rather than flattened into a code.
  */
-export type RenderResult = { ok: true; value: string } | { ok: false; message: string }
+export type RenderResult =
+  | { ok: true; value: string }
+  /** `error` is what threw, kept for the log; `message` is what a person is shown. */
+  | { ok: false; message: string; error: unknown }
 
 /** Enough of a Handlebars complaint to act on, without pasting a stack into a screen. */
 export const MAX_RENDER_ERROR_LENGTH = 300
@@ -68,6 +71,7 @@ function render(source: string, context: TemplateContext, noEscape: boolean): Re
     const trimmed = message.trim()
     return {
       ok: false,
+      error,
       message: (trimmed === '' ? 'the template could not be rendered' : trimmed).slice(
         0,
         MAX_RENDER_ERROR_LENGTH,
@@ -86,9 +90,16 @@ export function renderBody(source: string, context: TemplateContext): string | u
   return swallow(renderBodyResult(source, context))
 }
 
+/**
+ * The whole thing that threw, not the trimmed sentence: a swallowed render is
+ * silent by construction (ADR-0004 makes email the guaranteed channel, and this
+ * is the one failure nothing upstream reports), so this line is the only
+ * diagnostic there is. The editor's copy of the message is separate — see
+ * `renderBodyResult`, whose caller has someone to show it to.
+ */
 function swallow(result: RenderResult): string | undefined {
   if (result.ok) return result.value
-  console.error('email template failed to render', result.message)
+  console.error('email template failed to render', result.error)
   return undefined
 }
 

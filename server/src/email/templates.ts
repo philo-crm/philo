@@ -261,9 +261,8 @@ export function updateEmailTemplate(
   const next = applyPatch(fieldsOf(stored), patch)
   if (!next.ok) return next
 
-  // Only when there is new source to check. Rendering on an `enabled`-only
-  // toggle would make a template that somehow got stored broken impossible to
-  // switch off, which is the one thing an operator would want to do with it.
+  // Only when there is new source to check, so a patch that touches nothing but
+  // `enabled` cannot be refused by source it did not write.
   //
   // Deliberately against the sample rather than any lead the caller named: the
   // question here is whether the template is well-formed, and one lead's data

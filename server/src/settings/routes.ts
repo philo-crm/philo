@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { currentUser, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
-import { sendTestEmail, type TestEmailError } from '../email/service.ts'
+import { ackReplyTo, sendTestEmail, type TestEmailError } from '../email/service.ts'
 import {
   readEmailSettings,
   validateEmailSettings,
@@ -154,11 +154,18 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
     const rendered = previewEmailTemplate(deps.db, deps.publicBaseUrl, trigger, body)
     if (!rendered.ok) return templateError(c, rendered)
 
+    const config = readEmailSettings(deps.db)
     const result = await sendTestEmail(
       { createSender: deps.createEmailSender },
-      readEmailSettings(deps.db),
+      config,
       currentUser(c).email,
-      { subject: rendered.value.subject, html: rendered.value.body },
+      {
+        subject: rendered.value.subject,
+        html: rendered.value.body,
+        // The acknowledgment carries one in production, so the rehearsal has to
+        // as well — a reply-to that is wrong is exactly what this test is for.
+        ...(trigger === 'new_lead_ack' ? { replyTo: ackReplyTo(config) } : {}),
+      },
     )
     if (result.ok) return c.json({ ok: true, to: result.to })
     return c.json(

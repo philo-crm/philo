@@ -167,6 +167,16 @@ function deliverable(addresses: (string | null)[]): string[] {
     .filter((address): address is string => address !== undefined)
 }
 
+/**
+ * Where a reply to the acknowledgment lands — DESIGN.md (Email): a real inbox.
+ * The From address is the fallback because it is the only other one the instance
+ * knows. Shared with the settings screen's template test-send, so a rehearsal
+ * carries the same header the real message will.
+ */
+export function ackReplyTo(config: EmailSettings): string {
+  return config.replyTo === '' ? config.fromAddress : config.replyTo
+}
+
 function plansFor(deps: EmailDeps, lead: LeadDetail, config: EmailSettings): SendPlan[] {
   return [
     { trigger: 'new_lead_notify', to: deliverable(operatorRecipients(deps.db)) },
@@ -175,9 +185,7 @@ function plansFor(deps: EmailDeps, lead: LeadDetail, config: EmailSettings): Sen
       // A lead reachable only by phone gets no acknowledgment, which is not a
       // failure — intake accepts either contact method.
       to: deliverable([lead.email]),
-      // DESIGN.md (Email): replies go to a real inbox. The From address is the
-      // fallback because it is the only other one the instance knows.
-      replyTo: config.replyTo === '' ? config.fromAddress : config.replyTo,
+      replyTo: ackReplyTo(config),
     },
   ]
 }
@@ -413,6 +421,12 @@ function failureDetail(error: unknown): string | undefined {
   return trimmed.slice(0, MAX_FAILURE_DETAIL)
 }
 
+/** What a test-send puts in the message when the caller does not supply one. */
+const SMTP_TEST_MESSAGE = {
+  subject: 'Philo test email',
+  html: '<p>This is a test message from Philo. Your SMTP settings work.</p>',
+}
+
 /**
  * The settings screen's test-send. Unlike a lead's email this one reports its
  * failure — the whole point is telling an operator why their SMTP settings do
@@ -423,18 +437,12 @@ function failureDetail(error: unknown): string | undefined {
  * the stored one — so the screen saves before it tests, and a green result is a
  * statement about what the next real lead will be sent with.
  */
-/** What a test-send puts in the message when the caller does not supply one. */
-const SMTP_TEST_MESSAGE = {
-  subject: 'Philo test email',
-  html: '<p>This is a test message from Philo. Your SMTP settings work.</p>',
-}
-
 export async function sendTestEmail(
   deps: { createSender?: EmailSenderFactory | undefined },
   config: EmailSettings,
   rawTo: unknown,
   /** A rendered template, when the thing being tested is the template rather than SMTP. */
-  message: { subject: string; html: string } = SMTP_TEST_MESSAGE,
+  message: { subject: string; html: string; replyTo?: string | undefined } = SMTP_TEST_MESSAGE,
 ): Promise<TestEmailResult> {
   if (typeof rawTo !== 'string') return { ok: false, error: 'invalid_email' }
   const to = normalizeEmailAddress(rawTo)

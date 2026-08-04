@@ -137,12 +137,18 @@ function TemplateEditor({ template }: TemplateEditorProps) {
       setSubject(saved.subject)
       setBody(saved.body)
       setEnabled(saved.enabled)
+      // A preview describes the boxes it was taken from. Leaving one up next to
+      // "Template saved." would let it be read as a picture of what was stored.
+      setPreview(undefined)
       return 'Template saved.'
     })
   }
 
   function handlePreview() {
     void run(async () => {
+      // Dropped before the round trip, so a refused draft leaves an error rather
+      // than an error next to the output of the source it replaced.
+      setPreview(undefined)
       setPreview(await previewEmailTemplate(template.trigger, draft()))
       return 'Preview updated.'
     })
