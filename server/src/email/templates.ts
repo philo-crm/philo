@@ -18,10 +18,15 @@ export const MAX_TEMPLATE_SUBJECT_LENGTH = 500
 
 /**
  * Chosen against the 64 KiB request ceiling in app.ts, which counts bytes while
- * this counts UTF-16 code units: at three UTF-8 bytes per unit — the worst any
- * text reaches — a full-length body and subject together come to about 61 KiB,
- * so the cap here is what refuses an over-long template rather than the body
- * limit's 413.
+ * this counts UTF-16 code units. For text — three UTF-8 bytes per unit at worst
+ * — a full-length body and subject together come to about 61 KiB, so this cap is
+ * what refuses an over-long template and the operator gets a named field back.
+ *
+ * Not a guarantee, and deliberately not one: JSON escapes a control character to
+ * `\uXXXX`, six bytes for one unit, so a body made of them trips the body limit
+ * first and comes back as a 413. That is a refusal either way, and the shape of
+ * input that reaches it is not one an editor produces — web/src/api.ts names the
+ * 413 rather than pretending it cannot happen.
  */
 export const MAX_TEMPLATE_BODY_LENGTH = 20_000
 
