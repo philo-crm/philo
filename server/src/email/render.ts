@@ -41,6 +41,17 @@ export function buildContext(
 }
 
 /**
+ * A render that worked, or the sentence Handlebars gave for why it did not.
+ * That sentence is the whole value of the failure to someone editing a
+ * template — "Parse error on line 3" is what tells them where the typo is —
+ * so it is carried rather than flattened into a code.
+ */
+export type RenderResult = { ok: true; value: string } | { ok: false; message: string }
+
+/** Enough of a Handlebars complaint to act on, without pasting a stack into a screen. */
+export const MAX_RENDER_ERROR_LENGTH = 300
+
+/**
  * Renders one template. Compilation and evaluation both throw on input this
  * cannot control — an unclosed block, a helper that does not exist — and the
  * answer to either is the same: no email rather than a crashed hook.
@@ -49,17 +60,36 @@ export function buildContext(
  * A body is HTML and must escape what a stranger typed into a form; a subject
  * is a header, where `&amp;` would be shown literally to the reader.
  */
-function render(source: string, context: TemplateContext, noEscape: boolean): string | undefined {
+function render(source: string, context: TemplateContext, noEscape: boolean): RenderResult {
   try {
-    return Handlebars.compile(source, { noEscape })(context)
+    return { ok: true, value: Handlebars.compile(source, { noEscape })(context) }
   } catch (error: unknown) {
-    console.error('email template failed to render', error)
-    return undefined
+    const message = error instanceof Error ? error.message : String(error)
+    const trimmed = message.trim()
+    return {
+      ok: false,
+      message: (trimmed === '' ? 'the template could not be rendered' : trimmed).slice(
+        0,
+        MAX_RENDER_ERROR_LENGTH,
+      ),
+    }
   }
 }
 
-export function renderBody(source: string, context: TemplateContext): string | undefined {
+/** The body, or the complaint — for the editor, which has someone to show it to. */
+export function renderBodyResult(source: string, context: TemplateContext): RenderResult {
   return render(source, context, false)
+}
+
+/** The same for the send path, where there is nobody to tell and the answer is silence. */
+export function renderBody(source: string, context: TemplateContext): string | undefined {
+  return swallow(renderBodyResult(source, context))
+}
+
+function swallow(result: RenderResult): string | undefined {
+  if (result.ok) return result.value
+  console.error('email template failed to render', result.message)
+  return undefined
 }
 
 /**
@@ -75,10 +105,14 @@ export const MAX_SUBJECT_LENGTH = 200
  * carries is collapsed. Without this a lead who types a CRLF into the name
  * field of a public form writes headers into the operator's notification.
  */
-export function renderSubject(source: string, context: TemplateContext): string | undefined {
+export function renderSubjectResult(source: string, context: TemplateContext): RenderResult {
   const rendered = render(source, context, true)
-  if (rendered === undefined) return undefined
-  const collapsed = rendered.replace(/[\r\n]+/g, ' ').trim()
-  if (collapsed.length <= MAX_SUBJECT_LENGTH) return collapsed
-  return `${collapsed.slice(0, MAX_SUBJECT_LENGTH - 1).trimEnd()}…`
+  if (!rendered.ok) return rendered
+  const collapsed = rendered.value.replace(/[\r\n]+/g, ' ').trim()
+  if (collapsed.length <= MAX_SUBJECT_LENGTH) return { ok: true, value: collapsed }
+  return { ok: true, value: `${collapsed.slice(0, MAX_SUBJECT_LENGTH - 1).trimEnd()}…` }
+}
+
+export function renderSubject(source: string, context: TemplateContext): string | undefined {
+  return swallow(renderSubjectResult(source, context))
 }

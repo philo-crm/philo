@@ -423,10 +423,18 @@ function failureDetail(error: unknown): string | undefined {
  * the stored one — so the screen saves before it tests, and a green result is a
  * statement about what the next real lead will be sent with.
  */
+/** What a test-send puts in the message when the caller does not supply one. */
+const SMTP_TEST_MESSAGE = {
+  subject: 'Philo test email',
+  html: '<p>This is a test message from Philo. Your SMTP settings work.</p>',
+}
+
 export async function sendTestEmail(
   deps: { createSender?: EmailSenderFactory | undefined },
   config: EmailSettings,
   rawTo: unknown,
+  /** A rendered template, when the thing being tested is the template rather than SMTP. */
+  message: { subject: string; html: string } = SMTP_TEST_MESSAGE,
 ): Promise<TestEmailResult> {
   if (typeof rawTo !== 'string') return { ok: false, error: 'invalid_email' }
   const to = normalizeEmailAddress(rawTo)
@@ -435,11 +443,7 @@ export async function sendTestEmail(
 
   const send = (deps.createSender ?? smtpSender)(config)
   try {
-    const { accepted } = await send({
-      to: [to],
-      subject: 'Philo test email',
-      html: '<p>This is a test message from Philo. Your SMTP settings work.</p>',
-    })
+    const { accepted } = await send({ to: [to], ...message })
     // A server that connected, authenticated, and then refused the recipient is
     // not a working configuration, however cheerfully the transport returned.
     if (accepted.length === 0) return { ok: false, error: 'send_failed', detail: 'the server refused the recipient' }

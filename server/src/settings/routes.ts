@@ -1,6 +1,6 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import type { AuthEnv } from '../auth/middleware.ts'
+import { currentUser, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { sendTestEmail, type TestEmailError } from '../email/service.ts'
 import {
@@ -9,11 +9,21 @@ import {
   writeEmailSettings,
   type EmailSettings,
 } from '../email/settings.ts'
+import {
+  isEmailTrigger,
+  listEmailTemplates,
+  previewEmailTemplate,
+  updateEmailTemplate,
+  type EmailTemplateError,
+  type TemplateResult,
+} from '../email/templates.ts'
 import type { EmailSenderFactory } from '../email/transport.ts'
 import { readJsonBody } from '../json-body.ts'
 
 export interface SettingsRoutesDeps {
   db: Db
+  /** Builds `{{lead_url}}` in a template preview, as it does on the send path. */
+  publicBaseUrl: string
   createEmailSender?: EmailSenderFactory | undefined
 }
 
@@ -38,6 +48,24 @@ const TEST_STATUS: Record<TestEmailError, ContentfulStatusCode> = {
   not_configured: 409,
   // The failure came from the SMTP server, not from here.
   send_failed: 502,
+}
+
+/** A refused template edit, with the Handlebars complaint when there is one. */
+function templateError(c: Context<AuthEnv>, result: TemplateResult<unknown> & { ok: false }) {
+  return c.json(
+    { error: result.error, ...(result.detail === undefined ? {} : { detail: result.detail }) },
+    TEMPLATE_STATUS[result.error],
+  )
+}
+
+const TEMPLATE_STATUS: Record<EmailTemplateError, ContentfulStatusCode> = {
+  not_found: 404,
+  invalid_subject: 400,
+  invalid_body: 400,
+  invalid_enabled: 400,
+  invalid_subject_template: 400,
+  invalid_body_template: 400,
+  invalid_lead: 400,
 }
 
 export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
@@ -75,6 +103,62 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
       { createSender: deps.createEmailSender },
       readEmailSettings(deps.db),
       body['to'],
+    )
+    if (result.ok) return c.json({ ok: true, to: result.to })
+    return c.json(
+      { error: result.error, ...(result.detail === undefined ? {} : { detail: result.detail }) },
+      TEST_STATUS[result.error],
+    )
+  })
+
+  routes.get('/email/templates', (c) => c.json({ templates: listEmailTemplates(deps.db) }))
+
+  routes.patch('/email/templates/:trigger', async (c) => {
+    const trigger = c.req.param('trigger')
+    if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+
+    const result = updateEmailTemplate(deps.db, deps.publicBaseUrl, trigger, body)
+    if (!result.ok) return templateError(c, result)
+    return c.json({ template: result.value })
+  })
+
+  /**
+   * Renders the draft in the boxes — nothing is saved, so an operator can iterate
+   * on a template without committing anything a real lead would then be sent.
+   */
+  routes.post('/email/templates/:trigger/preview', async (c) => {
+    const trigger = c.req.param('trigger')
+    if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+
+    const result = previewEmailTemplate(deps.db, deps.publicBaseUrl, trigger, body)
+    if (!result.ok) return templateError(c, result)
+    return c.json({ preview: result.value })
+  })
+
+  /**
+   * The same rendering, put through SMTP to the address of whoever is signed in.
+   * Deliberately not an arbitrary recipient: the question a template test answers
+   * is "does this read right in my mail client", and the operator's own inbox is
+   * the only one that can answer it.
+   */
+  routes.post('/email/templates/:trigger/test', async (c) => {
+    const trigger = c.req.param('trigger')
+    if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+
+    const rendered = previewEmailTemplate(deps.db, deps.publicBaseUrl, trigger, body)
+    if (!rendered.ok) return templateError(c, rendered)
+
+    const result = await sendTestEmail(
+      { createSender: deps.createEmailSender },
+      readEmailSettings(deps.db),
+      currentUser(c).email,
+      { subject: rendered.value.subject, html: rendered.value.body },
     )
     if (result.ok) return c.json({ ok: true, to: result.to })
     return c.json(
