@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { TEST_VAPID_PUBLIC_KEY } from './support/fake-api.ts'
 import {
   loadServiceWorker,
   makeClient,
@@ -188,34 +189,31 @@ describe('push', () => {
  * server keeps a row for an endpoint that no longer exists, and every later
  * lead is pushed nowhere.
  */
-describe('pushsubscriptionchange', () => {
-  const VAPID_KEY = 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U'
-
-  /** Records what the worker asked the API for, and answers as the server does. */
-  function apiFetch(options: { keyStatus?: number; storeStatus?: number } = {}) {
-    const calls: { url: string; method: string; body: unknown }[] = []
-    const impl: typeof fetch = async (input, init) => {
-      const url = String(input)
-      calls.push({
-        url,
-        method: init?.method ?? 'GET',
-        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-      })
-      if (url.includes('/api/v1/push/key')) {
-        const status = options.keyStatus ?? 200
-        return new Response(JSON.stringify({ publicKey: VAPID_KEY }), {
-          status,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      return new Response(JSON.stringify({ ok: true }), {
-        status: options.storeStatus ?? 201,
+/** Records what the worker asked the API for, and answers as the server does. */
+function apiFetch(options: { keyStatus?: number; storeStatus?: number } = {}) {
+  const calls: { url: string; method: string; body: unknown }[] = []
+  const impl: typeof fetch = async (input, init) => {
+    const url = String(input)
+    calls.push({
+      url,
+      method: init?.method ?? 'GET',
+      body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+    })
+    if (url.includes('/api/v1/push/key')) {
+      return new Response(JSON.stringify({ publicKey: TEST_VAPID_PUBLIC_KEY }), {
+        status: options.keyStatus ?? 200,
         headers: { 'content-type': 'application/json' },
       })
     }
-    return { calls, impl }
+    return new Response(JSON.stringify({ ok: true }), {
+      status: options.storeStatus ?? 201,
+      headers: { 'content-type': 'application/json' },
+    })
   }
+  return { calls, impl }
+}
 
+describe('pushsubscriptionchange', () => {
   it('re-subscribes and registers the new subscription with the server', async () => {
     const api = apiFetch()
     const worker = loadServiceWorker(api.impl)

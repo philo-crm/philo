@@ -6,11 +6,20 @@ title = "Philo gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "Documentation placeholders in example commands — not real secrets"
-# These literal placeholder tokens appear in README/docs example commands.
+description = "Documentation placeholders and public test fixtures — not real secrets"
+# The first three are literal placeholder tokens in README/docs example commands.
+#
+# The last is the VAPID *public* key the web tests subscribe with. A VAPID public
+# key is published by construction — the server serves it from GET /api/v1/push/key
+# so a browser can pass it as `applicationServerKey`, and a push service verifies
+# signatures against it. It is high-entropy base64url, so it reads as an API key to
+# the generic rule. The private half is generated at runtime into the data dir and
+# never enters the repo.
+#
 # Note: gitleaks v8 global allowlist regexes match against the secret *value*.
 regexes = [
   '''your-secret-key''',
   '''change_me_to_a_random_string_at_least_32_bytes''',
   '''your_resend_api_key_here''',
+  '''BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U''',
 ]
