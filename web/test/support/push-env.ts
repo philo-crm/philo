@@ -9,6 +9,7 @@ import { vi } from 'vitest'
 
 export interface FakeSubscription {
   endpoint: string
+  /** True once `unsubscribe()` has been called, as a rollback does. */
   unsubscribed: boolean
   unsubscribe: () => Promise<boolean>
   toJSON: () => { endpoint: string; keys: { p256dh: string; auth: string } }

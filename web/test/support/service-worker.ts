@@ -34,6 +34,8 @@ export interface WorkerHarness {
   skippedWaiting: boolean
   /** Every `pushManager.subscribe()` the worker asked for, with its options. */
   subscribeCalls: Record<string, unknown>[]
+  /** True once the worker rolled a fresh subscription back. */
+  unsubscribed: boolean
   /** Fires a listener and awaits everything it passed to `waitUntil`/`respondWith`. */
   dispatch: (type: string, event: Record<string, unknown>) => Promise<unknown>
 }
@@ -114,6 +116,7 @@ export function loadServiceWorker(fetchImpl: typeof fetch = defaultFetch): Worke
     claimed: false,
     skippedWaiting: false,
     subscribeCalls: [],
+    unsubscribed: false,
   }
 
   const cachesApi = {
@@ -149,6 +152,10 @@ export function loadServiceWorker(fetchImpl: typeof fetch = defaultFetch): Worke
               endpoint: `${ORIGIN}/push/rotated`,
               keys: { p256dh: 'BNc-rotated', auth: 'auth-rotated' },
             }),
+            unsubscribe: async () => {
+              harness.unsubscribed = true
+              return true
+            },
           }
         },
       },

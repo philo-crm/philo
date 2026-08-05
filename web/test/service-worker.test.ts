@@ -192,7 +192,7 @@ describe('pushsubscriptionchange', () => {
   const VAPID_KEY = 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U'
 
   /** Records what the worker asked the API for, and answers as the server does. */
-  function apiFetch(options: { keyStatus?: number } = {}) {
+  function apiFetch(options: { keyStatus?: number; storeStatus?: number } = {}) {
     const calls: { url: string; method: string; body: unknown }[] = []
     const impl: typeof fetch = async (input, init) => {
       const url = String(input)
@@ -209,7 +209,7 @@ describe('pushsubscriptionchange', () => {
         })
       }
       return new Response(JSON.stringify({ ok: true }), {
-        status: 201,
+        status: options.storeStatus ?? 201,
         headers: { 'content-type': 'application/json' },
       })
     }
@@ -222,15 +222,48 @@ describe('pushsubscriptionchange', () => {
 
     await worker.dispatch('pushsubscriptionchange', {})
 
-    expect(worker.subscribeCalls).toEqual([
-      { userVisibleOnly: true, applicationServerKey: VAPID_KEY },
-    ])
     const stored = api.calls.find((call) => call.url.includes('/subscriptions'))
     expect(stored?.method).toBe('POST')
     expect(stored?.body).toEqual({
       endpoint: `${ORIGIN}/push/rotated`,
       keys: { p256dh: 'BNc-rotated', auth: 'auth-rotated' },
     })
+    expect(worker.unsubscribed).toBe(false)
+  })
+
+  /**
+   * Raw bytes rather than the base64url string. The Push API takes both, but
+   * not every browser firing this event is known to take the string, and a
+   * subscribe() that rejects is a device that quietly stops being notified.
+   */
+  it('subscribes with the key decoded to bytes', async () => {
+    const worker = loadServiceWorker(apiFetch().impl)
+
+    await worker.dispatch('pushsubscriptionchange', {})
+
+    expect(worker.subscribeCalls).toHaveLength(1)
+    const options = worker.subscribeCalls[0]
+    expect(options?.['userVisibleOnly']).toBe(true)
+    const key = options?.['applicationServerKey'] as Uint8Array
+    expect(key).toBeInstanceOf(Uint8Array)
+    // A P-256 point is 65 bytes, and the leading 0x04 says it is uncompressed.
+    expect(key.length).toBe(65)
+    expect(key[0]).toBe(4)
+  })
+
+  /**
+   * The failure with nowhere to report itself. A subscription the server did
+   * not take is one nothing will ever send to, and this path has no UI — so it
+   * is rolled back, leaving the settings toggle reading "off" rather than
+   * claiming a device is covered when it is not.
+   */
+  it('rolls the new subscription back when the server will not store it', async () => {
+    const api = apiFetch({ storeStatus: 400 })
+    const worker = loadServiceWorker(api.impl)
+
+    await worker.dispatch('pushsubscriptionchange', {})
+
+    expect(worker.unsubscribed).toBe(true)
   })
 
   // Signed out, so there is nothing to register against — and nothing to be

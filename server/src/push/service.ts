@@ -28,10 +28,12 @@ const DECLARATIVE_WEB_PUSH_VERSION = 8030
 const TTL_SECONDS = 6 * 60 * 60
 
 /**
- * How long to wait on a push service before giving up on one subscription. An
- * endpoint is a URL an authenticated caller chose, so a host that accepts the
- * connection and then says nothing would otherwise hold a socket per lead for
- * as long as the process lives.
+ * Socket inactivity timeout on a send — not a deadline on the whole request.
+ * An endpoint is a URL an authenticated caller chose, and this is what stops
+ * one that accepts the connection and then says nothing from holding a socket
+ * per lead for as long as the process lives. A host that dribbles bytes slowly
+ * still keeps its socket; that is a trade worth taking over cutting off a real
+ * push service on a bad network.
  */
 const SEND_TIMEOUT_MS = 10_000
 
