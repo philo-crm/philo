@@ -4,8 +4,13 @@ import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import { getLead, type LeadRecord } from '../leads/service.ts'
 import type { LeadCreatedHook } from '../notify.ts'
-import { vapidSubject, type VapidKeys } from './keys.ts'
-import { deleteSubscription, listSubscriptions, type StoredSubscription } from './subscriptions.ts'
+import { vapidSubject, type VapidKeys, type VapidKeysResult } from './keys.ts'
+import {
+  deleteAllSubscriptions,
+  deleteSubscription,
+  listSubscriptions,
+  type StoredSubscription,
+} from './subscriptions.ts'
 
 /**
  * The Declarative Web Push magic number — the format's version tag, and what
@@ -21,6 +26,14 @@ const DECLARATIVE_WEB_PUSH_VERSION = 8030
  * the email has arrived regardless.
  */
 const TTL_SECONDS = 6 * 60 * 60
+
+/**
+ * How long to wait on a push service before giving up on one subscription. An
+ * endpoint is a URL an authenticated caller chose, so a host that accepts the
+ * connection and then says nothing would otherwise hold a socket per lead for
+ * as long as the process lives.
+ */
+const SEND_TIMEOUT_MS = 10_000
 
 /** Nothing on a phone's lock screen reads past this, and a push has a size budget. */
 const MAX_TEXT_LENGTH = 200
@@ -103,6 +116,7 @@ function realSend(keys: VapidKeys, subject: string): SendPush {
       payload,
       {
         TTL: TTL_SECONDS,
+        timeout: SEND_TIMEOUT_MS,
         vapidDetails: { subject, publicKey: keys.publicKey, privateKey: keys.privateKey },
       },
     )
@@ -186,6 +200,24 @@ function handleSendFailure(db: Db, leadId: number, subscription: StoredSubscript
     return
   }
   console.error(`lead ${leadId}: push failed for ${subscription.endpoint}`, error)
+}
+
+/**
+ * Clears out subscriptions a regenerated keypair has orphaned. A row made with
+ * the old pair can only ever answer 403 — never the 404 or 410 that prunes one
+ * — so without this it would be attempted on every lead for the life of the
+ * instance. Returns how many were dropped; zero on an ordinary boot.
+ */
+export function resetSubscriptionsForNewKeys(db: Db, vapid: VapidKeysResult): number {
+  if (!vapid.generated) return 0
+  const dropped = deleteAllSubscriptions(db)
+  if (dropped > 0) {
+    console.warn(
+      `note: a new VAPID keypair was generated, so ${dropped} push subscription(s) were dropped. ` +
+        'Turn notifications back on in Settings to re-subscribe.',
+    )
+  }
+  return dropped
 }
 
 /** What `AppOptions.onLeadCreated` is wired to in production — see src/index.ts. */

@@ -9,8 +9,7 @@ import { HONEYPOT_FIELD } from './intake/payload.ts'
 import { intakeUrls } from './intake/routes.ts'
 import { combineLeadCreatedHooks } from './notify.ts'
 import { loadOrCreateVapidKeys } from './push/keys.ts'
-import { createLeadPushHook } from './push/service.ts'
-import { deleteAllSubscriptions } from './push/subscriptions.ts'
+import { createLeadPushHook, resetSubscriptionsForNewKeys } from './push/service.ts'
 import { VERSION } from './version.ts'
 
 const config = loadConfig()
@@ -28,19 +27,9 @@ const cookieSecure = config.publicBaseUrl.startsWith('https://')
 
 const emailDeps = { db, publicBaseUrl: config.publicBaseUrl }
 
-// Also after openDatabase, for the data dir. A pair generated here is a pair no
-// stored subscription was made with, so those rows can only ever answer 403 —
-// dropping them keeps every later push from retrying endpoints that are dead.
+// Also after openDatabase, for the data dir.
 const vapid = loadOrCreateVapidKeys(config.dataDir)
-if (vapid.generated) {
-  const dropped = deleteAllSubscriptions(db)
-  if (dropped > 0) {
-    console.warn(
-      `note: a new VAPID keypair was generated, so ${dropped} push subscription(s) were dropped. ` +
-        'Turn notifications back on in Settings to re-subscribe.',
-    )
-  }
-}
+resetSubscriptionsForNewKeys(db, vapid)
 
 const pushDeps = { db, publicBaseUrl: config.publicBaseUrl, vapidKeys: vapid.keys }
 

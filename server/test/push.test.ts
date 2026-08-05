@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebPushError } from 'web-push'
 import { leads, pushSubscriptions } from '../src/db/schema.ts'
 import { HONEYPOT_FIELD } from '../src/intake/payload.ts'
-import { createLeadPushHook, sendNewLeadPush, type SendPush } from '../src/push/service.ts'
+import {
+  createLeadPushHook,
+  resetSubscriptionsForNewKeys,
+  sendNewLeadPush,
+  type SendPush,
+} from '../src/push/service.ts'
 import { listSubscriptions } from '../src/push/subscriptions.ts'
 import {
   cleanupTestApps,
@@ -343,6 +348,48 @@ describe('the lead pipeline', () => {
     await sendNewLeadPush(deps(testApp, push.send), leadId)
 
     expect(push.sent).toEqual([])
+  })
+})
+
+describe('resetSubscriptionsForNewKeys', () => {
+  const KEYS = { publicKey: 'public', privateKey: 'private' }
+
+  it('keeps every subscription when the stored pair was reused', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    storeSubscription(testApp, 1, ENDPOINT)
+
+    expect(resetSubscriptionsForNewKeys(testApp.db, { keys: KEYS, generated: false })).toBe(0)
+    expect(listSubscriptions(testApp.db)).toHaveLength(1)
+  })
+
+  /**
+   * The one path in this feature that deletes rows. A subscription made with
+   * the old pair answers 403 rather than the 404/410 that prunes one, so
+   * leaving it would mean pushing at a dead endpoint on every lead, forever.
+   */
+  it('drops every subscription when the pair was regenerated', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    storeSubscription(testApp, 1, ENDPOINT)
+    storeSubscription(testApp, 1, 'https://push.example.com/subscription/second')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(resetSubscriptionsForNewKeys(testApp.db, { keys: KEYS, generated: true })).toBe(2)
+
+    expect(listSubscriptions(testApp.db)).toEqual([])
+    // Never silently: the operator has to re-subscribe, and nothing else says so.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('2 push subscription(s) were dropped'))
+  })
+
+  it('says nothing on a genuine first boot, where there is nothing to drop', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(resetSubscriptionsForNewKeys(testApp.db, { keys: KEYS, generated: true })).toBe(0)
+
+    expect(warn).not.toHaveBeenCalled()
   })
 })
 

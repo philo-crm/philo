@@ -183,6 +183,77 @@ describe('push', () => {
   })
 })
 
+/**
+ * A browser rotating this subscription on its own. Without the handler the
+ * server keeps a row for an endpoint that no longer exists, and every later
+ * lead is pushed nowhere.
+ */
+describe('pushsubscriptionchange', () => {
+  const VAPID_KEY = 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U'
+
+  /** Records what the worker asked the API for, and answers as the server does. */
+  function apiFetch(options: { keyStatus?: number } = {}) {
+    const calls: { url: string; method: string; body: unknown }[] = []
+    const impl: typeof fetch = async (input, init) => {
+      const url = String(input)
+      calls.push({
+        url,
+        method: init?.method ?? 'GET',
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+      })
+      if (url.includes('/api/v1/push/key')) {
+        const status = options.keyStatus ?? 200
+        return new Response(JSON.stringify({ publicKey: VAPID_KEY }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return { calls, impl }
+  }
+
+  it('re-subscribes and registers the new subscription with the server', async () => {
+    const api = apiFetch()
+    const worker = loadServiceWorker(api.impl)
+
+    await worker.dispatch('pushsubscriptionchange', {})
+
+    expect(worker.subscribeCalls).toEqual([
+      { userVisibleOnly: true, applicationServerKey: VAPID_KEY },
+    ])
+    const stored = api.calls.find((call) => call.url.includes('/subscriptions'))
+    expect(stored?.method).toBe('POST')
+    expect(stored?.body).toEqual({
+      endpoint: `${ORIGIN}/push/rotated`,
+      keys: { p256dh: 'BNc-rotated', auth: 'auth-rotated' },
+    })
+  })
+
+  // Signed out, so there is nothing to register against — and nothing to be
+  // gained by subscribing to a key the server would not accept a row for.
+  it('gives up quietly when the key cannot be read', async () => {
+    const api = apiFetch({ keyStatus: 401 })
+    const worker = loadServiceWorker(api.impl)
+
+    await worker.dispatch('pushsubscriptionchange', {})
+
+    expect(worker.subscribeCalls).toEqual([])
+    expect(api.calls.some((call) => call.url.includes('/subscriptions'))).toBe(false)
+  })
+
+  it('swallows a network failure rather than rejecting the event', async () => {
+    const worker = loadServiceWorker(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+
+    await expect(worker.dispatch('pushsubscriptionchange', {})).resolves.toBeUndefined()
+  })
+})
+
 function clickEvent(data: unknown) {
   return { notification: { data, close: () => undefined } }
 }

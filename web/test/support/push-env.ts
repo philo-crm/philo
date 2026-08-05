@@ -61,6 +61,8 @@ export function installPushEnv(
     respondWith?: NotificationPermission
     subscription?: FakeSubscription | null
     hasRegistration?: boolean
+    /** The endpoint a fresh `subscribe()` hands back. */
+    subscribeEndpoint?: string
   } = {},
 ): PushEnv {
   const {
@@ -69,6 +71,7 @@ export function installPushEnv(
     respondWith = 'granted',
     subscription = null,
     hasRegistration = true,
+    subscribeEndpoint = TEST_ENDPOINT,
   } = options
 
   const env: PushEnv = {
@@ -93,11 +96,13 @@ export function installPushEnv(
   let current = subscription
   const registration: FakeRegistration = {
     pushManager: {
-      getSubscription: async () => current,
+      // An unsubscribed subscription is one the browser no longer hands back,
+      // which is what makes a rolled-back `enablePush` read as "off" again.
+      getSubscription: async () => (current?.unsubscribed === true ? null : current),
       subscribe: async (subscribeOptions) => {
         env.subscribeCalls.push(subscribeOptions)
         if (env.subscribeFailure !== undefined) throw env.subscribeFailure
-        current = makeSubscription()
+        current = makeSubscription(subscribeEndpoint)
         return current
       },
     },

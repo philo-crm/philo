@@ -10,6 +10,7 @@
  */
 
 import { fetchVapidPublicKey, storePushSubscription, forgetPushSubscription } from './api.ts'
+import { isUnauthorized } from './http.ts'
 
 export type PushState =
   /** No Push API here, or no service worker to hang a subscription off. */
@@ -99,10 +100,40 @@ export async function enablePush(): Promise<PushState> {
     // A subscription the server does not know about is one nothing will ever
     // send to, and it would still read as "on" here. Undo it so the toggle
     // tells the truth, then let the screen report the failure.
-    await subscription.unsubscribe().catch(() => undefined)
+    //
+    // An expired session is the exception: the subscription is perfectly good
+    // and `syncPushSubscription` registers it on the next sign-in, so throwing
+    // it away would cost a working device over a cookie.
+    if (!isUnauthorized(error)) await subscription.unsubscribe().catch(() => undefined)
     throw error
   }
   return 'on'
+}
+
+/**
+ * The state of this browser, having first made sure the server agrees with it.
+ *
+ * The two can drift, and only ever in the direction that silently costs a
+ * notification: the server drops rows on a regenerated VAPID pair, on a 404 or
+ * 410 from a push service, and on any restore from an older backup — and in
+ * every one of those the browser still holds its subscription, so the toggle
+ * reads "on" while nothing is ever sent. Re-registering what the browser has is
+ * cheap (`saveSubscription` is an upsert keyed on the endpoint) and closes it.
+ */
+export async function syncPushSubscription(): Promise<PushState> {
+  const state = await readPushState()
+  if (state !== 'on') return state
+  try {
+    const registration = await activeRegistration()
+    const subscription = await registration?.pushManager.getSubscription()
+    if (subscription !== undefined && subscription !== null) {
+      await storePushSubscription(subscription.toJSON())
+    }
+  } catch {
+    // Best-effort repair. The switch still reflects the browser, and the
+    // operator can always turn it off and on to force the issue.
+  }
+  return state
 }
 
 /**

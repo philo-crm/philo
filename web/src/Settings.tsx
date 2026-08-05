@@ -10,7 +10,13 @@ import {
 } from './api.ts'
 import { EmailTemplates } from './EmailTemplates.tsx'
 import { isStandalone, isIosSafari } from './install.ts'
-import { disablePush, enablePush, readPushState, type PushState } from './push.ts'
+import {
+  disablePush,
+  enablePush,
+  readPushState,
+  syncPushSubscription,
+  type PushState,
+} from './push.ts'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface SettingsProps {
@@ -40,7 +46,7 @@ export function Settings({ onSessionExpired }: SettingsProps) {
       )}
       {/* Outside the branch above: a template is editable whether or not the
           SMTP settings loaded, and the two fail independently. */}
-      <PushNotifications />
+      <PushNotifications onSessionExpired={onSessionExpired} />
       <EmailTemplates onSessionExpired={onSessionExpired} />
     </>
   )
@@ -51,14 +57,20 @@ export function Settings({ onSessionExpired }: SettingsProps) {
  * to the browser it was made in, so this switch says something about *this*
  * phone and nothing about the instance.
  */
-function PushNotifications() {
+function PushNotifications({ onSessionExpired }: SettingsProps) {
   const [state, setState] = useState<PushState | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(undefined)
 
+  // A 401 here means the session ended, and the only useful answer is the login
+  // screen — the same handling every other authenticated screen has.
+  useSessionGuard(error, onSessionExpired)
+
   useEffect(() => {
     let live = true
-    void readPushState().then((current) => {
+    // Sync rather than a plain read: the server may have dropped this browser's
+    // row while it still holds the subscription, and that reads as "on" forever.
+    void syncPushSubscription().then((current) => {
       if (live) setState(current)
     })
     return () => {

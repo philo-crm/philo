@@ -127,6 +127,38 @@ function readDeclarativeNotification(data) {
   return notification
 }
 
+/*
+ * The browser replaced this subscription on its own — key expiry, or a push
+ * service rotating the endpoint. The replacement is one the server has never
+ * heard of, and the old row it still holds is dead, so every later lead would
+ * be pushed nowhere until someone happened to open Settings. Re-register it.
+ */
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil(resubscribe())
+})
+
+async function resubscribe() {
+  try {
+    const keyResponse = await fetch('/api/v1/push/key')
+    // Signed out: nothing to re-register against. The settings toggle picks
+    // this up on the next visit, and email is the guaranteed channel meanwhile.
+    if (!keyResponse.ok) return
+    const { publicKey } = await keyResponse.json()
+    const subscription = await self.registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: publicKey,
+    })
+    await fetch('/api/v1/push/subscriptions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(subscription.toJSON()),
+    })
+  } catch {
+    // Best-effort by design (ADR-0004). The stale row is pruned by the 410 it
+    // earns on the next send, and the toggle re-registers when next opened.
+  }
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   const navigateTo = event.notification.data?.navigate

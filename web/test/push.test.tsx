@@ -1,6 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { disablePush, enablePush, isPushSupported, readPushState } from '../src/push.ts'
+import {
+  disablePush,
+  enablePush,
+  isPushSupported,
+  readPushState,
+  syncPushSubscription,
+} from '../src/push.ts'
 import { Settings } from '../src/Settings.tsx'
 import { installFakeApi, TEST_VAPID_PUBLIC_KEY } from './support/fake-api.ts'
 import { installPushEnv, makeSubscription, TEST_ENDPOINT } from './support/push-env.ts'
@@ -141,14 +147,69 @@ describe('enablePush', () => {
    */
   it('undoes the browser subscription when the server refuses to store it', async () => {
     const api = installFakeApi()
-    installPushEnv()
-    api.expired = true
+    // Refused on its own merits rather than for the session: the server only
+    // stores https endpoints, since it makes outbound requests to them.
+    const subscription = makeSubscription('http://push.example.com/insecure')
+    installPushEnv({ permission: 'granted', subscription })
 
     await expect(enablePush()).rejects.toThrow()
 
     expect(api.pushSubscriptions).toEqual([])
-    // And the browser is back where it started, so a retry is a clean one.
-    await expect(readPushState()).resolves.toBe('off')
+    expect(subscription.unsubscribed).toBe(true)
+  })
+
+  /**
+   * The exception to the rollback. A lapsed cookie says nothing about the
+   * subscription, and `syncPushSubscription` registers it on the next sign-in
+   * — throwing it away would cost a working device over a session timeout.
+   */
+  it('keeps the browser subscription when the session has expired', async () => {
+    const api = installFakeApi()
+    const subscription = makeSubscription()
+    installPushEnv({ permission: 'granted', subscription })
+    api.expired = true
+
+    await expect(enablePush()).rejects.toThrow()
+
+    expect(subscription.unsubscribed).toBe(false)
+  })
+})
+
+/**
+ * The drift this exists to close: the server drops rows on a regenerated VAPID
+ * pair, on a 404/410 prune, and on a restore — and in every case the browser
+ * still holds its subscription, so the toggle reads "on" while nothing is sent.
+ */
+describe('syncPushSubscription', () => {
+  it('re-registers a subscription the server has forgotten', async () => {
+    const api = installFakeApi()
+    installPushEnv({ permission: 'granted', subscription: makeSubscription() })
+    expect(api.pushSubscriptions).toEqual([])
+
+    await expect(syncPushSubscription()).resolves.toBe('on')
+
+    expect(api.pushSubscriptions).toEqual([
+      { endpoint: TEST_ENDPOINT, p256dh: 'BNc-public-key', auth: 'auth-secret' },
+    ])
+  })
+
+  it('says nothing to the server when this browser is not subscribed', async () => {
+    const api = installFakeApi()
+    installPushEnv({ permission: 'granted' })
+
+    await expect(syncPushSubscription()).resolves.toBe('off')
+
+    expect(api.calls.some((call) => call.method === 'POST')).toBe(false)
+  })
+
+  // A repair, not a request the operator made — it must not turn a working
+  // screen into an error, and the switch still reflects the browser.
+  it('still reports the browser state when the re-register fails', async () => {
+    const api = installFakeApi()
+    installPushEnv({ permission: 'granted', subscription: makeSubscription() })
+    api.expired = true
+
+    await expect(syncPushSubscription()).resolves.toBe('on')
   })
 })
 
@@ -213,9 +274,10 @@ function useBrowser(userAgent = 'Mozilla/5.0 (X11; Linux x86_64) Chrome/140', st
 describe('the Settings notifications panel', () => {
   const TOGGLE = 'Push a notification to this device when a new lead arrives.'
 
-  function renderSettings() {
+  function renderSettings(onSessionExpired = vi.fn()) {
     useBrowser()
-    return render(<Settings onSessionExpired={vi.fn()} />)
+    render(<Settings onSessionExpired={onSessionExpired} />)
+    return onSessionExpired
   }
 
   async function toggle(): Promise<HTMLInputElement> {
@@ -298,14 +360,32 @@ describe('the Settings notifications panel', () => {
   // The switch must never claim something the browser did not do.
   it('reports a failure and falls back to what the browser actually did', async () => {
     const api = installFakeApi()
-    installPushEnv()
+    // Refused on the subscription's own merits, so the panel reports it rather
+    // than treating it as a dead session.
+    installPushEnv({ subscribeEndpoint: 'http://push.example.com/insecure' })
     renderSettings()
+
+    fireEvent.click(await toggle())
+
+    expect(await screen.findByRole('alert')).toBeDefined()
+    expect(api.pushSubscriptions).toEqual([])
+    // And the switch is back where the browser actually is.
+    await waitFor(async () => expect((await toggle()).checked).toBe(false))
+  })
+
+  /**
+   * A 401 is the one failure with an answer other than a message — every other
+   * authenticated screen sends it to the login flow, and this one has to too.
+   */
+  it('sends an expired session to the login flow rather than showing an error', async () => {
+    const api = installFakeApi()
+    installPushEnv()
+    const onSessionExpired = renderSettings()
     await toggle()
     api.expired = true
 
     fireEvent.click(await toggle())
 
-    expect(await screen.findByRole('alert')).toBeDefined()
-    await waitFor(async () => expect((await toggle()).checked).toBe(false))
+    await waitFor(() => expect(onSessionExpired).toHaveBeenCalled())
   })
 })
