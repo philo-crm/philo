@@ -89,8 +89,12 @@ function PushNotifications() {
   }
 
   return (
-    <section className="panel">
-      <h2>Notifications on this device</h2>
+    <section className="screen">
+      {/* h2 rather than h1: this sits under the Settings screen's own heading. */}
+      <header className="screen-head">
+        <h2>Notifications on this device</h2>
+      </header>
+
       {error !== undefined && (
         <p className="notice notice-error" role="alert">
           {settingsErrorMessage(error)}
@@ -99,17 +103,19 @@ function PushNotifications() {
       {state === undefined ? (
         <p className="empty">Loading…</p>
       ) : (
-        <div className="fields">
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={state === 'on'}
-              disabled={busy || state === 'unsupported' || state === 'blocked'}
-              onChange={toggle}
-            />
-            <span>Push a notification to this device when a new lead arrives.</span>
-          </label>
-          <p className="hint">{pushHint(state)}</p>
+        <div className="panel">
+          <div className="fields">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={state === 'on'}
+                disabled={busy || state === 'unsupported' || state === 'blocked'}
+                onChange={toggle}
+              />
+              <span>Push a notification to this device when a new lead arrives.</span>
+            </label>
+            <p className="hint">{pushHint(state)}</p>
+          </div>
         </div>
       )}
     </section>
