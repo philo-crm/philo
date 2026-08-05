@@ -7,6 +7,10 @@ import { createLeadEmailHook, sweepUnsentEmails } from './email/service.ts'
 import { isEmailConfigured, readEmailSettings } from './email/settings.ts'
 import { HONEYPOT_FIELD } from './intake/payload.ts'
 import { intakeUrls } from './intake/routes.ts'
+import { combineLeadCreatedHooks } from './notify.ts'
+import { loadOrCreateVapidKeys } from './push/keys.ts'
+import { createLeadPushHook } from './push/service.ts'
+import { deleteAllSubscriptions } from './push/subscriptions.ts'
 import { VERSION } from './version.ts'
 
 const config = loadConfig()
@@ -24,15 +28,32 @@ const cookieSecure = config.publicBaseUrl.startsWith('https://')
 
 const emailDeps = { db, publicBaseUrl: config.publicBaseUrl }
 
+// Also after openDatabase, for the data dir. A pair generated here is a pair no
+// stored subscription was made with, so those rows can only ever answer 403 —
+// dropping them keeps every later push from retrying endpoints that are dead.
+const vapid = loadOrCreateVapidKeys(config.dataDir)
+if (vapid.generated) {
+  const dropped = deleteAllSubscriptions(db)
+  if (dropped > 0) {
+    console.warn(
+      `note: a new VAPID keypair was generated, so ${dropped} push subscription(s) were dropped. ` +
+        'Turn notifications back on in Settings to re-subscribe.',
+    )
+  }
+}
+
+const pushDeps = { db, publicBaseUrl: config.publicBaseUrl, vapidKeys: vapid.keys }
+
 const app = createApp({
   db,
   sessionKey,
   cookieSecure,
   publicBaseUrl: config.publicBaseUrl,
+  vapidPublicKey: vapid.keys.publicKey,
   trustProxy: config.trustProxy,
-  // Email is the guaranteed notification channel — ADR-0004. Push (#13) hangs
-  // off the same hook when it lands.
-  onLeadCreated: createLeadEmailHook(emailDeps),
+  // Email is the guaranteed notification channel and push is the fast one —
+  // ADR-0004. Independent by construction: each is isolated from the other.
+  onLeadCreated: combineLeadCreatedHooks(createLeadEmailHook(emailDeps), createLeadPushHook(pushDeps)),
 })
 
 serve({ fetch: app.fetch, port: config.port }, () => {
@@ -56,6 +77,17 @@ serve({ fetch: app.fetch, port: config.port }, () => {
     console.log(`  email:           ${emailSettings.smtpHost}:${emailSettings.smtpPort} as ${emailSettings.fromAddress}`)
   } else {
     console.warn('  note: SMTP is not configured, so no lead notifications or acknowledgments are sent. Set it up in Settings.')
+  }
+  // Push is best-effort by design (ADR-0004), but a browser will not subscribe
+  // at all outside a secure context — so on a plain-http base URL the toggle in
+  // Settings simply never works, with nothing on screen saying why.
+  if (config.publicBaseUrl.startsWith('https://')) {
+    console.log('  push:            enabled (turn it on per device in Settings)')
+  } else {
+    console.warn(
+      '  note: browsers only allow push notifications over https, so the Settings toggle will not ' +
+        'work until PHILO_PUBLIC_BASE_URL is an https URL. Email is unaffected.',
+    )
   }
   // After the socket is up, and deliberately not awaited: retry schedules live
   // in memory, so this is what carries the guarantee across a restart — but a

@@ -30,3 +30,20 @@ export function notifyLeadCreated(hook: LeadCreatedHook | undefined, lead: Creat
 function logHookFailure(error: unknown): void {
   console.error('lead-created hook failed', error)
 }
+
+/**
+ * Both notification channels behind the one hook the routes call. Each is
+ * isolated by `notifyLeadCreated`, so a throwing email hook still leaves the
+ * push hook to run — ADR-0004 makes them independent paths to the same fact,
+ * and one failing must not take the other with it.
+ */
+export function combineLeadCreatedHooks(
+  ...hooks: (LeadCreatedHook | undefined)[]
+): LeadCreatedHook | undefined {
+  const present = hooks.filter((hook): hook is LeadCreatedHook => hook !== undefined)
+  if (present.length === 0) return undefined
+  if (present.length === 1) return present[0]
+  return (lead) => {
+    for (const hook of present) notifyLeadCreated(hook, lead)
+  }
+}
