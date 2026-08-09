@@ -1,4 +1,4 @@
-import { useCallback, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
   fetchEmailSettings,
   sendTestEmail,
@@ -9,6 +9,14 @@ import {
   type EmailSettingsPatch,
 } from './api.ts'
 import { EmailTemplates } from './EmailTemplates.tsx'
+import { isStandalone, isIosSafari } from './install.ts'
+import {
+  disablePush,
+  enablePush,
+  readPushState,
+  syncPushSubscription,
+  type PushState,
+} from './push.ts'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface SettingsProps {
@@ -38,9 +46,110 @@ export function Settings({ onSessionExpired }: SettingsProps) {
       )}
       {/* Outside the branch above: a template is editable whether or not the
           SMTP settings loaded, and the two fail independently. */}
+      <PushNotifications onSessionExpired={onSessionExpired} />
       <EmailTemplates onSessionExpired={onSessionExpired} />
     </>
   )
+}
+
+/**
+ * Push, per device. Deliberately not a stored setting: a subscription belongs
+ * to the browser it was made in, so this switch says something about *this*
+ * phone and nothing about the instance.
+ */
+function PushNotifications({ onSessionExpired }: SettingsProps) {
+  const [state, setState] = useState<PushState | undefined>(undefined)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>(undefined)
+
+  // A 401 here means the session ended, and the only useful answer is the login
+  // screen — the same handling every other authenticated screen has.
+  useSessionGuard(error, onSessionExpired)
+
+  useEffect(() => {
+    let live = true
+    // Sync rather than a plain read: the server may have dropped this browser's
+    // row while it still holds the subscription, and that reads as "on" forever.
+    void syncPushSubscription().then((current) => {
+      if (live) setState(current)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  /**
+   * Straight out of the click, with nothing awaited first — iOS only honours
+   * `Notification.requestPermission()` while the tap is still current, so a
+   * `setBusy` that forced a render before it would break the one platform this
+   * whole feature exists for.
+   */
+  function toggle() {
+    if (busy || state === undefined) return
+    setBusy(true)
+    setError(undefined)
+    const change = state === 'on' ? disablePush() : enablePush()
+    void change
+      .then(setState)
+      .catch((caught: unknown) => {
+        setError(caught)
+        // Whatever the browser actually ended up doing wins over what we asked
+        // for, so the switch cannot be left claiming something untrue.
+        return readPushState().then(setState)
+      })
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <section className="screen">
+      {/* h2 rather than h1: this sits under the Settings screen's own heading. */}
+      <header className="screen-head">
+        <h2>Notifications on this device</h2>
+      </header>
+
+      {error !== undefined && (
+        <p className="notice notice-error" role="alert">
+          {settingsErrorMessage(error)}
+        </p>
+      )}
+      {state === undefined ? (
+        <p className="empty">Loading…</p>
+      ) : (
+        <div className="panel">
+          <div className="fields">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={state === 'on'}
+                disabled={busy || state === 'unsupported' || state === 'blocked'}
+                onChange={toggle}
+              />
+              <span>Push a notification to this device when a new lead arrives.</span>
+            </label>
+            <p className="hint">{pushHint(state)}</p>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+/**
+ * Why the switch is where it is. The unsupported case is worth spelling out on
+ * iOS specifically: a Safari tab simply cannot subscribe, and "install it first"
+ * is the only useful thing to say — see install.ts and the /install screen.
+ */
+function pushHint(state: PushState): string {
+  if (state === 'blocked') {
+    return 'This browser has blocked notifications. Allow them for this site in its settings, then come back.'
+  }
+  if (state === 'unsupported') {
+    if (isIosSafari() && !isStandalone()) {
+      return 'On iPhone and iPad, push works only once Philo is added to the Home Screen. Open the install guide, then turn this on from the installed app.'
+    }
+    return 'This browser cannot receive push notifications. New leads are still emailed to everyone who can sign in.'
+  }
+  return 'Email always goes out as well, so a missed push never means a missed lead.'
 }
 
 /** The editable copy. Strings throughout — the port is parsed on the way out. */

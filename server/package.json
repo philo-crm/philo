@@ -18,12 +18,14 @@
     "drizzle-orm": "^0.45.2",
     "handlebars": "^4.7.9",
     "hono": "^4.12.32",
-    "nodemailer": "^9.0.3"
+    "nodemailer": "^9.0.3",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.13.3",
     "@types/nodemailer": "^8.0.1",
+    "@types/web-push": "^3.6.4",
     "drizzle-kit": "^0.31.10",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"

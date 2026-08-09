@@ -16,12 +16,14 @@ import {
 import type { EmailSenderFactory, OutgoingEmail } from '../../src/email/transport.ts'
 import type { IntakeTuning } from '../../src/intake/routes.ts'
 import type { CreatedLead } from '../../src/notify.ts'
+import { loadOrCreateVapidKeys } from '../../src/push/keys.ts'
 
 export interface TestApp {
   app: ReturnType<typeof createApp>
   db: Db
   dataDir: string
   publicDir: string
+  vapidPublicKey: string
 }
 
 const dataDirs: string[] = []
@@ -78,10 +80,12 @@ export function createTestApp(
   openDbs.push(db)
   const publicDir = options.publicDir ?? createPublicDir()
   const tuning = options.authTuning ?? {}
+  const vapidPublicKey = loadOrCreateVapidKeys(dataDir).keys.publicKey
   const app = createApp({
     db,
     sessionKey: loadOrCreateSessionKey(dataDir),
     publicBaseUrl: options.publicBaseUrl ?? TEST_PUBLIC_BASE_URL,
+    vapidPublicKey,
     cookieSecure: options.cookieSecure ?? false,
     trustProxy: options.trustProxy ?? false,
     publicDir,
@@ -90,7 +94,7 @@ export function createTestApp(
     onLeadCreated: options.onLeadCreated,
     createEmailSender: options.createEmailSender,
   })
-  return { app, db, dataDir, publicDir }
+  return { app, db, dataDir, publicDir, vapidPublicKey }
 }
 
 /** Enough stored settings for `isEmailConfigured` to be true. */

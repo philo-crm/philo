@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { TEST_VAPID_PUBLIC_KEY } from './support/fake-api.ts'
 import {
   loadServiceWorker,
   makeClient,
@@ -180,6 +181,107 @@ describe('push', () => {
     const worker = loadServiceWorker()
     await worker.dispatch('push', event)
     expect(worker.shown).toHaveLength(0)
+  })
+})
+
+/**
+ * A browser rotating this subscription on its own. Without the handler the
+ * server keeps a row for an endpoint that no longer exists, and every later
+ * lead is pushed nowhere.
+ */
+/** Records what the worker asked the API for, and answers as the server does. */
+function apiFetch(options: { keyStatus?: number; storeStatus?: number } = {}) {
+  const calls: { url: string; method: string; body: unknown }[] = []
+  const impl: typeof fetch = async (input, init) => {
+    const url = String(input)
+    calls.push({
+      url,
+      method: init?.method ?? 'GET',
+      body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+    })
+    if (url.includes('/api/v1/push/key')) {
+      return new Response(JSON.stringify({ publicKey: TEST_VAPID_PUBLIC_KEY }), {
+        status: options.keyStatus ?? 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ ok: true }), {
+      status: options.storeStatus ?? 201,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  return { calls, impl }
+}
+
+describe('pushsubscriptionchange', () => {
+  it('re-subscribes and registers the new subscription with the server', async () => {
+    const api = apiFetch()
+    const worker = loadServiceWorker(api.impl)
+
+    await worker.dispatch('pushsubscriptionchange', {})
+
+    const stored = api.calls.find((call) => call.url.includes('/subscriptions'))
+    expect(stored?.method).toBe('POST')
+    expect(stored?.body).toEqual({
+      endpoint: `${ORIGIN}/push/rotated`,
+      keys: { p256dh: 'BNc-rotated', auth: 'auth-rotated' },
+    })
+    expect(worker.unsubscribed).toBe(false)
+  })
+
+  /**
+   * Raw bytes rather than the base64url string. The Push API takes both, but
+   * not every browser firing this event is known to take the string, and a
+   * subscribe() that rejects is a device that quietly stops being notified.
+   */
+  it('subscribes with the key decoded to bytes', async () => {
+    const worker = loadServiceWorker(apiFetch().impl)
+
+    await worker.dispatch('pushsubscriptionchange', {})
+
+    expect(worker.subscribeCalls).toHaveLength(1)
+    const options = worker.subscribeCalls[0]
+    expect(options?.['userVisibleOnly']).toBe(true)
+    const key = options?.['applicationServerKey'] as Uint8Array
+    expect(key).toBeInstanceOf(Uint8Array)
+    // A P-256 point is 65 bytes, and the leading 0x04 says it is uncompressed.
+    expect(key.length).toBe(65)
+    expect(key[0]).toBe(4)
+  })
+
+  /**
+   * The failure with nowhere to report itself. A subscription the server did
+   * not take is one nothing will ever send to, and this path has no UI — so it
+   * is rolled back, leaving the settings toggle reading "off" rather than
+   * claiming a device is covered when it is not.
+   */
+  it('rolls the new subscription back when the server will not store it', async () => {
+    const api = apiFetch({ storeStatus: 400 })
+    const worker = loadServiceWorker(api.impl)
+
+    await worker.dispatch('pushsubscriptionchange', {})
+
+    expect(worker.unsubscribed).toBe(true)
+  })
+
+  // Signed out, so there is nothing to register against — and nothing to be
+  // gained by subscribing to a key the server would not accept a row for.
+  it('gives up quietly when the key cannot be read', async () => {
+    const api = apiFetch({ keyStatus: 401 })
+    const worker = loadServiceWorker(api.impl)
+
+    await worker.dispatch('pushsubscriptionchange', {})
+
+    expect(worker.subscribeCalls).toEqual([])
+    expect(api.calls.some((call) => call.url.includes('/subscriptions'))).toBe(false)
+  })
+
+  it('swallows a network failure rather than rejecting the event', async () => {
+    const worker = loadServiceWorker(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+
+    await expect(worker.dispatch('pushsubscriptionchange', {})).resolves.toBeUndefined()
   })
 })
 

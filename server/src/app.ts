@@ -9,6 +9,7 @@ import type { EmailSenderFactory } from './email/transport.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
 import type { LeadCreatedHook } from './notify.ts'
+import { createPushRoutes } from './push/routes.ts'
 import { createSettingsRoutes } from './settings/routes.ts'
 import { createStageRoutes } from './stages/routes.ts'
 import { VERSION } from './version.ts'
@@ -60,6 +61,11 @@ export interface AppOptions extends AuthDeps {
    * `{{lead_url}}` when the settings screen previews an email template.
    */
   publicBaseUrl: string
+  /**
+   * The VAPID public key the settings toggle subscribes with. Auto-generated
+   * into the data dir at first boot — ADR-0004, zero operator setup.
+   */
+  vapidPublicKey: string
   /** Directory holding the built PWA. Overridable for tests. */
   publicDir?: string
   /** Login throttle and hash-concurrency limits. Defaults are the production ones. */
@@ -186,6 +192,10 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated }),
   )
   app.route(`${API_PREFIX}/stages`, createStageRoutes({ db: options.db }))
+  app.route(
+    `${API_PREFIX}/push`,
+    createPushRoutes({ db: options.db, vapidPublicKey: options.vapidPublicKey }),
+  )
   app.route(
     `${API_PREFIX}/settings`,
     createSettingsRoutes({

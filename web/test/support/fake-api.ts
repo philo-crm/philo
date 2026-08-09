@@ -37,6 +37,10 @@ export interface FakeApi {
   emailTemplates: EmailTemplate[]
   /** Every template test-send that went out, rendered as the server would have. */
   templateEmailsSent: { trigger: string; subject: string; body: string }[]
+  /** The VAPID public key this instance generated at its first boot. */
+  vapidPublicKey: string
+  /** Rows in `push_subscriptions`, as the server would hold them. */
+  pushSubscriptions: { endpoint: string; p256dh: string; auth: string }[]
   /** Every request the app made, in order. */
   calls: {
     method: string
@@ -390,6 +394,56 @@ function handleEmailTemplates(
   return undefined
 }
 
+/** Base64url, as the server generates and serves it. 65 bytes of P-256 point. */
+export const TEST_VAPID_PUBLIC_KEY =
+  'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U'
+
+/** Matches the server's validation in push/subscriptions.ts, so the client cannot drift. */
+const BASE64URL = /^[A-Za-z0-9_-]+$/
+
+function handlePush(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+  if (method === 'GET' && path === '/api/v1/push/key') {
+    return jsonResponse(200, { publicKey: api.vapidPublicKey })
+  }
+  if (path !== '/api/v1/push/subscriptions') return undefined
+
+  const payload = (body ?? {}) as Record<string, unknown>
+
+  if (method === 'POST') {
+    const endpoint = payload['endpoint']
+    const rawKeys = payload['keys']
+    const keys = (typeof rawKeys === 'object' && rawKeys !== null ? rawKeys : {}) as Record<string, unknown>
+    const p256dh = keys['p256dh']
+    const auth = keys['auth']
+    // Every refusal the server has, so a client that sends the wrong shape
+    // fails here rather than passing against something lenient.
+    if (
+      typeof endpoint !== 'string' ||
+      !endpoint.startsWith('https://') ||
+      typeof p256dh !== 'string' ||
+      typeof auth !== 'string' ||
+      !BASE64URL.test(p256dh) ||
+      !BASE64URL.test(auth)
+    ) {
+      return jsonResponse(400, { error: 'invalid_subscription' })
+    }
+    // Upsert on the endpoint, as the unique index makes it.
+    api.pushSubscriptions = api.pushSubscriptions.filter((row) => row.endpoint !== endpoint)
+    api.pushSubscriptions.push({ endpoint, p256dh, auth })
+    return jsonResponse(201, { ok: true })
+  }
+
+  if (method === 'DELETE') {
+    const endpoint = payload['endpoint']
+    if (typeof endpoint !== 'string' || endpoint === '') {
+      return jsonResponse(400, { error: 'invalid_subscription' })
+    }
+    api.pushSubscriptions = api.pushSubscriptions.filter((row) => row.endpoint !== endpoint)
+    return jsonResponse(200, { ok: true })
+  }
+  return undefined
+}
+
 function handle(api: FakeApi, method: string, path: string, query: URLSearchParams, body: unknown): Response {
   if (method === 'GET' && path === '/api/v1/auth/status') {
     return jsonResponse(200, { needsSetup: false, authenticated: api.user !== undefined })
@@ -411,6 +465,8 @@ function handle(api: FakeApi, method: string, path: string, query: URLSearchPara
   if (api.expired) return jsonResponse(401, { error: 'unauthorized' })
 
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
+  const pushAnswer = handlePush(api, method, path, body)
+  if (pushAnswer !== undefined) return pushAnswer
   const stageAnswer = handleStages(api, method, path, body)
   if (stageAnswer !== undefined) return stageAnswer
   const templateAnswer = handleEmailTemplates(api, method, path, body)
@@ -480,6 +536,8 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
     testEmailsSent: [],
     emailTemplates: TEST_EMAIL_TEMPLATES,
     templateEmailsSent: [],
+    vapidPublicKey: TEST_VAPID_PUBLIC_KEY,
+    pushSubscriptions: [],
     calls: [],
     ...overrides,
   }

@@ -277,6 +277,7 @@ const SETTINGS_MESSAGES: Record<string, string> = {
   // Reachable before the body's own cap bites: the server bounds the request in
   // bytes and the box counts characters, which differ for anything non-ASCII.
   payload_too_large: 'That is larger than the server will accept. Shorten the body.',
+  invalid_subscription: 'This browser gave out a push subscription the server could not use.',
 }
 
 /**
@@ -310,6 +311,27 @@ export async function updateEmailSettings(patch: EmailSettingsPatch): Promise<Em
  */
 export async function sendTestEmail(to: string): Promise<void> {
   await sendJson<{ ok: true }>('POST', `${EMAIL_SETTINGS_BASE}/test`, { to })
+}
+
+const PUSH_BASE = '/api/v1/push'
+
+/**
+ * The VAPID public key this instance signs with, generated at its first boot.
+ * Public by construction — it is what a push service checks the signature
+ * against — and the browser needs it as `applicationServerKey`.
+ */
+export async function fetchVapidPublicKey(signal?: AbortSignal): Promise<string> {
+  const body = await getJson<{ publicKey: string }>(`${PUSH_BASE}/key`, signal)
+  return body.publicKey
+}
+
+/** Takes the serialized `PushSubscription` as the browser hands it over. */
+export async function storePushSubscription(subscription: unknown): Promise<void> {
+  await sendJson<{ ok: true }>('POST', `${PUSH_BASE}/subscriptions`, subscription)
+}
+
+export async function forgetPushSubscription(endpoint: string): Promise<void> {
+  await sendJson<{ ok: true }>('DELETE', `${PUSH_BASE}/subscriptions`, { endpoint })
 }
 
 /** Mirrors the row shape in server/src/email/templates.ts. */
