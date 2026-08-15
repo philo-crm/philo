@@ -193,6 +193,15 @@ describe('Settings', () => {
     ).toBe(true)
   })
 
+  it('carries the API key manager, which is the only place a key can be made', async () => {
+    installFakeApi()
+    renderSettings()
+    await loaded()
+
+    expect(await screen.findByRole('heading', { name: 'API keys' })).toBeDefined()
+    expect(await screen.findByText('Nightly export')).toBeDefined()
+  })
+
   it('hands an expired session back to the shell', async () => {
     const onSessionExpired = vi.fn()
     installFakeApi({ expired: true })

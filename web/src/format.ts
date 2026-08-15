@@ -70,7 +70,9 @@ export function actorLabel(actor: string, currentUserId: number): string {
   if (actor === `user:${currentUserId}`) return 'You'
   if (actor.startsWith('user:')) return 'A user'
   if (actor.startsWith('form:')) return 'Intake form'
-  if (actor.startsWith('key:') || actor.startsWith('api:')) return 'API key'
+  // What the REST and MCP surfaces write for a headless caller — see
+  // actorOf in server/src/auth/middleware.ts.
+  if (actor.startsWith('api_key:')) return 'API key'
   return 'System'
 }
 

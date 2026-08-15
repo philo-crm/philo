@@ -1,5 +1,6 @@
 import { vi } from 'vitest'
 import type {
+  ApiKeyRecord,
   EmailSettings,
   EmailTemplate,
   LeadDetail,
@@ -37,6 +38,13 @@ export interface FakeApi {
   emailTemplates: EmailTemplate[]
   /** Every template test-send that went out, rendered as the server would have. */
   templateEmailsSent: { trigger: string; subject: string; body: string }[]
+  /** Rows in `api_keys`, as the server would hold them — no secret among them. */
+  apiKeys: ApiKeyRecord[]
+  /**
+   * Every secret this fake ever handed out, which the real server keeps of none
+   * of — held here only so a test can assert the screen never shows one twice.
+   */
+  apiKeySecrets: string[]
   /** The VAPID public key this instance generated at its first boot. */
   vapidPublicKey: string
   /** Rows in `push_subscriptions`, as the server would hold them. */
@@ -394,6 +402,69 @@ function handleEmailTemplates(
   return undefined
 }
 
+/**
+ * Prefixes are words rather than the random-looking slice a real key carries.
+ * Same shape — `philo_` and six more characters — but low enough entropy that
+ * the repo's secret scanner does not have to be told to ignore them, which is a
+ * concession worth making in a fixture and nowhere else.
+ */
+export const TEST_API_KEYS: ApiKeyRecord[] = [
+  {
+    id: 1,
+    name: 'Nightly export',
+    keyPrefix: 'philo_export',
+    createdAt: '2026-07-01T12:00:00.000Z',
+    lastUsedAt: '2026-07-04T09:30:00.000Z',
+  },
+  {
+    id: 2,
+    name: 'Claude Code',
+    keyPrefix: 'philo_second',
+    createdAt: '2026-07-02T12:00:00.000Z',
+    lastUsedAt: null,
+  },
+]
+
+/** Mirrors MAX_API_KEY_NAME_LENGTH in server/src/auth/api-keys.ts. */
+const MAX_KEY_NAME = 80
+
+/**
+ * Key management with the server's refusals: a nameless key is a 400, a second
+ * revoke is a 404, and the secret appears in exactly one response and is then
+ * unrecoverable — which is the property the screen has to be built around.
+ */
+function handleApiKeys(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+  const base = '/api/v1/api-keys'
+  if (method === 'GET' && path === base) return jsonResponse(200, { keys: api.apiKeys })
+
+  if (method === 'POST' && path === base) {
+    const payload = (body ?? {}) as Record<string, unknown>
+    const raw = payload['name']
+    const name = typeof raw === 'string' ? raw.trim() : ''
+    if (name === '' || name.length > MAX_KEY_NAME) return jsonResponse(400, { error: 'invalid_name' })
+
+    const id = api.apiKeys.reduce((next, key) => Math.max(next, key.id + 1), 1)
+    const secret = `philo_secret${id}-not-a-real-key`
+    const key: ApiKeyRecord = {
+      id,
+      name,
+      keyPrefix: secret.slice(0, 12),
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null,
+    }
+    api.apiKeys = [key, ...api.apiKeys]
+    api.apiKeySecrets.push(secret)
+    return jsonResponse(201, { key, secret })
+  }
+
+  const match = new RegExp(`^${base}/(\\d+)$`).exec(path)
+  if (match === null || method !== 'DELETE') return undefined
+  const id = Number(match[1])
+  if (!api.apiKeys.some((key) => key.id === id)) return jsonResponse(404, { error: 'not_found' })
+  api.apiKeys = api.apiKeys.filter((key) => key.id !== id)
+  return jsonResponse(200, { ok: true })
+}
+
 /** Base64url, as the server generates and serves it. 65 bytes of P-256 point. */
 export const TEST_VAPID_PUBLIC_KEY =
   'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U'
@@ -467,6 +538,8 @@ function handle(api: FakeApi, method: string, path: string, query: URLSearchPara
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
   const pushAnswer = handlePush(api, method, path, body)
   if (pushAnswer !== undefined) return pushAnswer
+  const keyAnswer = handleApiKeys(api, method, path, body)
+  if (keyAnswer !== undefined) return keyAnswer
   const stageAnswer = handleStages(api, method, path, body)
   if (stageAnswer !== undefined) return stageAnswer
   const templateAnswer = handleEmailTemplates(api, method, path, body)
@@ -536,6 +609,8 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
     testEmailsSent: [],
     emailTemplates: TEST_EMAIL_TEMPLATES,
     templateEmailsSent: [],
+    apiKeys: TEST_API_KEYS,
+    apiKeySecrets: [],
     vapidPublicKey: TEST_VAPID_PUBLIC_KEY,
     pushSubscriptions: [],
     calls: [],
@@ -546,6 +621,7 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
   api.stages = structuredClone(api.stages)
   api.emailSettings = structuredClone(api.emailSettings)
   api.emailTemplates = structuredClone(api.emailTemplates)
+  api.apiKeys = structuredClone(api.apiKeys)
 
   vi.stubGlobal('fetch', async (input: unknown, init?: RequestInit) => {
     const url = new URL(String(input), 'http://philo.example.com')

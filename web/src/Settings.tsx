@@ -8,6 +8,7 @@ import {
   type EmailSettings,
   type EmailSettingsPatch,
 } from './api.ts'
+import { ApiKeys } from './ApiKeys.tsx'
 import { EmailTemplates } from './EmailTemplates.tsx'
 import { isStandalone, isIosSafari } from './install.ts'
 import {
@@ -48,6 +49,7 @@ export function Settings({ onSessionExpired }: SettingsProps) {
           SMTP settings loaded, and the two fail independently. */}
       <PushNotifications onSessionExpired={onSessionExpired} />
       <EmailTemplates onSessionExpired={onSessionExpired} />
+      <ApiKeys onSessionExpired={onSessionExpired} />
     </>
   )
 }
