@@ -58,6 +58,12 @@ serve({ fetch: app.fetch, port: config.port }, () => {
     console.log(`  intake form:     ${url}`)
   }
   console.log(`  honeypot field:  ${HONEYPOT_FIELD} (render it hidden; a filled one is filed as spam)`)
+  // The only place the agent surface is surfaced. Nothing in the UI names it,
+  // and an operator pointing Claude Code at this instance needs the URL and the
+  // fact that it wants an API key from Settings, not their password.
+  console.log(
+    `  mcp endpoint:    ${config.publicBaseUrl.replace(/\/+$/, '')}/mcp (authenticate with an API key from Settings)`,
+  )
   // Email is the channel a missed lead is missed through, and an unconfigured
   // instance looks identical to a working one from the outside — every send is
   // best-effort and nothing upstream reports it. So say so at boot.

@@ -15,6 +15,7 @@ import { createAuthRoutes, type AuthTuning } from './auth/routes.ts'
 import type { EmailSenderFactory } from './email/transport.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
+import { createMcpRoutes } from './mcp/routes.ts'
 import type { LeadCreatedHook } from './notify.ts'
 import { createPushRoutes } from './push/routes.ts'
 import { createSettingsRoutes } from './settings/routes.ts'
@@ -216,6 +217,12 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
       createEmailSender: options.createEmailSender,
     }),
   )
+
+  // The agent surface. Outside `API_PREFIX` on purpose: everything mounted there
+  // assumes a session cookie and a same-origin caller, and MCP is neither — it
+  // authenticates with a bearer key and carries its own body limit and cache
+  // headers. See mcp/routes.ts.
+  app.route('/mcp', createMcpRoutes({ db: options.db, publicBaseUrl: options.publicBaseUrl }))
 
   // Deliberately unauthenticated, cross-origin, and form-encoding-friendly: the
   // caller is a visitor's browser on the business's own website. It carries its

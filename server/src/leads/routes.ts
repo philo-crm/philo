@@ -35,7 +35,11 @@ const LEAD_STATUS: Record<LeadError, ContentfulStatusCode> = {
   invalid_stage: 422,
   invalid_note: 400,
   invalid_contact: 400,
+  invalid_source: 400,
+  invalid_fields: 400,
   email_or_phone_required: 422,
+  // Only reachable if an operator deleted every stage. Same answer intake gives.
+  no_stage: 503,
 }
 
 function fail(c: Context, error: LeadError) {

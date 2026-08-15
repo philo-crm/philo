@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { leadEvents, leads, stages } from '../db/schema.ts'
+import { isWithinDepthLimit } from '../intake/payload.ts'
 import { err, ok, type Result } from '../result.ts'
 
 /** Leads per page when the caller does not say, and the ceiling on what it may ask for. */
@@ -27,7 +28,10 @@ export type LeadError =
   | 'invalid_stage'
   | 'invalid_note'
   | 'invalid_contact'
+  | 'invalid_source'
+  | 'invalid_fields'
   | 'email_or_phone_required'
+  | 'no_stage'
 
 export interface LeadRecord {
   id: number
@@ -81,6 +85,16 @@ export interface ContactPatch {
   name?: unknown
   email?: unknown
   phone?: unknown
+}
+
+/** A lead entered by hand rather than submitted. Same unvalidated contract. */
+export interface CreateLeadInput extends ContactPatch {
+  /** Where it came from, in the operator's words — intake stores the form's name here. */
+  source?: unknown
+  /** Omitted files the lead under the first stage of the funnel, as intake does. */
+  stageId?: unknown
+  /** Pre-screening answers, the same free-form shape intake stores — see ADR-0003. */
+  fields?: unknown
 }
 
 /**
@@ -281,6 +295,106 @@ function contactField(raw: unknown, max: number): string | null | undefined | ty
   if (typeof raw !== 'string') return INVALID
   const value = trimmedOrNull(raw, max)
   return value === undefined ? INVALID : value
+}
+
+/**
+ * The `fields` column as JSON, or undefined for a value that cannot be stored.
+ * The depth cap is the same one intake applies: the FTS trigger walks this with
+ * `json_tree`, and a payload past SQLite's parser limit would turn every later
+ * insert into a failed write.
+ */
+function leadFields(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) return '{}'
+  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const fields = raw as Record<string, unknown>
+  return isWithinDepthLimit(fields) ? JSON.stringify(fields) : undefined
+}
+
+/**
+ * A lead entered rather than submitted — an agent writing up a phone screen, a
+ * script importing from elsewhere. `formId` stays null (there is no form behind
+ * it) and `isSpam` false (there was no honeypot to trip).
+ *
+ * Deliberately does not fire the lead-created pipeline that intake fires. Both
+ * MVP templates speak to a submission that just arrived (DESIGN.md, Email): the
+ * acknowledgment would thank someone for an application they never sent, and the
+ * notification would announce a lead to the person whose own agent just filed it.
+ * Sending an email nobody asked for is the failure that cannot be taken back.
+ */
+export function createLead(
+  db: Db,
+  input: CreateLeadInput,
+  actor: string,
+): Result<LeadDetail, LeadError> {
+  const name = contactField(input.name, MAX_CONTACT_FIELD_LENGTH)
+  const email = contactField(input.email, MAX_EMAIL_LENGTH)
+  const phone = contactField(input.phone, MAX_CONTACT_FIELD_LENGTH)
+  if (name === INVALID || email === INVALID || phone === INVALID) return err('invalid_contact')
+
+  const source = contactField(input.source, MAX_CONTACT_FIELD_LENGTH)
+  if (source === INVALID) return err('invalid_source')
+
+  const fields = leadFields(input.fields)
+  if (fields === undefined) return err('invalid_fields')
+
+  // Lowercased for the same reason updateLeadContact does it: the unique lookups
+  // intake and auth run against this column are case-sensitive.
+  const nextEmail = email?.toLowerCase() ?? null
+  const nextPhone = phone ?? null
+  // The rule intake applies at 422 — a lead nobody can answer is not a lead.
+  if (nextEmail === null && nextPhone === null) return err('email_or_phone_required')
+
+  const requested = input.stageId
+  if (requested !== undefined && (!Number.isSafeInteger(requested) || (requested as number) <= 0)) {
+    return err('invalid_stage')
+  }
+  const requestedStageId = requested as number | undefined
+
+  const outcome = db.transaction((tx) => {
+    // Unnamed files the lead under the funnel's first stage, exactly as intake
+    // does — one pipeline in the MVP, ordered by it too so the choice stays
+    // deterministic if a second one ever appears.
+    const [stage] =
+      requestedStageId === undefined
+        ? tx
+            .select({ id: stages.id })
+            .from(stages)
+            .orderBy(asc(stages.pipelineId), asc(stages.position), asc(stages.id))
+            .limit(1)
+            .all()
+        : tx.select({ id: stages.id }).from(stages).where(eq(stages.id, requestedStageId)).limit(1).all()
+    if (stage === undefined) return requestedStageId === undefined ? 'no_stage' : 'invalid_stage'
+
+    const [lead] = tx
+      .insert(leads)
+      .values({
+        name: name ?? null,
+        email: nextEmail,
+        phone: nextPhone,
+        source: source ?? null,
+        currentStageId: stage.id,
+        fields,
+      })
+      .returning({ id: leads.id })
+      .all()
+    if (lead === undefined) throw new Error('lead insert returned no row')
+
+    // Same transaction as the row it records — DESIGN.md (Data model). `via`
+    // names the shape of the caller, not the surface: `actor` already carries
+    // which key did it, and REST would write the same thing if it grew a create.
+    tx.insert(leadEvents)
+      .values({
+        leadId: lead.id,
+        type: 'created',
+        payload: JSON.stringify({ via: 'api' }),
+        actor,
+      })
+      .run()
+    return lead.id
+  })
+
+  if (typeof outcome === 'string') return err(outcome)
+  return requireLead(db, outcome)
 }
 
 /**
