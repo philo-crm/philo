@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import { currentUser, type AuthEnv } from '../auth/middleware.ts'
+import { actorOf, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { readJsonBody } from '../json-body.ts'
 import { notifyLeadCreated, type LeadCreatedHook } from '../notify.ts'
@@ -40,11 +40,6 @@ const LEAD_STATUS: Record<LeadError, ContentfulStatusCode> = {
 
 function fail(c: Context, error: LeadError) {
   return c.json({ error }, LEAD_STATUS[error])
-}
-
-/** Who the timeline records. One identity per user — see DESIGN.md (Auth and access). */
-function actorOf(c: Context<AuthEnv>): string {
-  return `user:${currentUser(c).id}`
 }
 
 function parseId(raw: string | undefined): number | undefined {

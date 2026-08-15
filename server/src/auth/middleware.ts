@@ -2,6 +2,7 @@ import type { Context, MiddlewareHandler } from 'hono'
 import type { CookieOptions } from 'hono/utils/cookie'
 import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie'
 import type { Db } from '../db/index.ts'
+import { resolveApiKey, type ApiKeyPrincipal } from './api-keys.ts'
 import { SESSION_COOKIE_NAME, SESSION_TTL_MS, resolveSession, type SessionUser } from './session.ts'
 
 export interface AuthDeps {
@@ -26,6 +27,8 @@ export interface AuthEnv {
   Variables: {
     /** Set by `sessionMiddleware` when the request carries a live session. */
     user: SessionUser | undefined
+    /** Set by `apiKeyMiddleware` when the request carries a live `philo_` key. */
+    apiKey: ApiKeyPrincipal | undefined
   }
 }
 
@@ -70,6 +73,12 @@ export async function readSessionCookie(c: Context, sessionKey: string): Promise
  */
 export function sessionMiddleware(deps: AuthDeps): MiddlewareHandler<AuthEnv> {
   return async (c, next) => {
+    // An explicit bearer key already said who the caller is. A cookie that
+    // happened to ride along must not quietly upgrade the request to a user
+    // identity the caller did not present — the actor on the timeline, and the
+    // session-only routes, both turn on that distinction.
+    if (c.get('apiKey') !== undefined) return next()
+
     const token = await readSessionCookie(c, deps.sessionKey)
     if (token === undefined) return next()
 
@@ -88,19 +97,72 @@ export function sessionMiddleware(deps: AuthDeps): MiddlewareHandler<AuthEnv> {
   }
 }
 
-/** Deny-by-default guard for the machine-facing API. */
+/**
+ * Resolves an `Authorization: Bearer philo_…` key onto the request. Like
+ * `sessionMiddleware` it rejects nothing: a bad key falls through to the cookie
+ * and then to `requireAuth`, which is the one place a request is refused.
+ */
+export function apiKeyMiddleware(deps: AuthDeps): MiddlewareHandler<AuthEnv> {
+  return async (c, next) => {
+    const token = bearerToken(c.req.header('authorization'))
+    if (token === undefined) return next()
+
+    const key = resolveApiKey(deps.db, token)
+    if (key !== undefined) c.set('apiKey', key)
+    return next()
+  }
+}
+
+/** The credential from an `Authorization` header, if it is a bearer one. */
+export function bearerToken(header: string | undefined): string | undefined {
+  if (header === undefined) return undefined
+  // The scheme is case-insensitive per RFC 7235; the credential is not.
+  const match = /^bearer\s+(\S+)$/i.exec(header.trim())
+  return match?.[1]
+}
+
+/** Deny-by-default guard for the machine-facing API. Either credential passes. */
 export const requireAuth: MiddlewareHandler<AuthEnv> = async (c, next) => {
-  if (c.get('user') === undefined) return c.json({ error: 'unauthorized' }, 401)
+  if (c.get('user') === undefined && c.get('apiKey') === undefined) {
+    return c.json({ error: 'unauthorized' }, 401)
+  }
   return next()
 }
 
 /**
- * The authenticated user, for handlers behind `requireAuth`. Throws rather than
+ * The narrower guard, for what only a signed-in person can do: anything needing
+ * an email address or a browser (push, template test-sends), and minting or
+ * revoking keys — a key that could mint another would outlive its own
+ * revocation. 403 rather than 401: the credential is good, the route is not for
+ * it, and answering 401 would send a client off to re-authenticate forever.
+ */
+export const requireUser: MiddlewareHandler<AuthEnv> = async (c, next) => {
+  if (c.get('user') !== undefined) return next()
+  if (c.get('apiKey') !== undefined) return c.json({ error: 'session_required' }, 403)
+  return c.json({ error: 'unauthorized' }, 401)
+}
+
+/**
+ * The authenticated user, for handlers behind `requireUser`. Throws rather than
  * returning undefined so a route that forgets the guard fails loudly in tests
- * instead of quietly serving an anonymous request.
+ * instead of quietly serving an anonymous request — or, now, an API key request
+ * that has no user behind it at all.
  */
 export function currentUser(c: Context<AuthEnv>): SessionUser {
   const user = c.get('user')
-  if (user === undefined) throw new Error('currentUser() requires requireAuth() on the route')
+  if (user === undefined) throw new Error('currentUser() requires requireUser() on the route')
   return user
+}
+
+/**
+ * Who the timeline records. One identity per credential — DESIGN.md (Auth and
+ * access) — so a lead moved by an agent is distinguishable from one moved by a
+ * person afterwards.
+ */
+export function actorOf(c: Context<AuthEnv>): string {
+  const user = c.get('user')
+  if (user !== undefined) return `user:${user.id}`
+  const key = c.get('apiKey')
+  if (key !== undefined) return `api_key:${key.id}`
+  throw new Error('actorOf() requires requireAuth() on the route')
 }

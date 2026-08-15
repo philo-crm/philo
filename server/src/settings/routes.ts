@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import { currentUser, type AuthEnv } from '../auth/middleware.ts'
+import { currentUser, requireUser, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { ackReplyTo, sendTestEmail, type TestEmailError } from '../email/service.ts'
 import {
@@ -143,9 +143,10 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
    * The same rendering, put through SMTP to the address of whoever is signed in.
    * Deliberately not an arbitrary recipient: the question a template test answers
    * is "does this read right in my mail client", and the operator's own inbox is
-   * the only one that can answer it.
+   * the only one that can answer it. Which is also why it is session-only — an
+   * API key has no inbox for the answer to land in.
    */
-  routes.post('/email/templates/:trigger/test', async (c) => {
+  routes.post('/email/templates/:trigger/test', requireUser, async (c) => {
     const trigger = c.req.param('trigger')
     if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
     const body = await readJsonBody(c)
