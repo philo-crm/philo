@@ -47,6 +47,16 @@ export function generateApiKey(): string {
  * SHA-256, not argon2, for the same reason session tokens use it: the secret is
  * 256 bits this server generated, so there is no dictionary to slow an attacker
  * down through, and every authenticated request would pay the argon2 cost.
+ *
+ * CodeQL reads the `Key` in the name and calls this a password hash
+ * (js/insufficient-password-hash). It is not: a slow KDF exists to make
+ * guessing a human-chosen secret expensive, and nothing here is human-chosen —
+ * the input is `generateApiKey`'s CSPRNG output and cannot be anything else.
+ * `hashSessionToken` is the same call for the same reason and goes unflagged
+ * only because "token" does not trip the heuristic. An inline
+ * `// codeql[...]` suppression was tried and is not honoured by code scanning,
+ * so the alert has to be dismissed as a false positive in the repo's security
+ * tab; this comment is the justification for doing so.
  */
 export function hashApiKey(key: string): string {
   return createHash('sha256').update(key).digest('hex')
