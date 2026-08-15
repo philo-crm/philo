@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { currentUser, type AuthEnv } from '../auth/middleware.ts'
+import { currentUser, requireUser, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { readJsonBody } from '../json-body.ts'
 import { deleteSubscription, saveSubscription, validateSubscription } from './subscriptions.ts'
@@ -15,6 +15,10 @@ export interface PushRoutesDeps {
 
 export function createPushRoutes(deps: PushRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
+
+  // Session-only, all of it. A push subscription belongs to a browser and to
+  // the person signed into it; an API key has neither.
+  routes.use('/*', requireUser)
 
   /**
    * What the settings toggle subscribes with. Behind the session like everything

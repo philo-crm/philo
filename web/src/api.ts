@@ -334,6 +334,59 @@ export async function forgetPushSubscription(endpoint: string): Promise<void> {
   await sendJson<{ ok: true }>('DELETE', `${PUSH_BASE}/subscriptions`, { endpoint })
 }
 
+/** Mirrors MAX_API_KEY_NAME_LENGTH in server/src/auth/api-keys.ts. */
+export const MAX_API_KEY_NAME_LENGTH = 80
+
+/**
+ * Mirrors the response shape in server/src/auth/api-key-routes.ts. There is no
+ * secret on it and there is not meant to be one: the key is handed back exactly
+ * once, by `createApiKey`, and `keyPrefix` is all a list can ever show.
+ */
+export interface ApiKeyRecord {
+  id: number
+  name: string
+  keyPrefix: string
+  createdAt: string
+  lastUsedAt: string | null
+}
+
+const API_KEYS_BASE = '/api/v1/api-keys'
+
+/**
+ * The same codes again, read as a key rather than a lead or a stage —
+ * `not_found` here is about a key somebody else already revoked.
+ */
+const API_KEY_MESSAGES: Record<string, string> = {
+  invalid_name: `A key needs a name of ${MAX_API_KEY_NAME_LENGTH} characters or fewer, so you can tell later what it was for.`,
+  not_found: 'That key has already been revoked. Reload to see the current list.',
+  invalid_request: 'The server could not read that request.',
+}
+
+export function apiKeyErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    const message = API_KEY_MESSAGES[error.code]
+    if (message !== undefined) return message
+  }
+  return apiErrorMessage(error)
+}
+
+export async function fetchApiKeys(signal?: AbortSignal): Promise<ApiKeyRecord[]> {
+  const body = await getJson<{ keys: ApiKeyRecord[] }>(API_KEYS_BASE, signal)
+  return body.keys
+}
+
+/**
+ * The one call that ever sees a secret. Nothing stores it — the screen shows it
+ * until the next render that clears it, and after that it is unrecoverable.
+ */
+export async function createApiKey(name: string): Promise<{ key: ApiKeyRecord; secret: string }> {
+  return sendJson<{ key: ApiKeyRecord; secret: string }>('POST', API_KEYS_BASE, { name })
+}
+
+export async function revokeApiKey(id: number): Promise<void> {
+  await sendJson<{ ok: true }>('DELETE', `${API_KEYS_BASE}/${id}`)
+}
+
 /** Mirrors the row shape in server/src/email/templates.ts. */
 export interface EmailTemplate {
   trigger: string

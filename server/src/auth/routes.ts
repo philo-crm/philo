@@ -10,7 +10,7 @@ import {
   clearSessionCookie,
   currentUser,
   readSessionCookie,
-  requireAuth,
+  requireUser,
   writeSessionCookie,
   type AuthDeps,
   type AuthEnv,
@@ -254,7 +254,7 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     return c.body(null, 204)
   })
 
-  routes.get('/session', requireAuth, (c) => c.json({ user: toUserResponse(currentUser(c)) }))
+  routes.get('/session', requireUser, (c) => c.json({ user: toUserResponse(currentUser(c)) }))
 
   return routes
 }

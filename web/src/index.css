@@ -668,7 +668,8 @@ main {
   max-width: 26rem;
 }
 
-/* The settings screen stacks two of these — email settings, then templates. */
+/* The settings screen stacks several of these — mail server, push, templates,
+   API keys — each loading and failing on its own. */
 .screen + .screen {
   margin-top: var(--gap);
 }
@@ -717,4 +718,27 @@ main {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
+}
+
+/* ---- api keys ----------------------------------------------------------- */
+
+.key-form {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: var(--gap);
+  max-width: 26rem;
+}
+
+.new-key {
+  display: grid;
+  gap: 0.75rem;
+}
+
+/* The whole secret at once, in a pitch that makes it checkable character by
+   character — it is read back against a terminal, never retyped from memory. */
+.new-key-secret {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  width: 100%;
+  box-sizing: border-box;
 }

@@ -3,7 +3,14 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { csrf } from 'hono/csrf'
 import { fileURLToPath } from 'node:url'
-import { requireAuth, sessionMiddleware, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
+import { createApiKeyRoutes } from './auth/api-key-routes.ts'
+import {
+  apiKeyMiddleware,
+  requireAuth,
+  sessionMiddleware,
+  type AuthDeps,
+  type AuthEnv,
+} from './auth/middleware.ts'
 import { createAuthRoutes, type AuthTuning } from './auth/routes.ts'
 import type { EmailSenderFactory } from './email/transport.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
@@ -180,6 +187,10 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     c.res.headers.set('Cache-Control', 'no-store')
   })
 
+  // Bearer first: an `Authorization` header is a deliberate credential, and a
+  // cookie the browser attached on its own must not shadow it. sessionMiddleware
+  // stands down when this one resolved a key.
+  app.use(`${API_PREFIX}/*`, apiKeyMiddleware(deps))
   app.use(`${API_PREFIX}/*`, sessionMiddleware(deps))
   app.use(`${API_PREFIX}/*`, async (c, next) => {
     if (PUBLIC_API_PATHS.has(c.req.path)) return next()
@@ -187,6 +198,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   })
 
   app.route(`${API_PREFIX}/auth`, createAuthRoutes(deps, options.authTuning ?? {}))
+  app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db }))
   app.route(
     `${API_PREFIX}/leads`,
     createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated }),
