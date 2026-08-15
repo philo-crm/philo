@@ -130,11 +130,20 @@ export const requireAuth: MiddlewareHandler<AuthEnv> = async (c, next) => {
 }
 
 /**
- * The narrower guard, for what only a signed-in person can do: anything needing
- * an email address or a browser (push, template test-sends), and minting or
- * revoking keys — a key that could mint another would outlive its own
- * revocation. 403 rather than 401: the credential is good, the route is not for
- * it, and answering 401 would send a client off to re-authenticate forever.
+ * The narrower guard, for what a `philo_` key deliberately does not reach:
+ *
+ * - **Minting and revoking keys.** A key that could mint another would outlive
+ *   its own revocation.
+ * - **Push subscriptions.** They belong to a browser and to the person signed
+ *   into it; a key has neither.
+ * - **Mail server settings and the test-send.** Instance credentials, plus a
+ *   send to any address the caller names — enough to repoint every notification
+ *   and to send from the business's identity. Email *templates* stay open on
+ *   purpose: DESIGN.md (MCP surface) wants an agent designing the emails.
+ * - **The session itself.** There is no user behind a key to describe.
+ *
+ * 403 rather than 401: the credential is good, the route is not for it, and
+ * answering 401 would send a client off to re-authenticate forever.
  */
 export const requireUser: MiddlewareHandler<AuthEnv> = async (c, next) => {
   if (c.get('user') !== undefined) return next()

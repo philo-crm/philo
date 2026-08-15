@@ -76,8 +76,9 @@ export function ApiKeys({ onSessionExpired }: ApiKeysProps) {
 
       <p className="hint">
         For scripts, cron jobs and AI agents. Send one as{' '}
-        <code>Authorization: Bearer philo_…</code>. A key can read and change leads and the funnel;
-        it cannot sign in, manage keys, or change notification settings.
+        <code>Authorization: Bearer philo_…</code>. A key can read and change leads, the funnel and
+        your email templates. It cannot sign in, manage keys, touch your mail server settings, or
+        send email to an address you have not put in a template.
       </p>
 
       {error !== undefined && (

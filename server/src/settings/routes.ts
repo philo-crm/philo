@@ -71,13 +71,22 @@ const TEMPLATE_STATUS: Record<EmailTemplateError, ContentfulStatusCode> = {
 export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
-  routes.get('/email', (c) => c.json({ settings: toResponse(readEmailSettings(deps.db)) }))
+  /**
+   * Session-only, this route and the two below it. The mail server's host,
+   * username and password are the instance's own credentials, and the test-send
+   * takes an arbitrary recipient — between them they are enough to repoint every
+   * outgoing notification at somebody else's server and to send from the
+   * business's identity to anyone. Nothing in the MCP tool set (DESIGN.md, MCP
+   * surface) needs either, so an API key does not reach them. Templates below
+   * are the deliberate exception: designing the emails is an agent's job.
+   */
+  routes.get('/email', requireUser, (c) => c.json({ settings: toResponse(readEmailSettings(deps.db)) }))
 
   /**
    * PATCH rather than PUT: a key the body leaves out keeps its stored value,
    * which is what lets the password stay write-only. Sending `""` clears it.
    */
-  routes.patch('/email', async (c) => {
+  routes.patch('/email', requireUser, async (c) => {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
@@ -95,7 +104,7 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
    * it tests, and a green result is a statement about the configuration the next
    * lead will actually be sent with.
    */
-  routes.post('/email/test', async (c) => {
+  routes.post('/email/test', requireUser, async (c) => {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 

@@ -15,8 +15,10 @@ import {
 } from '../src/auth/api-keys.ts'
 import { bearerToken } from '../src/auth/middleware.ts'
 import { apiKeys, leads } from '../src/db/schema.ts'
+import { readEmailSettings } from '../src/email/settings.ts'
 import {
   cleanupTestApps,
+  configureEmail,
   createTestApp,
   defaultFormKey,
   jsonPost,
@@ -350,6 +352,12 @@ describe('bearer authentication', () => {
       ['/api/v1/push/key', {}],
       ['/api/v1/push/subscriptions', jsonPost({ endpoint: 'https://push.example.com/x' })],
       ['/api/v1/settings/email/templates/new_lead_ack/test', jsonPost({})],
+      // The instance's own mail credentials, and a send to any address the
+      // caller names. Between them they are enough to repoint every outgoing
+      // notification and to send from the business's identity.
+      ['/api/v1/settings/email', {}],
+      ['/api/v1/settings/email', { ...jsonPost({ smtpHost: 'evil.example.com' }), method: 'PATCH' }],
+      ['/api/v1/settings/email/test', jsonPost({ to: 'attacker@example.com' })],
     ]
 
     for (const [path, init] of sessionOnly) {
@@ -359,15 +367,37 @@ describe('bearer authentication', () => {
     }
   })
 
-  it('leaves the rest of the REST surface open to a key', async () => {
+  it('leaves a key no way to repoint the mail server', async () => {
+    const testApp = createTestApp()
+    const cookie = await setupAdmin(testApp)
+    const { secret } = await mintKey(testApp, cookie)
+    configureEmail(testApp)
+
+    await testApp.app.request(
+      '/api/v1/settings/email',
+      bearer(secret, { ...jsonPost({ smtpHost: 'evil.example.com' }), method: 'PATCH' }),
+    )
+
+    expect(readEmailSettings(testApp.db).smtpHost).toBe('smtp.example.com')
+  })
+
+  it('leaves leads, the funnel and the email templates open to a key', async () => {
     const testApp = createTestApp()
     const cookie = await setupAdmin(testApp)
     const { secret } = await mintKey(testApp, cookie)
 
-    for (const path of ['/api/v1/leads', '/api/v1/stages', '/api/v1/settings/email']) {
+    // Templates are the deliberate exception on the settings surface: DESIGN.md
+    // (MCP surface) puts designing the emails in an agent's hands.
+    for (const path of ['/api/v1/leads', '/api/v1/stages', '/api/v1/settings/email/templates']) {
       const res = await testApp.app.request(path, bearer(secret))
       expect([path, res.status]).toEqual([path, 200])
     }
+
+    const edited = await testApp.app.request(
+      '/api/v1/settings/email/templates/new_lead_ack',
+      bearer(secret, { ...jsonPost({ subject: 'Thanks, {{lead.name}}' }), method: 'PATCH' }),
+    )
+    expect(edited.status).toBe(200)
   })
 
   it('does not authenticate the public intake endpoint into something more', async () => {
