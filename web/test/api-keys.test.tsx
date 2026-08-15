@@ -124,6 +124,23 @@ describe('ApiKeys', () => {
     expect(document.body.innerHTML).not.toContain(secret)
   })
 
+  it('re-reads the list rather than inventing one when the load failed', async () => {
+    const api = installFakeApi({ offline: /api-keys/ })
+    renderKeys()
+
+    // The list load failed, so nothing on screen knows what keys exist.
+    await screen.findByText('Could not reach the server. Check your connection and try again.')
+
+    api.offline = undefined
+    create('Cron job')
+
+    // The one key this screen created must not be presented as the whole list:
+    // the two seeded keys are still there and have to come back with it.
+    expect(await screen.findByText('Cron job')).toBeDefined()
+    expect(screen.getByText('Nightly export')).toBeDefined()
+    expect(screen.getByText('Claude Code')).toBeDefined()
+  })
+
   it('reports a key somebody else already revoked', async () => {
     const api = installFakeApi()
     renderKeys()

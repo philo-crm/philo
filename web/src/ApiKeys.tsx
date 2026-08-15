@@ -42,6 +42,21 @@ export function ApiKeys({ onSessionExpired }: ApiKeysProps) {
     }
   }
 
+  /**
+   * Applies a mutation to the list without a round trip — but only when there is
+   * a loaded list to apply it to. With none, `next` is not the list minus or
+   * plus one row, it is the one row this screen happens to know about, and
+   * showing that as the table would read as "these are your keys". The two ways
+   * to get there: the load failed (setting it would also clear the error, so the
+   * fabricated list arrives looking authoritative), or the load is still in
+   * flight (and would land afterwards holding a list taken before this change).
+   * `reload` covers both — it aborts any in-flight load and asks again.
+   */
+  function applyToList(next: ApiKeyRecord[]) {
+    if (keys.data === undefined) keys.reload()
+    else keys.set(next)
+  }
+
   function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (name.trim() === '') return
@@ -49,7 +64,7 @@ export function ApiKeys({ onSessionExpired }: ApiKeysProps) {
       const created = await createApiKey(name.trim())
       setSecret(created.secret)
       setName('')
-      keys.set([created.key, ...(keys.data ?? [])])
+      applyToList([created.key, ...(keys.data ?? [])])
     })
   }
 
@@ -61,7 +76,7 @@ export function ApiKeys({ onSessionExpired }: ApiKeysProps) {
     setConfirming(undefined)
     void run(async () => {
       await revokeApiKey(key.id)
-      keys.set((keys.data ?? []).filter((row) => row.id !== key.id))
+      applyToList((keys.data ?? []).filter((row) => row.id !== key.id))
       // A revoked key's secret must not stay on screen implying it still works.
       setSecret(undefined)
     })
