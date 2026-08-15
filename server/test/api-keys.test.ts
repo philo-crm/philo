@@ -387,7 +387,9 @@ describe('bearer authentication', () => {
     const { secret } = await mintKey(testApp, cookie)
 
     // Templates are the deliberate exception on the settings surface: DESIGN.md
-    // (MCP surface) puts designing the emails in an agent's hands.
+    // (MCP surface) puts designing the emails in an agent's hands. Note what
+    // that implies and is meant to — a key can author what goes out under the
+    // business's name. The settings screen says so where a key is created.
     for (const path of ['/api/v1/leads', '/api/v1/stages', '/api/v1/settings/email/templates']) {
       const res = await testApp.app.request(path, bearer(secret))
       expect([path, res.status]).toEqual([path, 200])

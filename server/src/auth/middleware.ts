@@ -137,9 +137,10 @@ export const requireAuth: MiddlewareHandler<AuthEnv> = async (c, next) => {
  * - **Push subscriptions.** They belong to a browser and to the person signed
  *   into it; a key has neither.
  * - **Mail server settings and the test-send.** Instance credentials, plus a
- *   send to any address the caller names — enough to repoint every notification
- *   and to send from the business's identity. Email *templates* stay open on
- *   purpose: DESIGN.md (MCP surface) wants an agent designing the emails.
+ *   bare send-to-this-address primitive. Email *templates* stay open on purpose
+ *   — DESIGN.md (MCP surface) wants an agent designing the emails — so this is
+ *   not a boundary against a key composing outbound mail, and nothing here
+ *   should be read as one. It keeps the SMTP credentials out of a key's reach.
  * - **The session itself.** There is no user behind a key to describe.
  *
  * 403 rather than 401: the credential is good, the route is not for it, and

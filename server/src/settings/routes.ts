@@ -72,13 +72,17 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
   /**
-   * Session-only, this route and the two below it. The mail server's host,
+   * Session-only, this route and the two below it: the mail server's host,
    * username and password are the instance's own credentials, and the test-send
-   * takes an arbitrary recipient — between them they are enough to repoint every
-   * outgoing notification at somebody else's server and to send from the
-   * business's identity to anyone. Nothing in the MCP tool set (DESIGN.md, MCP
-   * surface) needs either, so an API key does not reach them. Templates below
-   * are the deliberate exception: designing the emails is an agent's job.
+   * is a bare "send to this address" primitive. Nothing in the MCP tool set
+   * (DESIGN.md, MCP surface) needs either, so an API key does not reach them.
+   *
+   * What that does *not* buy, and deliberately: a key still edits the templates
+   * below, so it can author what goes out under the business's name and reach a
+   * recipient of its choosing through a lead. That capability is the approved
+   * design — `update_email_template` is in the MVP tool set precisely so an
+   * agent can design the emails — and the settings screen says as much where a
+   * key is created. Narrowing it is an ADR, not a patch.
    */
   routes.get('/email', requireUser, (c) => c.json({ settings: toResponse(readEmailSettings(deps.db)) }))
 
