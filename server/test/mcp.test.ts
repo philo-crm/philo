@@ -3,18 +3,22 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { asc, eq } from 'drizzle-orm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createApiKey } from '../src/auth/api-keys.ts'
+import { createApiKey, revokeApiKey } from '../src/auth/api-keys.ts'
 import { leadEvents, leads, stages } from '../src/db/schema.ts'
+import { sweepUnsentEmails } from '../src/email/service.ts'
 import { getEmailTemplate } from '../src/email/templates.ts'
 import { HONEYPOT_FIELD, MAX_FIELD_DEPTH } from '../src/intake/payload.ts'
 import { MAX_MCP_BODY_BYTES } from '../src/mcp/routes.ts'
 import type { CreatedLead } from '../src/notify.ts'
 import {
   cleanupTestApps,
+  configureEmail,
   createTestApp,
   defaultFormKey,
+  recordingSender,
   setupAdmin,
   withServer,
+  TEST_PUBLIC_BASE_URL,
   type TestApp,
 } from './support/app.ts'
 
@@ -134,6 +138,20 @@ describe('mcp transport', () => {
 
     expect(res.status).toBe(401)
     expect(res.headers.get('WWW-Authenticate')).toBe('Bearer realm="philo", error="invalid_token"')
+  })
+
+  it('stops accepting a key the moment it is revoked', async () => {
+    const testApp = createTestApp()
+    const { key, record } = createApiKey(testApp.db, 'Agent')
+    const authorized = { authorization: `Bearer ${key}` }
+
+    expect((await testApp.app.request('/mcp', jsonRpcPost(INITIALIZE, authorized))).status).toBe(200)
+    revokeApiKey(testApp.db, record.id)
+
+    // Revocation is a row delete and this surface holds nothing between
+    // requests, so there is no cached session for a key to outlive itself in.
+    const after = await testApp.app.request('/mcp', jsonRpcPost(INITIALIZE, authorized))
+    expect(after.status).toBe(401)
   })
 
   it('does not accept a session cookie in place of a key', async () => {
@@ -277,6 +295,8 @@ describe('mcp lead tools', () => {
   it('files a lead that was never submitted, and sends nothing for it', async () => {
     const onLeadCreated = vi.fn<(lead: CreatedLead) => void>()
     const testApp = createTestApp({ onLeadCreated })
+    await setupAdmin(testApp)
+    configureEmail(testApp)
     const { key, record } = createApiKey(testApp.db, 'Agent')
 
     await withMcpClient(testApp, key, async (call) => {
@@ -308,10 +328,29 @@ describe('mcp lead tools', () => {
       expect(lead.events).toHaveLength(1)
       expect(lead.events[0]?.type).toBe('created')
       expect(lead.events[0]?.actor).toBe(`api_key:${record.id}`)
+
+      // The write reaches the search index like any other — one code path, but
+      // the only one that inserts a lead without going through intake.
+      const found = await call('list_leads', { search: 'dry van' })
+      expect((found.data['leads'] as { id: number }[]).map((row) => row.id)).toEqual([lead.id])
     })
 
     // The acknowledgment thanks a person for a submission, and there was none.
     expect(onLeadCreated).not.toHaveBeenCalled()
+
+    // And withholding the hook is not the whole guarantee: the boot sweep reaches
+    // every recent lead with nothing sent against it, so without a durable mark
+    // on the timeline the next restart would send both emails after all.
+    const sender = recordingSender()
+    const swept = await sweepUnsentEmails({
+      db: testApp.db,
+      publicBaseUrl: TEST_PUBLIC_BASE_URL,
+      createSender: sender.factory,
+      retry: { maxAttempts: 1, jitterRatio: 0 },
+    })
+
+    expect(swept).toBe(1)
+    expect(sender.sent).toEqual([])
   })
 
   it('refuses a lead nobody could answer', async () => {

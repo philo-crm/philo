@@ -201,6 +201,19 @@ Full rationale: [ADR-0004](adr/0004-push-best-effort-email-guaranteed.md).
 - **Triggers: lead creation only** (notify owner + acknowledge submitter).
   The `trigger` enum on `email_templates` is the designed-in door for
   stage-transition emails (e.g. a templated rejection) as a fast-follow.
+- **A submission, not every new row.** A lead *entered* through MCP or REST
+  — an agent writing up a phone screen — sends neither email. Both
+  templates are written for something that just arrived: the
+  acknowledgment would thank a person for an application they never sent,
+  and the notification would announce a lead to the operator whose own
+  agent filed it. An email nobody asked for is the one failure here that
+  cannot be taken back, so the default is silence.
+  - Withholding the in-process hook does not carry that on its own. The
+    boot sweep exists to catch up anything a crash left owed, and it asks
+    only "recent, non-spam, nothing sent yet" — to which an entered lead
+    and an interrupted one look identical. So the fact is recorded
+    durably: `createLead` stamps `via: "api"` on the `created` event, and
+    the send path reads it.
 - Sends are recorded as `email_sent` events on the lead's timeline.
 
 ## Auth and access

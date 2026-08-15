@@ -23,6 +23,14 @@ export const MAX_CONTACT_FIELD_LENGTH = 200
 /** The note the timeline records when a quarantined lead is promoted. */
 export const NOT_SPAM_NOTE = 'Marked as not spam.'
 
+/**
+ * The `via` a `createLead` entry carries on its `created` event, against
+ * intake's `'intake'`. The durable record that a lead was *entered* rather than
+ * submitted — `attemptNewLeadEmails` reads it to decide that no new-lead email
+ * was ever owed, which memory could not answer across a restart.
+ */
+export const CREATED_VIA_API = 'api'
+
 export type LeadError =
   | 'not_found'
   | 'invalid_stage'
@@ -315,11 +323,16 @@ function leadFields(raw: unknown): string | undefined {
  * script importing from elsewhere. `formId` stays null (there is no form behind
  * it) and `isSpam` false (there was no honeypot to trip).
  *
- * Deliberately does not fire the lead-created pipeline that intake fires. Both
- * MVP templates speak to a submission that just arrived (DESIGN.md, Email): the
- * acknowledgment would thank someone for an application they never sent, and the
- * notification would announce a lead to the person whose own agent just filed it.
- * Sending an email nobody asked for is the failure that cannot be taken back.
+ * Deliberately sends nothing — DESIGN.md (Email). Both MVP templates speak to a
+ * submission that just arrived: the acknowledgment would thank someone for an
+ * application they never sent, and the notification would announce a lead to the
+ * person whose own agent just filed it. An email nobody asked for cannot be
+ * taken back.
+ *
+ * Withholding the hook is not enough to carry that, and this is the subtle part:
+ * the boot sweep reaches every recent lead with no send recorded against it, and
+ * a lead the hook never fired for looks exactly like one whose process died
+ * mid-send. `CREATED_VIA_API` on the timeline is what tells them apart.
  */
 export function createLead(
   db: Db,
@@ -386,7 +399,7 @@ export function createLead(
       .values({
         leadId: lead.id,
         type: 'created',
-        payload: JSON.stringify({ via: 'api' }),
+        payload: JSON.stringify({ via: CREATED_VIA_API }),
         actor,
       })
       .run()

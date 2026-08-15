@@ -218,10 +218,11 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     }),
   )
 
-  // The agent surface. Outside `API_PREFIX` on purpose: everything mounted there
-  // assumes a session cookie and a same-origin caller, and MCP is neither — it
-  // authenticates with a bearer key and carries its own body limit and cache
-  // headers. See mcp/routes.ts.
+  // The agent surface. Outside `API_PREFIX` on purpose: the layers above assume
+  // a same-origin caller with a JSON body of this API's own shape — csrf(), the
+  // content-type gate, the cookie fallback — and MCP is none of those. It takes
+  // a bearer key only, speaks JSON-RPC, and carries its own body limit and cache
+  // header instead. See mcp/routes.ts.
   app.route('/mcp', createMcpRoutes({ db: options.db, publicBaseUrl: options.publicBaseUrl }))
 
   // Deliberately unauthenticated, cross-origin, and form-encoding-friendly: the
