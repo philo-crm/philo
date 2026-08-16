@@ -406,6 +406,23 @@ describe('oauth authorize', () => {
     expect(body).toContain('A'.repeat(MAX_CLIENT_NAME_LENGTH - 1))
   })
 
+  it('makes Approve the default button and lets Cancel skip validation', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const client = await register(testApp)
+    const { challenge } = pkce()
+
+    const res = await testApp.app.request(`/oauth/authorize?${authorizeQuery(client, challenge)}`)
+    const body = await res.text()
+
+    // Implicit submission picks the first submit button, so Enter after typing
+    // the password must not be a refusal.
+    expect(body.indexOf('name="approve"')).toBeLessThan(body.indexOf('name="deny"'))
+    // And declining a request you did not start must not require a password
+    // first, which the `required` fields would otherwise insist on.
+    expect(body).toMatch(/name="deny"[^>]*formnovalidate/)
+  })
+
   it('escapes the name a client registered for itself', async () => {
     const testApp = createTestApp()
     await setupAdmin(testApp)
@@ -779,17 +796,26 @@ describe('oauth refresh', () => {
     expect(await replayed.json()).toMatchObject({ error: 'invalid_grant' })
   })
 
-  it('refuses a refresh token presented by a different client', async () => {
+  it('refuses a refresh token presented by a different client without spending it', async () => {
     const testApp = createTestApp()
-    const { tokens } = await connect(testApp)
+    const { client, tokens } = await connect(testApp)
     const other = await register(testApp, { client_name: 'Someone Else' })
 
     const res = await testApp.app.request(
       '/oauth/token',
       tokenPost(other, { grant_type: 'refresh_token', refresh_token: tokens.refresh_token }),
     )
-
     expect(res.status).toBe(400)
+
+    // Spending it here would hand anyone who learns a token they cannot use a
+    // way to break the operator's connector anyway — registration is open, so
+    // authenticating as some other client costs an attacker nothing.
+    expect(testApp.db.select().from(refreshTokens).all()).toHaveLength(1)
+    const owner = await testApp.app.request(
+      '/oauth/token',
+      tokenPost(client, { grant_type: 'refresh_token', refresh_token: tokens.refresh_token }),
+    )
+    expect(owner.status).toBe(200)
   })
 
   it('refuses an expired refresh token', async () => {

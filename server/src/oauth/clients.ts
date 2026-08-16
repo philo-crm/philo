@@ -96,10 +96,6 @@ export type RegistrationError =
   | 'unsupported_auth_method'
   | 'too_many_clients'
 
-export interface RegistrationResult {
-  client: OAuthClientInformationFull
-}
-
 /**
  * RFC 7591 dynamic client registration.
  *

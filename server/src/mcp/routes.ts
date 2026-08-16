@@ -94,8 +94,10 @@ export function createMcpRoutes(deps: McpRoutesDeps): Hono {
  * distinguishable from one moved by a person, and an agent holding an API key
  * from one holding a connector's OAuth grant.
  *
- * Both token kinds start `philo_`; each lookup rejects the other's prefix
- * before it reaches the database.
+ * An API key is tried first because it is the credential most callers here
+ * carry. Both kinds start `philo_`, so an OAuth token costs one missed key
+ * lookup on the way past; `resolveAccessToken` rejects a key on its prefix
+ * before touching the database at all.
  */
 function resolveActor(db: McpRoutesDeps['db'], token: string): string | undefined {
   const key = resolveApiKey(db, token)

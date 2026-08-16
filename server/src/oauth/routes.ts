@@ -408,8 +408,10 @@ function exchangeRefreshToken(
   if (presented === undefined) {
     return oauthError(c, 400, 'invalid_request', 'refresh_token is required.')
   }
-  const subject = redeemRefreshToken(deps.db, presented)
-  if (subject === undefined || subject.clientId !== client.clientId) {
+  // The client is part of the lookup, so presenting someone else's token spends
+  // nothing — see `redeemRefreshToken`.
+  const subject = redeemRefreshToken(deps.db, presented, client.clientId)
+  if (subject === undefined) {
     return oauthError(c, 400, 'invalid_grant', 'That refresh token is not valid.')
   }
   const resource = field(body, 'resource')

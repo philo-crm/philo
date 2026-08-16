@@ -46,7 +46,7 @@ const STYLES = `
   label { display: block; font-size: 0.875rem; margin: 0 0 0.25rem; }
   input { width: 100%; padding: 0.5rem; margin: 0 0 1rem; font: inherit;
           border: 1px solid GrayText; border-radius: 0.375rem; background: Field; color: FieldText; }
-  .actions { display: flex; gap: 0.75rem; }
+  .actions { display: flex; flex-direction: row-reverse; gap: 0.75rem; }
   button { flex: 1; padding: 0.625rem; font: inherit; border-radius: 0.375rem; cursor: pointer;
            border: 1px solid GrayText; background: ButtonFace; color: ButtonText; }
   button[name="approve"] { background: Highlight; color: HighlightText; border-color: Highlight; }
@@ -65,6 +65,16 @@ function hidden(name: string, value: string | undefined): Html | string {
  * lets a single-tenant CRM skip a session-backed consent step entirely: the
  * password in the form is the proof, so a cross-site forgery has nothing to
  * ride on.
+ *
+ * Two details in the button markup are load-bearing rather than cosmetic:
+ *
+ * - **Approve comes first in the DOM**, with `row-reverse` putting it on the
+ *   right. Implicit submission picks the first submit button, so with Cancel
+ *   first, pressing Enter after typing the password would deny the request.
+ * - **Cancel carries `formnovalidate`**, because the fields above it are
+ *   `required`. Without it, declining a request you did not start means
+ *   filling in a password first — which is exactly what someone declining an
+ *   unexpected request will not do.
  */
 export function renderConsentPage(page: ConsentPage): Html {
   const name = page.clientName ?? 'An application'
@@ -106,8 +116,8 @@ export function renderConsentPage(page: ConsentPage): Html {
         <label for="password">Password</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required />
         <div class="actions">
-          <button type="submit" name="deny" value="1">Cancel</button>
           <button type="submit" name="approve" value="1">Approve</button>
+          <button type="submit" name="deny" value="1" formnovalidate>Cancel</button>
         </div>
       </form>
     </main>

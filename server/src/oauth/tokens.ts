@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { eq, lt } from 'drizzle-orm'
+import { and, eq, lt } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { accessTokens, authorizationCodes, refreshTokens } from '../db/schema.ts'
 
@@ -145,20 +145,32 @@ export function issueTokens(db: Db, subject: GrantSubject, now = new Date()): Is
 }
 
 /**
- * Consumes a refresh token. Rotation, not reuse: the presented token is spent
- * and `issueTokens` mints its replacement.
+ * Consumes a refresh token held by `clientId`. Rotation, not reuse: the
+ * presented token is spent and `issueTokens` mints its replacement.
  *
- * What that does and does not buy, stated plainly because rotation is easy to
+ * The client is part of the delete rather than checked afterwards. Deleting
+ * first and comparing after would let anyone holding a token they cannot use
+ * destroy it anyway — register a client of their own, present the token, and
+ * the grant is gone before the mismatch is noticed. Nothing is bought by it
+ * either: unlike an authorization code, where burning on failure is what stops
+ * a PKCE verifier being guessed, a refresh token has no second secret to guess.
+ *
+ * What rotation does and does not buy, stated plainly because it is easy to
  * over-credit: whichever holder refreshes first keeps the grant and the other
  * is locked out, so a leak is bounded only if the real client refreshes before
  * the thief does. Detecting the reuse and revoking the whole family is the
  * upgrade, and it is deliberately not here — see ADR-0005.
  */
-export function redeemRefreshToken(db: Db, token: string, now = new Date()): GrantSubject | undefined {
+export function redeemRefreshToken(
+  db: Db,
+  token: string,
+  clientId: string,
+  now = new Date(),
+): GrantSubject | undefined {
   if (!token.startsWith(REFRESH_PREFIX)) return undefined
   const [row] = db
     .delete(refreshTokens)
-    .where(eq(refreshTokens.tokenHash, hashToken(token)))
+    .where(and(eq(refreshTokens.tokenHash, hashToken(token)), eq(refreshTokens.clientId, clientId)))
     .returning()
     .all()
   if (row === undefined) return undefined
