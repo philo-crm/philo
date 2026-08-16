@@ -234,7 +234,11 @@ export function createMcpServer(deps: McpServerDeps, actor: string): McpServer {
         email: z.string().max(MAX_EMAIL_LENGTH).nullable().optional(),
         phone: z.string().max(MAX_CONTACT_FIELD_LENGTH).nullable().optional(),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      // Destructive by the spec's meaning, which is "not additive": the old
+      // name, email and phone are overwritten in place and no timeline event
+      // records what they were. A client deciding what to auto-approve is
+      // reading this, so it has to say so. Same at update_email_template.
+      annotations: { readOnlyHint: false, idempotentHint: true },
     },
     ({ leadId, ...patch }) => leadResult(updateLeadContact(db, leadId, patch)),
   )
@@ -325,7 +329,10 @@ export function createMcpServer(deps: McpServerDeps, actor: string): McpServer {
         body: z.string().min(1).max(MAX_TEMPLATE_BODY_LENGTH).optional().describe('HTML body.'),
         enabled: z.boolean().optional().describe('False stops this email being sent at all.'),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      // The previous source is gone, there is no version history, and
+      // `enabled: false` switches off the channel ADR-0004 makes the guaranteed
+      // one. Not additive, so not `destructiveHint: false`.
+      annotations: { readOnlyHint: false, idempotentHint: true },
     },
     ({ trigger, ...patch }) =>
       templateResult(updateEmailTemplate(db, publicBaseUrl, trigger, patch), 'template'),
