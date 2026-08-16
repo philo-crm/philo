@@ -26,7 +26,7 @@ docker run -d --name philo --restart unless-stopped \
   -v philo-data:/data \
   -e PHILO_PUBLIC_BASE_URL=https://philo.example.com \
   -e PHILO_TRUSTED_PROXY=true \
-  ghcr.io/philo-crm/philo:edge
+  ghcr.io/philo-crm/philo:latest
 ```
 
 Then point your reverse proxy at `127.0.0.1:3000` and open
@@ -37,7 +37,7 @@ Or with Compose:
 ```yaml
 services:
   philo:
-    image: ghcr.io/philo-crm/philo:edge
+    image: ghcr.io/philo-crm/philo:latest
     restart: unless-stopped
     ports:
       - '127.0.0.1:3000:3000'
@@ -55,12 +55,12 @@ volumes:
 
 | Tag | What it is |
 |---|---|
-| `edge` | Built from every push to `main`. **The only tag published until the first release.** |
+| `edge` | Built from every push to `main`. Runs ahead of the releases. |
 | `0.1.0`, `0.1`, `0` | Published for each tagged release, from most to least specific. |
-| `latest` | The newest tagged release. Does not exist until one has been cut. |
+| `latest` | The newest tagged release. |
 
-Pin `0.1` or `0.1.0` in production once releases exist; `latest` moves under
-you, and `edge` moves faster than that.
+Pin `0.1` or `0.1.0` in production; `latest` moves under you, and `edge` moves
+faster than that.
 
 ## Configuration
 
@@ -296,7 +296,7 @@ they were.
 ## Upgrading
 
 ```bash
-docker pull ghcr.io/philo-crm/philo:edge
+docker pull ghcr.io/philo-crm/philo:latest
 docker stop philo && docker rm philo
 # re-run the same `docker run` command
 ```

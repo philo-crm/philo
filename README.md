@@ -20,7 +20,7 @@ docker run -d --name philo --restart unless-stopped \
   -v philo-data:/data \
   -e PHILO_PUBLIC_BASE_URL=https://philo.example.com \
   -e PHILO_TRUSTED_PROXY=true \
-  ghcr.io/philo-crm/philo:edge
+  ghcr.io/philo-crm/philo:latest
 ```
 
 Point a reverse proxy with TLS at `127.0.0.1:3000`, open your base URL, and the
@@ -36,9 +36,9 @@ and start over — but it is easier not to need it.
 Serve it over **https**. Browsers refuse push notifications outside a secure
 context, and the session cookie is only marked `Secure` when the base URL is.
 
-> **Tags:** the first release has not been cut yet, so `:edge` — built from
-> every push to `main` — is the only published tag. Version tags and `:latest`
-> arrive with `v0.1.0`.
+> **Tags:** `:latest` tracks the newest release, and each one also publishes
+> `:X.Y.Z`, `:X.Y`, and `:X` — pin to whichever you want to hold still.
+> `:edge`, built from every push to `main`, runs ahead of the releases.
 
 Full walkthrough, including reverse-proxy examples and backups:
 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. Mail setup:
@@ -129,9 +129,9 @@ architecture, [docs/adr/](docs/adr/) for the contested calls.
 
 ## Status
 
-Every MVP feature is built and on `main`: intake, leads and funnel, the PWA,
-push, email, API keys, MCP, and the OAuth server. No version has been tagged
-yet, so `main` and the `:edge` image are what there is to run.
+Every MVP feature is built and shipped in `v0.1.0`: intake, leads and funnel,
+the PWA, push, email, API keys, MCP, and the OAuth server. That is the first
+tagged release — run it unless you want `main`, which `:edge` tracks.
 
 ## Naming
 
