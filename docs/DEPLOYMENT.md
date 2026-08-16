@@ -248,8 +248,9 @@ BACKUP=philo-2026-01-31.tar.gz
 docker run --rm -v "$PWD":/backup alpine tar tzf "/backup/$BACKUP" | head
 ```
 
-That should list `philo.db`, `session-key` and `vapid-keys.json`. Then stop the
-container, replace the volume's contents, and start it again:
+That should list the database and the two key files — entries carry a `./`
+prefix, since the archive was made with `-C /data .`. Then stop the container,
+replace the volume's contents, and start it again:
 
 ```bash
 docker stop philo
@@ -267,10 +268,11 @@ different database over the one you just restored, which is corruption rather
 than an error message:
 
 ```bash
+BACKUP=philo-2026-01-31.db
 docker stop philo
-docker run --rm -v philo-data:/data -v "$PWD":/backup alpine sh -c \
+docker run --rm -v philo-data:/data -v "$PWD":/backup -e BACKUP alpine sh -c \
   'rm -f /data/philo.db /data/philo.db-wal /data/philo.db-shm && \
-   cp /backup/philo-2026-01-31.db /data/philo.db && \
+   cp "/backup/$BACKUP" /data/philo.db && \
    cp /backup/session-key /backup/vapid-keys.json /data/ && \
    chown -R 1000:1000 /data'
 docker start philo
@@ -308,7 +310,7 @@ Philo has no opinion about it.
 
 | Symptom | Cause |
 |---|---|
-| Login appears to do nothing | `PHILO_PUBLIC_BASE_URL` is `https` but the page is being served over http, or the reverse. The cookie is `Secure` exactly when the base URL is `https`. |
+| Login appears to do nothing | `PHILO_PUBLIC_BASE_URL` is `https` but the page is actually being served over http. The cookie is `Secure` exactly when the base URL is `https`, and a browser never returns a `Secure` cookie over http. |
 | The push toggle never turns on | Base URL is not `https`, or, on iOS, the site has not been added to the Home Screen. EU iOS has no PWA push at all. |
 | No email arrives, no error shown | SMTP is not configured, or a template is disabled. The boot log says which; template edits are in Settings. |
 | A legitimate submitter is rate-limited | Behind a proxy without `PHILO_TRUSTED_PROXY=true`, everyone shares one budget. |

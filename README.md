@@ -27,6 +27,12 @@ Point a reverse proxy with TLS at `127.0.0.1:3000`, open your base URL, and the
 first screen creates the admin account. Then `docker logs philo` — the boot log
 prints the intake URL your website's form should POST to.
 
+Do the setup screen **promptly**. It is reachable without credentials and closes
+for good at the first success, so between the instance becoming publicly
+reachable and you filling that form in, whoever gets there first becomes the
+admin. On an instance with no data in it the fix is cheap — delete the volume
+and start over — but it is easier not to need it.
+
 Serve it over **https**. Browsers refuse push notifications outside a secure
 context, and the session cookie is only marked `Secure` when the base URL is.
 
@@ -73,9 +79,10 @@ submitted.
 
 ## Agent-usable from day one
 
-MCP is a first-class surface, not a bolt-on. `POST /mcp` speaks streamable HTTP
-with tools for leads, the funnel, and the email templates — read *and* write, so
-an agent can pre-screen an applicant, write up the call, and advance them.
+MCP is a first-class surface, not a bolt-on. `POST /mcp` speaks streamable HTTP,
+with read-and-write tools for leads and the email templates and a read of the
+funnel — so an agent can pre-screen an applicant, write up the call, and advance
+them to the next stage.
 
 Two ways to authenticate, both bearer tokens:
 

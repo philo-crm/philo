@@ -157,4 +157,4 @@ carefully — it can author what goes out under your business's name.
 | Mail sends but lands in spam | SPF/DKIM incomplete, or the From address is not on the verified domain. |
 | The business email arrives, the acknowledgment does not | The lead had no email address — only a phone number. Nothing to acknowledge to. |
 | Nothing sends for a lead you created over MCP or REST | Working as intended; see [What triggers a send](#what-triggers-a-send). |
-| A template edit did not take effect | Check the timeline: the send may have happened before the edit. Templates apply from the next lead onwards. |
+| A template edit did not take effect | Check the timeline: the send had already happened. A template is read at send time, so an edit reaches everything not yet sent — including a retry still in flight — but never a message already gone. |
