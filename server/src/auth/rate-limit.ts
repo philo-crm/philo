@@ -1,3 +1,5 @@
+import { setTimeout as sleep } from 'node:timers/promises'
+
 /** Above this many tracked keys, recording a failure also sweeps the expired ones. */
 const PRUNE_THRESHOLD = 1024
 
@@ -121,5 +123,20 @@ export class ConcurrencyGate {
 
   release(): void {
     this.#inFlight = Math.max(0, this.#inFlight - 1)
+  }
+}
+
+/**
+ * Waits out a `FailureThrottle` delay, but stops early if the caller hangs up.
+ * Without the signal an attacker could fire and forget: they release everything
+ * while the server keeps a request context and a timer alive for the full delay,
+ * once per guess.
+ */
+export async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return
+  try {
+    await sleep(ms, undefined, signal ? { signal } : undefined)
+  } catch {
+    // Aborted. The caller checks the signal; nothing here needs to distinguish.
   }
 }
