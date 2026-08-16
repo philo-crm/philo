@@ -408,15 +408,24 @@ function exchangeRefreshToken(
   if (presented === undefined) {
     return oauthError(c, 400, 'invalid_request', 'refresh_token is required.')
   }
+
+  // Every refusal comes before the redemption, so a rejected refresh leaves the
+  // grant intact. `exchangeCode` is deliberately the opposite way round: there,
+  // burning the code on failure is what stops the PKCE verifier being guessed,
+  // and a refresh token has no second secret to guess. The mistake this avoids
+  // is not hypothetical — a client that keeps sending the resource identifier
+  // from before `PHILO_PUBLIC_BASE_URL` was corrected would otherwise destroy
+  // its own grant on the first refresh, and need the whole consent flow again.
+  const resource = field(body, 'resource')
+  if (resource !== undefined && !resourceMatches(deps.publicBaseUrl, resource)) {
+    return oauthError(c, 400, 'invalid_target', 'That resource is not one this server issues tokens for.')
+  }
+
   // The client is part of the lookup, so presenting someone else's token spends
   // nothing — see `redeemRefreshToken`.
   const subject = redeemRefreshToken(deps.db, presented, client.clientId)
   if (subject === undefined) {
     return oauthError(c, 400, 'invalid_grant', 'That refresh token is not valid.')
-  }
-  const resource = field(body, 'resource')
-  if (resource !== undefined && !resourceMatches(deps.publicBaseUrl, resource)) {
-    return oauthError(c, 400, 'invalid_target', 'That resource is not one this server issues tokens for.')
   }
   return tokenResponse(c, issueTokens(deps.db, subject))
 }

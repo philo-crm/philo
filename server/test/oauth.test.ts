@@ -818,6 +818,31 @@ describe('oauth refresh', () => {
     expect(owner.status).toBe(200)
   })
 
+  it('refuses a mismatched resource without spending the token', async () => {
+    const testApp = createTestApp()
+    const { client, tokens } = await connect(testApp)
+
+    const res = await testApp.app.request(
+      '/oauth/token',
+      tokenPost(client, {
+        grant_type: 'refresh_token',
+        refresh_token: tokens.refresh_token,
+        resource: 'https://elsewhere.example.com/mcp',
+      }),
+    )
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: 'invalid_target' })
+
+    // A connector still sending the identifier from before
+    // PHILO_PUBLIC_BASE_URL was corrected would otherwise destroy its own grant
+    // on the first refresh, and need the whole consent flow again.
+    const retry = await testApp.app.request(
+      '/oauth/token',
+      tokenPost(client, { grant_type: 'refresh_token', refresh_token: tokens.refresh_token }),
+    )
+    expect(retry.status).toBe(200)
+  })
+
   it('refuses an expired refresh token', async () => {
     const testApp = createTestApp()
     const { client, tokens } = await connect(testApp)
