@@ -135,13 +135,15 @@ export function registerClient(
 
   const clientId = randomUUID()
   const secret = authMethod === 'none' ? undefined : randomBytes(SECRET_BYTES).toString('base64url')
+  const clientName = truncate(parsed.data.client_name, MAX_CLIENT_NAME_LENGTH)
+  const clientUri = truncate(parsed.data.client_uri, MAX_CLIENT_URI_LENGTH)
 
   db.insert(oauthClients)
     .values({
       clientId,
       clientSecretHash: secret === undefined ? null : hashSecret(secret),
-      clientName: truncate(parsed.data.client_name, MAX_CLIENT_NAME_LENGTH),
-      clientUri: truncate(parsed.data.client_uri, MAX_CLIENT_URI_LENGTH),
+      clientName,
+      clientUri,
       redirectUris: JSON.stringify(redirectUris),
       tokenEndpointAuthMethod: authMethod,
       createdAt: now,
@@ -156,6 +158,10 @@ export function registerClient(
       client_id: clientId,
       client_id_issued_at: issuedAt,
       token_endpoint_auth_method: authMethod,
+      // What was actually registered, not what was asked for (RFC 7591 §3.2.1)
+      // — the two differ whenever the text was too long to show.
+      ...(clientName === null ? {} : { client_name: clientName }),
+      ...(clientUri === null ? {} : { client_uri: clientUri }),
       ...(secret === undefined ? {} : { client_secret: secret, client_secret_expires_at: 0 }),
     },
   }

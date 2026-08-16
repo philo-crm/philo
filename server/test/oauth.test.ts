@@ -2,7 +2,11 @@ import { createHash, randomBytes } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { afterEach, describe, expect, it } from 'vitest'
 import { accessTokens, leadEvents, oauthClients, refreshTokens } from '../src/db/schema.ts'
-import { MAX_CLIENT_NAME_LENGTH, MAX_REGISTERED_CLIENTS } from '../src/oauth/clients.ts'
+import {
+  MAX_CLIENT_NAME_LENGTH,
+  MAX_CLIENT_URI_LENGTH,
+  MAX_REGISTERED_CLIENTS,
+} from '../src/oauth/clients.ts'
 import { MAX_OAUTH_BODY_BYTES } from '../src/oauth/routes.ts'
 import {
   ADMIN_EMAIL,
@@ -372,14 +376,29 @@ describe('oauth authorize', () => {
     expect(res.headers.get('Cache-Control')).toBe('no-store')
   })
 
-  it('caps the name a client registered for itself', async () => {
+  it('caps the name and URI a client registered for itself', async () => {
     const testApp = createTestApp()
     await setupAdmin(testApp)
-    const client = await register(testApp, { client_name: 'A'.repeat(5000) })
-    const { challenge } = pkce()
+    const res = await testApp.app.request('/oauth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        redirect_uris: [REDIRECT_URI],
+        client_name: 'A'.repeat(5000),
+        client_uri: `https://example.com/${'b'.repeat(5000)}`,
+      }),
+    })
+    const registered = (await res.json()) as Record<string, string>
 
-    const res = await testApp.app.request(`/oauth/authorize?${authorizeQuery(client, challenge)}`)
-    const body = await res.text()
+    // RFC 7591 §3.2.1 wants the metadata as registered, not as asked for.
+    expect(registered['client_name']?.length).toBe(MAX_CLIENT_NAME_LENGTH)
+    expect(registered['client_uri']?.length).toBe(MAX_CLIENT_URI_LENGTH)
+
+    const { challenge } = pkce()
+    const page = await testApp.app.request(
+      `/oauth/authorize?${authorizeQuery({ client_id: registered['client_id'] ?? '' }, challenge)}`,
+    )
+    const body = await page.text()
 
     // Registration is unauthenticated, so an uncapped name is several screens
     // of a stranger's prose pushing the redirect target below the fold.
