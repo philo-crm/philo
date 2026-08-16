@@ -23,3 +23,4 @@ named `NNNN-short-kebab-title.md`.
 - [0002 — SQLite over Postgres (and over LanceDB)](0002-sqlite-over-postgres.md)
 - [0003 — Hardcoded Lead entity with a JSON fields column](0003-lead-entity-with-json-fields.md)
 - [0004 — Notifications: best-effort declarative web push, email guaranteed](0004-push-best-effort-email-guaranteed.md)
+- [0005 — OAuth 2.1 server built on the MCP SDK's primitives, served by Hono](0005-oauth-server-on-hono.md)

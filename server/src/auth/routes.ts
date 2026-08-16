@@ -1,11 +1,9 @@
-import { randomUUID } from 'node:crypto'
-import { setTimeout as sleep } from 'node:timers/promises'
-import { eq } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
 import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import { readJsonBody } from '../json-body.ts'
+import { normalizeEmail, validatePassword, verifyCredentials } from './credentials.ts'
 import {
   clearSessionCookie,
   currentUser,
@@ -15,8 +13,8 @@ import {
   type AuthDeps,
   type AuthEnv,
 } from './middleware.ts'
-import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hashPassword, verifyPassword } from './password.ts'
-import { ConcurrencyGate, FailureThrottle, type ThrottleOptions } from './rate-limit.ts'
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hashPassword } from './password.ts'
+import { ConcurrencyGate, FailureThrottle, delay, type ThrottleOptions } from './rate-limit.ts'
 import { createSession, deleteSession, type SessionUser } from './session.ts'
 
 /**
@@ -36,9 +34,6 @@ export const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000
  */
 export const MAX_CONCURRENT_HASHES = 8
 
-/** RFC 5321's practical ceiling; also stops a giant string reaching the database. */
-const MAX_EMAIL_LENGTH = 254
-
 interface UserResponse {
   id: number
   email: string
@@ -47,27 +42,6 @@ interface UserResponse {
 
 function toUserResponse(user: SessionUser): UserResponse {
   return { id: user.id, email: user.email, name: user.name }
-}
-
-/**
- * Deliberately loose. The only real validation for an email address is sending to
- * it, and this MVP's guardrail is minimal PII rather than deliverability — so
- * this rejects the shapes that are certainly mistakes and nothing more.
- */
-function normalizeEmail(raw: unknown): string | undefined {
-  if (typeof raw !== 'string') return undefined
-  // Lowercased on the way in because SQLite's unique index is case-sensitive:
-  // without this, Admin@example.com and admin@example.com are two accounts.
-  const email = raw.trim().toLowerCase()
-  if (email.length === 0 || email.length > MAX_EMAIL_LENGTH) return undefined
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return undefined
-  return email
-}
-
-function validatePassword(raw: unknown): string | undefined {
-  if (typeof raw !== 'string') return undefined
-  if (raw.length < MIN_PASSWORD_LENGTH || raw.length > MAX_PASSWORD_LENGTH) return undefined
-  return raw
 }
 
 function optionalName(raw: unknown): string | null {
@@ -93,11 +67,28 @@ export interface AuthTuning {
   maxConcurrentHashes?: number
 }
 
-export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<AuthEnv> {
+/**
+ * What every password check on this server shares: one attempt counter and one
+ * hashing budget. Shared rather than per-route on purpose — the login route and
+ * the OAuth consent page take the same password, so separate counters would let
+ * an attacker alternate between them and pay half the delay for each guess.
+ */
+export interface AuthGuards {
+  throttle: FailureThrottle
+  hashGate: ConcurrencyGate
+}
+
+/** Built once per app instance, so a test gets a fresh budget and a restart forgives. */
+export function createAuthGuards(tuning: AuthTuning = {}): AuthGuards {
+  return {
+    throttle: new FailureThrottle({ ...DEFAULT_THROTTLE, ...tuning.throttle }),
+    hashGate: new ConcurrencyGate(tuning.maxConcurrentHashes ?? MAX_CONCURRENT_HASHES),
+  }
+}
+
+export function createAuthRoutes(deps: AuthDeps, guards: AuthGuards): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
-  // Per app instance, so a test gets a fresh budget and a restart forgives.
-  const throttle = new FailureThrottle({ ...DEFAULT_THROTTLE, ...tuning.throttle })
-  const hashGate = new ConcurrencyGate(tuning.maxConcurrentHashes ?? MAX_CONCURRENT_HASHES)
+  const { throttle, hashGate } = guards
 
   /** Drives the first-boot screen: the PWA asks this before rendering anything. */
   routes.get('/status', (c) =>
@@ -213,25 +204,14 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
     // the moment a hash finishes, so this outlasts no flood. It does mean a login
     // arriving mid-flood can be told to retry — see the PR notes.
     if (!hashGate.tryAcquire()) return tooManyRequests(c, 1)
-    let account: { id: number; email: string; name: string | null } | undefined
-    let passwordOk: boolean
+    let account: SessionUser | undefined
     try {
-      const [found] = deps.db
-        .select({ id: users.id, email: users.email, name: users.name, passwordHash: users.passwordHash })
-        .from(users)
-        .where(eq(users.email, email))
-        .limit(1)
-        .all()
-
-      // Verify even when there is no such account, against a hash that cannot
-      // match, so a missing account and a wrong password take the same time.
-      passwordOk = await verifyPassword(found?.passwordHash ?? (await unmatchableHash()), password)
-      account = found
+      account = await verifyCredentials(deps.db, email, password)
     } finally {
       hashGate.release()
     }
 
-    if (account === undefined || !passwordOk) {
+    if (account === undefined) {
       return c.json({ error: 'invalid_credentials' }, 401)
     }
 
@@ -262,34 +242,4 @@ export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<
 function tooManyRequests(c: Context, retryAfterSeconds: number) {
   c.header('Retry-After', String(retryAfterSeconds))
   return c.json({ error: 'too_many_requests', retryAfterSeconds }, 429)
-}
-
-/**
- * Waits, but stops early if the caller hangs up. Without the signal an attacker
- * could fire and forget: they release everything while the server keeps a request
- * context and a timer alive for the full delay, once per guess.
- */
-async function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) return
-  try {
-    await sleep(ms, undefined, signal ? { signal } : undefined)
-  } catch {
-    // Aborted. The caller checks the signal; nothing here needs to distinguish.
-  }
-}
-
-let unmatchable: Promise<string> | undefined
-
-/**
- * A real argon2id hash of a random value nobody can supply, so a login for an
- * address with no account spends the same work as one with a wrong password.
- * Computed once, on first use rather than at module load, and never checked in.
- */
-function unmatchableHash(): Promise<string> {
-  unmatchable ??= hashPassword(`no-such-account:${randomUUID()}`).catch((error: unknown) => {
-    // Caching a rejection would break every later login, not just this one.
-    unmatchable = undefined
-    throw error
-  })
-  return unmatchable
 }

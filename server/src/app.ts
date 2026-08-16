@@ -11,12 +11,13 @@ import {
   type AuthDeps,
   type AuthEnv,
 } from './auth/middleware.ts'
-import { createAuthRoutes, type AuthTuning } from './auth/routes.ts'
+import { createAuthGuards, createAuthRoutes, type AuthTuning } from './auth/routes.ts'
 import type { EmailSenderFactory } from './email/transport.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
 import { createMcpRoutes } from './mcp/routes.ts'
 import type { LeadCreatedHook } from './notify.ts'
+import { createOAuthRoutes, createWellKnownRoutes } from './oauth/routes.ts'
 import { createPushRoutes } from './push/routes.ts'
 import { createSettingsRoutes } from './settings/routes.ts'
 import { createStageRoutes } from './stages/routes.ts'
@@ -98,7 +99,13 @@ export interface AppOptions extends AuthDeps {
  * unparseable success to a REST or MCP client.
  */
 function isMachinePath(path: string): boolean {
-  return path.startsWith('/api/') || path === '/mcp' || path.startsWith('/mcp/')
+  return (
+    path.startsWith('/api/') ||
+    path === '/mcp' ||
+    path.startsWith('/mcp/') ||
+    path.startsWith('/.well-known/') ||
+    path.startsWith('/oauth/')
+  )
 }
 
 /**
@@ -120,12 +127,20 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     trustProxy: options.trustProxy,
   }
   const app = new Hono<AuthEnv>()
+  // One attempt counter and one hashing budget for every password check on this
+  // server — the login route and the OAuth consent page both take the operator's
+  // password, so they must not throttle independently. See `AuthGuards`.
+  const authGuards = createAuthGuards(options.authTuning ?? {})
 
   // Vite emits content-hashed files under /assets, so they can be cached
   // forever; the shell that references them must never be, or an upgrade
   // serves an old index.html pointing at assets the new build deleted.
   app.use('/*', async (c, next) => {
     await next()
+    // Never over a header a route already set: the OAuth consent page is
+    // text/html and says `no-store`, and downgrading that to `no-cache` would
+    // let a shared cache hold a page built around one client's request.
+    if (c.res.headers.has('Cache-Control')) return
     if (c.res.headers.get('Content-Type')?.startsWith('text/html')) {
       c.res.headers.set('Cache-Control', 'no-cache')
     } else if (c.req.path.startsWith('/assets/')) {
@@ -198,7 +213,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     return requireAuth(c, next)
   })
 
-  app.route(`${API_PREFIX}/auth`, createAuthRoutes(deps, options.authTuning ?? {}))
+  app.route(`${API_PREFIX}/auth`, createAuthRoutes(deps, authGuards))
   app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db }))
   app.route(
     `${API_PREFIX}/leads`,
@@ -224,6 +239,20 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   // a bearer key only, speaks JSON-RPC, and carries its own body limit and cache
   // header instead. See mcp/routes.ts.
   app.route('/mcp', createMcpRoutes({ db: options.db, publicBaseUrl: options.publicBaseUrl }))
+
+  // The OAuth 2.1 authorization server the agent surface points at, for clients
+  // that will not carry an API key. Outside `API_PREFIX` for the same reasons
+  // /mcp is: form bodies, a browser redirect, and client credentials rather than
+  // a session. Discovery is served from the well-known paths the RFCs fix, so
+  // neither can move. See oauth/routes.ts.
+  const oauthDeps = {
+    db: options.db,
+    publicBaseUrl: options.publicBaseUrl,
+    trustProxy: options.trustProxy,
+    guards: authGuards,
+  }
+  app.route('/oauth', createOAuthRoutes(oauthDeps))
+  app.route('/.well-known', createWellKnownRoutes({ publicBaseUrl: options.publicBaseUrl }))
 
   // Deliberately unauthenticated, cross-origin, and form-encoding-friendly: the
   // caller is a visitor's browser on the business's own website. It carries its

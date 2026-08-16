@@ -120,12 +120,15 @@ const INITIALIZE = {
 }
 
 describe('mcp transport', () => {
+  /** RFC 9728 §5.1 — what sends an OAuth client off to discover the AS. */
+  const RESOURCE_METADATA = `resource_metadata="${TEST_PUBLIC_BASE_URL}/.well-known/oauth-protected-resource/mcp"`
+
   it('refuses a request with no credential and asks for a bearer one', async () => {
     const testApp = createTestApp()
     const res = await testApp.app.request('/mcp', jsonRpcPost(INITIALIZE))
 
     expect(res.status).toBe(401)
-    expect(res.headers.get('WWW-Authenticate')).toBe('Bearer realm="philo"')
+    expect(res.headers.get('WWW-Authenticate')).toBe(`Bearer realm="philo", ${RESOURCE_METADATA}`)
     expect(await res.json()).toEqual({ error: 'unauthorized' })
   })
 
@@ -137,7 +140,9 @@ describe('mcp transport', () => {
     )
 
     expect(res.status).toBe(401)
-    expect(res.headers.get('WWW-Authenticate')).toBe('Bearer realm="philo", error="invalid_token"')
+    expect(res.headers.get('WWW-Authenticate')).toBe(
+      `Bearer realm="philo", error="invalid_token", ${RESOURCE_METADATA}`,
+    )
   })
 
   it('stops accepting a key the moment it is revoked', async () => {

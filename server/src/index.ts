@@ -64,6 +64,13 @@ serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(
     `  mcp endpoint:    ${config.publicBaseUrl.replace(/\/+$/, '')}/mcp (authenticate with an API key from Settings)`,
   )
+  // The same URL is what a claude.ai-style connector is pointed at: it finds the
+  // authorization server from the 401 and registers itself, so nothing else has
+  // to be configured — but only if PHILO_PUBLIC_BASE_URL is what the client can
+  // actually reach, since every advertised endpoint is built from it.
+  console.log(
+    '                   a connector client that wants OAuth uses the same URL and signs in on the consent page',
+  )
   // Email is the channel a missed lead is missed through, and an unconfigured
   // instance looks identical to a working one from the outside — every send is
   // best-effort and nothing upstream reports it. So say so at boot.
