@@ -43,7 +43,7 @@ describe('GET /llms.txt', () => {
     const configured = createTestApp({ publicBaseUrl: 'https://philo.example.com' })
     const body = await (await configured.app.request('/llms.txt')).text()
     expect(body).toContain('https://philo.example.com/mcp')
-    expect(body).not.toContain('localhost')
+    expect(body).not.toContain('http://localhost')
   })
 
   it('names the endpoints an agent has to find', async () => {

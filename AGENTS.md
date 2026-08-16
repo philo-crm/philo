@@ -102,7 +102,7 @@ npm run lint         # oxlint --deny-warnings
 npm run build        # web -> server/public, then server -> server/dist
 ```
 
-**Run all four before calling anything done**, and run `npm test` after each
+**Run test, typecheck, lint and build before calling anything done**, and `npm test` after each
 meaningful change rather than saving it for the end. CI runs the same four on
 every PR, plus a container build that must boot and answer `GET /version`.
 

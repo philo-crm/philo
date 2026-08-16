@@ -106,7 +106,8 @@ unauthenticated caller with 401. A state-changing request must send
 - POST /leads/{id}/not-spam — promotes a quarantined lead and fires the
   notifications that were suppressed when it arrived.
 - GET /stages, POST /stages, PATCH /stages/{id}, DELETE /stages/{id},
-  POST /stages/reorder — the funnel. A stage holding leads will not delete.
+  POST /stages/reorder — the funnel. A stage holding leads will not delete, and
+  neither will the last one left.
 - GET /settings/email/templates, PATCH /settings/email/templates/{trigger},
   POST /settings/email/templates/{trigger}/preview — the two templates.
 

@@ -148,19 +148,22 @@ it a host of its own.
 
 ## First run
 
-The boot log is the setup checklist. It prints, every start:
+The boot log is the setup checklist, reprinted every start. Abridged:
 
 ```
-philo 0.1.0 listening on port 3000
+philo <version> listening on port 3000
   public base url: https://philo.example.com
   data dir:        /data
   database:        /data/philo.db
   intake form:     https://philo.example.com/api/intake/<form_key>
   honeypot field:  _hp (render it hidden; a filled one is filed as spam)
   mcp endpoint:    https://philo.example.com/mcp (authenticate with an API key from Settings)
+  ...
 ```
 
-Read it with `docker logs philo`. Then:
+The lines left out are the ones that only appear when something is unset — no
+SMTP configured, an http base URL, no trusted proxy — so read the whole thing
+with `docker logs philo`. Then:
 
 1. **Create the admin account.** The first screen at your base URL is a setup
    form; it is reachable without credentials and closes for good at the first
@@ -236,15 +239,45 @@ untested backup is a hypothesis.
 
 ## Restore
 
-Stop the container, replace the volume's contents with the backup, start it
-again:
+Set the archive once and **check it before anything destructive runs** — the
+step below empties the volume, and the moment you are most likely to run it is
+a rehearsal against a volume that still holds your only copy of the data:
+
+```bash
+BACKUP=philo-2026-01-31.tar.gz
+docker run --rm -v "$PWD":/backup alpine tar tzf "/backup/$BACKUP" | head
+```
+
+That should list `philo.db`, `session-key` and `vapid-keys.json`. Then stop the
+container, replace the volume's contents, and start it again:
 
 ```bash
 docker stop philo
 docker run --rm -v philo-data:/data -v "$PWD":/backup alpine \
-  sh -c 'rm -rf /data/* && tar xzf /backup/philo-2026-01-31.tar.gz -C /data'
+  sh -c "rm -rf /data/* && tar xzf /backup/$BACKUP -C /data"
 docker start philo
 ```
+
+### Restoring the online backup
+
+The `sqlite3 .backup` form produces a standalone `.db` rather than a tarball, so
+it goes back a little differently — and **the old `-wal` and `-shm` files have to
+go with it.** SQLite would otherwise replay a write-ahead log belonging to a
+different database over the one you just restored, which is corruption rather
+than an error message:
+
+```bash
+docker stop philo
+docker run --rm -v philo-data:/data -v "$PWD":/backup alpine sh -c \
+  'rm -f /data/philo.db /data/philo.db-wal /data/philo.db-shm && \
+   cp /backup/philo-2026-01-31.db /data/philo.db && \
+   cp /backup/session-key /backup/vapid-keys.json /data/ && \
+   chown -R 1000:1000 /data'
+docker start philo
+```
+
+The `chown` matters: the container runs as the unprivileged `node` user, and a
+file written by a root helper container is not writable by it.
 
 Restoring onto a **newer** Philo is fine — migrations run at startup and bring
 the schema forward. Restoring onto an **older** one is not: the database

@@ -17,20 +17,20 @@ the fastest to get sending, not because it is special.
 
 ## Configure it
 
-Everything is in **Settings → Mail server**. Nothing here is an environment
-variable.
+Everything is on the **Settings** screen, in three groups — Mail server, Sender,
+Business — and none of it is an environment variable.
 
-| Field | What to put in it |
-|---|---|
-| SMTP host | Your provider's submission host, e.g. `smtp.resend.com`. |
-| Port | `587` for STARTTLS (the usual choice) or `465` for implicit TLS. |
-| TLS from the start | On for port 465, off for 587. |
-| Username | Whatever the provider calls it — often an API key name, or your account address. |
-| Password | The provider's API key or app password. Write-only: once saved it is never sent back to the browser, and leaving the box blank keeps it. |
-| From name | The display name on outgoing mail, e.g. your business name. |
-| From address | The address mail is sent from. Must be on a domain the provider has verified for you. |
-| Reply-to | Where replies land. Set this to a **real inbox someone reads** — Philo does not receive email. |
-| Business name | Fills `{{business.name}}` in templates. |
+| Group | Field | What to put in it |
+|---|---|---|
+| Mail server | SMTP host | Your provider's submission host, e.g. `smtp.resend.com`. |
+| Mail server | Port | `587` for STARTTLS (the usual choice) or `465` for implicit TLS. |
+| Mail server | TLS from the start | On for port 465, off for 587. |
+| Mail server | Username | Whatever the provider calls it — often an API key name, or your account address. |
+| Mail server | Password | The provider's API key or app password. Write-only: once saved it is never sent back to the browser, and leaving the box blank keeps it. |
+| Sender | From name | The display name on outgoing mail, e.g. your business name. |
+| Sender | From address | The address mail is sent from. Must be on a domain the provider has verified for you. |
+| Sender | Reply-to | Where replies land. Set this to a **real inbox someone reads** — Philo does not receive email. |
+| Business | Business name | Fills `{{business.name}}` in templates. |
 
 Save, then use **Test** at the bottom of the page to send yourself a message. It
 sends with the settings as *stored*, not as typed, so a green result is a
@@ -104,10 +104,12 @@ lead detail screen is where you check whether something actually went out.
 
 ### When the mail server is down
 
-A failed send is retried five times, backing off from one minute to a cap of
-thirty — enough to ride out greylisting, which is exactly the case where a
-single attempt would lose a lead permanently. After the last attempt Philo
-gives up and says so on the timeline.
+A failed send gets five attempts in all — the first, then four retries waiting
+roughly 1, 2, 4 and 8 minutes, about a quarter of an hour end to end. That is
+shaped around greylisting, where a receiver refuses a first-time sender and
+accepts the same message minutes later; a single attempt would turn a routine
+defence into a permanently missed lead. After the fifth attempt Philo gives up
+and says so on the lead's timeline.
 
 Retry schedules live in memory, so a restart mid-backoff would forget them. To
 cover that, every boot sweeps the last 24 hours for leads still owed an email
@@ -117,7 +119,9 @@ after the first lead arrived" work.
 ## Templates
 
 **Settings → Email templates** edits both. They are Handlebars, stored in the
-database, and HTML-escaped by default.
+database. The body is HTML and a variable in it is escaped, so whatever a
+stranger typed into your form cannot inject markup; the subject is plain text
+and is not escaped, because escaping it would put `&amp;` in your inbox.
 
 Available variables:
 
