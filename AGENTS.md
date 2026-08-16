@@ -35,11 +35,12 @@ Philo is a self-hosted, open-source **CRM**, deployed as **one instance per
 business** — single-tenant by design, permanently. Every simplification that
 falls out of single-tenancy should be taken.
 
-**Status: MVP in progress.** The scaffold has landed — server and web
-workspaces, and a Docker image that boots and serves `GET /version`. Features
-are tracked as GitHub issues. The design document lives in `docs/`, and
-contested architectural calls are recorded in `docs/adr/`. Read both before
-proposing implementation work.
+**Status: the MVP is built.** Intake, leads and funnel, the PWA, push, email,
+API keys, MCP, and the OAuth server are all on `main`; nothing has been tagged
+for release yet. Work is tracked as GitHub issues. The design document lives in
+`docs/`, and contested architectural calls are recorded in `docs/adr/`. Read
+both before proposing implementation work — a change that contradicts an
+accepted ADR needs a superseding ADR, not a patch.
 
 First production use case: pre-screening driver applicants for a trucking
 company. Second (future) use case: sales CRM for a consulting practice.
@@ -87,6 +88,38 @@ qualification questions (years of experience, endorsements, equipment type,
 availability). **No SSN, no license number, no DOB.** If you find yourself
 designing a field that belongs on a DQ file, stop and flag it to the human
 instead of building it.
+
+## Build and test
+
+Node 24 or newer. Everything runs from the repo root; the two workspaces are
+`server` and `web`.
+
+```bash
+npm install          # both workspaces
+npm test             # vitest, both workspaces
+npm run typecheck    # tsc, both workspaces
+npm run lint         # oxlint --deny-warnings
+npm run build        # web -> server/public, then server -> server/dist
+```
+
+**Run all four before calling anything done**, and run `npm test` after each
+meaningful change rather than saving it for the end. CI runs the same four on
+every PR, plus a container build that must boot and answer `GET /version`.
+
+Narrow the loop while iterating:
+
+```bash
+npm test --workspace server -- leads      # one file, by name substring
+npm run dev                               # server in watch mode on :3000
+npm run dev --workspace web               # Vite with HMR, proxying /api to :3000
+```
+
+Local state lands in `./data` (gitignored). Deleting that directory is how you
+get a fresh first-boot instance — setup screen, seeded stages and all.
+
+Schema changes go through drizzle-kit and have rules of their own, including one
+about the FTS triggers that will silently break search if ignored — see
+[CONTRIBUTING.md](CONTRIBUTING.md) before touching `server/src/db/schema.ts`.
 
 ## Shippability Bar
 
