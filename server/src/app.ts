@@ -103,7 +103,8 @@ function isMachinePath(path: string): boolean {
     path.startsWith('/api/') ||
     path === '/mcp' ||
     path.startsWith('/mcp/') ||
-    path.startsWith('/.well-known/')
+    path.startsWith('/.well-known/') ||
+    path.startsWith('/oauth/')
   )
 }
 

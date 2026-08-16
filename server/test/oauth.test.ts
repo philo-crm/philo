@@ -274,11 +274,12 @@ describe('oauth dynamic client registration', () => {
     expect(typeof client.client_id).toBe('string')
   })
 
-  it('stops registering once the table is full', async () => {
-    const testApp = createTestApp()
+  /**
+   * Straight to the table: driving hundreds of registrations through the
+   * endpoint would spend the throttle's real delays for nothing.
+   */
+  function fillClientTable(testApp: TestApp): void {
     const now = new Date()
-    // Straight to the table: driving 200 registrations through the endpoint
-    // would spend the throttle's real delays for nothing.
     for (let i = 0; i < MAX_REGISTERED_CLIENTS; i += 1) {
       testApp.db
         .insert(oauthClients)
@@ -287,7 +288,42 @@ describe('oauth dynamic client registration', () => {
           clientSecretHash: 'x',
           redirectUris: JSON.stringify([REDIRECT_URI]),
           tokenEndpointAuthMethod: 'client_secret_basic',
+          createdAt: new Date(now.getTime() + i),
+        })
+        .run()
+    }
+  }
+
+  it('makes room by evicting an unused registration when the table is full', async () => {
+    const testApp = createTestApp()
+    fillClientTable(testApp)
+
+    // This endpoint is unauthenticated, so refusing here would let a stranger
+    // fill the table and keep the operator from ever connecting a client.
+    const client = await register(testApp)
+
+    const rows = testApp.db.select().from(oauthClients).all()
+    expect(rows).toHaveLength(MAX_REGISTERED_CLIENTS)
+    expect(rows.map((row) => row.clientId)).toContain(client.client_id)
+    expect(rows.map((row) => row.clientId)).not.toContain('client-0')
+  })
+
+  it('refuses only when every registration holds a live grant', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    fillClientTable(testApp)
+    const now = new Date()
+    for (let i = 0; i < MAX_REGISTERED_CLIENTS; i += 1) {
+      testApp.db
+        .insert(accessTokens)
+        .values({
+          tokenHash: `hash-${i}`,
+          clientId: `client-${i}`,
+          userId: 1,
+          resource: null,
+          scope: 'mcp',
           createdAt: now,
+          expiresAt: new Date(now.getTime() + 60_000),
         })
         .run()
     }
@@ -767,5 +803,17 @@ describe('oauth access at the mcp surface', () => {
     })
 
     expect(res.status).toBe(401)
+  })
+})
+
+describe('oauth route surface', () => {
+  it('404s an unknown /oauth path instead of serving the app shell', async () => {
+    const testApp = createTestApp()
+    // GET /oauth/token is a real mistake to make, and an HTML 200 would be an
+    // unparseable success to the client that made it.
+    const res = await testApp.app.request('/oauth/token')
+
+    expect(res.status).toBe(404)
+    expect(res.headers.get('Content-Type')).toContain('application/json')
   })
 })

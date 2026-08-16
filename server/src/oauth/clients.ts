@@ -1,13 +1,19 @@
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js'
 import { OAuthClientMetadataSchema } from '@modelcontextprotocol/sdk/shared/auth.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { and, eq, lt, notExists, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { accessTokens, authorizationCodes, oauthClients, refreshTokens } from '../db/schema.ts'
 
 const SECRET_BYTES = 32
 
-/** Registered clients kept per instance, past which registration is refused. */
+/**
+ * Registered clients kept per instance. Reaching it evicts the oldest
+ * registration that holds no grant rather than refusing the new one: this
+ * endpoint is unauthenticated, so a hard cap would let a stranger fill the
+ * table and keep the operator from ever connecting a client — the same
+ * availability trap `FailureThrottle` exists to avoid.
+ */
 export const MAX_REGISTERED_CLIENTS = 200
 
 /**
@@ -103,7 +109,12 @@ export function registerClient(
 
   // Before the insert, so a stale registration frees the slot it is holding.
   deleteUnusedClients(db, now)
-  if (countClients(db) >= MAX_REGISTERED_CLIENTS) return { ok: false, error: 'too_many_clients' }
+  if (countClients(db) >= MAX_REGISTERED_CLIENTS) {
+    evictOldestUnusedClients(db, MAX_REGISTERED_CLIENTS - 1)
+    // Only when every remaining slot holds a live grant, which no stranger can
+    // arrange — reaching one takes the operator's password.
+    if (countClients(db) >= MAX_REGISTERED_CLIENTS) return { ok: false, error: 'too_many_clients' }
+  }
 
   const clientId = randomUUID()
   const secret = authMethod === 'none' ? undefined : randomBytes(SECRET_BYTES).toString('base64url')
@@ -178,29 +189,52 @@ function countClients(db: Db): number {
 }
 
 /**
- * Sweeps registrations that were never used and are past the grace period.
- * "Used" means holding a token or a live authorization code — the rows that
- * cascade from `oauth_clients`, so this can never delete a working connector.
+ * "Unused" means holding no token and no live authorization code — the rows
+ * that cascade from `oauth_clients`. Everything that deletes a registration is
+ * qualified by this, so none of it can reach a working connector.
  */
+function isUnused(db: Db) {
+  return and(
+    notExists(
+      db.select({ one: sql`1` }).from(accessTokens).where(eq(accessTokens.clientId, oauthClients.clientId)),
+    ),
+    notExists(
+      db.select({ one: sql`1` }).from(refreshTokens).where(eq(refreshTokens.clientId, oauthClients.clientId)),
+    ),
+    notExists(
+      db
+        .select({ one: sql`1` })
+        .from(authorizationCodes)
+        .where(eq(authorizationCodes.clientId, oauthClients.clientId)),
+    ),
+  )
+}
+
+/** Sweeps registrations that were never used and are past the grace period. */
 export function deleteUnusedClients(db: Db, now = new Date()): void {
   const cutoff = new Date(now.getTime() - UNUSED_CLIENT_TTL_MS)
   db.delete(oauthClients)
-    .where(
-      and(
-        lt(oauthClients.createdAt, cutoff),
-        notExists(
-          db.select({ one: sql`1` }).from(accessTokens).where(eq(accessTokens.clientId, oauthClients.clientId)),
-        ),
-        notExists(
-          db.select({ one: sql`1` }).from(refreshTokens).where(eq(refreshTokens.clientId, oauthClients.clientId)),
-        ),
-        notExists(
-          db
-            .select({ one: sql`1` })
-            .from(authorizationCodes)
-            .where(eq(authorizationCodes.clientId, oauthClients.clientId)),
-        ),
-      ),
-    )
+    .where(and(lt(oauthClients.createdAt, cutoff), isUnused(db)))
     .run()
+}
+
+/**
+ * Drops unused registrations, oldest first, until at most `target` remain.
+ * Ignores the grace period: this only runs when the table is full, where
+ * holding a stranger's day-old registration costs the operator the ability to
+ * connect anything at all.
+ */
+function evictOldestUnusedClients(db: Db, target: number): void {
+  const surplus = countClients(db) - target
+  if (surplus <= 0) return
+  const doomed = db
+    .select({ clientId: oauthClients.clientId })
+    .from(oauthClients)
+    .where(isUnused(db))
+    .orderBy(asc(oauthClients.createdAt))
+    .limit(surplus)
+    .all()
+    .map((row) => row.clientId)
+  if (doomed.length === 0) return
+  db.delete(oauthClients).where(inArray(oauthClients.clientId, doomed)).run()
 }
