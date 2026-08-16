@@ -105,7 +105,10 @@ export const leadEvents = sqliteTable(
       enum: ['created', 'stage_changed', 'note_added', 'email_sent'],
     }).notNull(),
     payload: text('payload').notNull().default('{}'),
-    /** Who caused it: `user:<id>`, `api_key:<id>`, `form:<form_key>`, `system`. */
+    /**
+     * Who caused it: `user:<id>`, `api_key:<id>`, `oauth:<client_id>`,
+     * `form:<form_key>`, `system`.
+     */
     actor: text('actor').notNull(),
     createdAt: createdAt(),
   },

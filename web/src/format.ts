@@ -71,8 +71,12 @@ export function actorLabel(actor: string, currentUserId: number): string {
   if (actor.startsWith('user:')) return 'A user'
   if (actor.startsWith('form:')) return 'Intake form'
   // What the REST and MCP surfaces write for a headless caller — see
-  // actorOf in server/src/auth/middleware.ts.
+  // actorOf in server/src/auth/middleware.ts and resolveActor in
+  // server/src/mcp/routes.ts. Without the `oauth:` branch a connector's
+  // writes fall through to 'System' and become indistinguishable from
+  // Philo's own, which is the distinction `actor` exists to make.
   if (actor.startsWith('api_key:')) return 'API key'
+  if (actor.startsWith('oauth:')) return 'Connected app'
   return 'System'
 }
 

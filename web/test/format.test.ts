@@ -63,6 +63,11 @@ describe('actorLabel', () => {
     expect(actorLabel('api_key:3', 7)).toBe('API key')
     expect(actorLabel('system', 7)).toBe('System')
   })
+
+  it('tells a connector apart from Philo’s own writes', () => {
+    expect(actorLabel('oauth:client-abc', 7)).toBe('Connected app')
+    expect(actorLabel('oauth:client-abc', 7)).not.toBe(actorLabel('system', 7))
+  })
 })
 
 describe('describeEvent', () => {

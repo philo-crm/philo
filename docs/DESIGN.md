@@ -99,7 +99,7 @@ Full rationale for the generality decision:
   backfills from the JSON with zero data loss.
 - **`lead_events`** — append-only unified timeline: `id`, `lead_id`, `type`
   (`created` | `stage_changed` | `note_added` | `email_sent`), `payload`
-  (JSON), `actor` (user/API key/form), `created_at`. Written in the same
+  (JSON), `actor` (user/API key/OAuth client/form), `created_at`. Written in the same
   transaction as the mutation it records. Events are a log, never the source
   of truth — nothing replays them; on disagreement the lead row wins.
 - **`pipelines`** — seeded with one Default row; **no pipeline-management UI
