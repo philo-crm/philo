@@ -5,6 +5,7 @@ import {
   createPublicDir,
   createTestApp,
   setupAdmin,
+  TEST_PUBLIC_BASE_URL,
   type TestApp,
 } from './support/app.ts'
 
@@ -27,6 +28,38 @@ describe('GET /version', () => {
 
   it('reports a semver-shaped version', () => {
     expect(VERSION).toMatch(/^\d+\.\d+\.\d+/)
+  })
+})
+
+describe('GET /llms.txt', () => {
+  it('serves the agent tour as plain text, unauthenticated', async () => {
+    const res = await app.request('/llms.txt')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/plain')
+    await expect(res.text()).resolves.toContain('# Philo')
+  })
+
+  it('builds its URLs from the public base url', async () => {
+    const configured = createTestApp({ publicBaseUrl: 'https://philo.example.com' })
+    const body = await (await configured.app.request('/llms.txt')).text()
+    expect(body).toContain('https://philo.example.com/mcp')
+    expect(body).not.toContain('localhost')
+  })
+
+  it('names the endpoints an agent has to find', async () => {
+    const body = await (await app.request('/llms.txt')).text()
+    // Fixed by the code or by an RFC, and unreachable by guessing: a tour that
+    // has drifted off them is worse than none.
+    for (const path of [
+      '/mcp',
+      '/api/v1',
+      '/.well-known/oauth-protected-resource/mcp',
+      '/.well-known/oauth-authorization-server',
+      '/oauth/authorize',
+      '/oauth/token',
+    ]) {
+      expect(body).toContain(`${TEST_PUBLIC_BASE_URL}${path}`)
+    }
   })
 })
 

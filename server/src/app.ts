@@ -15,6 +15,7 @@ import { createAuthGuards, createAuthRoutes, type AuthTuning } from './auth/rout
 import type { EmailSenderFactory } from './email/transport.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
+import { llmsTxt } from './llms-txt.ts'
 import { createMcpRoutes } from './mcp/routes.ts'
 import type { LeadCreatedHook } from './notify.ts'
 import { createOAuthRoutes, createWellKnownRoutes } from './oauth/routes.ts'
@@ -159,6 +160,11 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   })
 
   app.get('/version', (c) => c.json({ name: 'philo', version: VERSION }))
+
+  // The agent tour — DESIGN.md (MCP surface). Public, because an agent reads it
+  // before it has a credential, and registered above the static handler so the
+  // extension in the path does not send it to serveStatic instead.
+  app.get('/llms.txt', (c) => c.text(llmsTxt(options.publicBaseUrl)))
 
   app.use(
     `${API_PREFIX}/*`,
