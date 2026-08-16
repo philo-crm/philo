@@ -52,8 +52,8 @@ export class FailureThrottle {
     if (window === undefined || window.resetAt <= now) return 0
     const overage = window.attempts - this.#options.freeAttempts
     if (overage <= 0) return 0
-    const delay = this.#options.baseDelayMs * 2 ** (overage - 1)
-    return Math.min(delay, this.#options.maxDelayMs)
+    const wait = this.#options.baseDelayMs * 2 ** (overage - 1)
+    return Math.min(wait, this.#options.maxDelayMs)
   }
 
   /** Call before the expensive work, so concurrent callers see each other. */

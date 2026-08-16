@@ -67,11 +67,28 @@ export interface AuthTuning {
   maxConcurrentHashes?: number
 }
 
-export function createAuthRoutes(deps: AuthDeps, tuning: AuthTuning = {}): Hono<AuthEnv> {
+/**
+ * What every password check on this server shares: one attempt counter and one
+ * hashing budget. Shared rather than per-route on purpose — the login route and
+ * the OAuth consent page take the same password, so separate counters would let
+ * an attacker alternate between them and pay half the delay for each guess.
+ */
+export interface AuthGuards {
+  throttle: FailureThrottle
+  hashGate: ConcurrencyGate
+}
+
+/** Built once per app instance, so a test gets a fresh budget and a restart forgives. */
+export function createAuthGuards(tuning: AuthTuning = {}): AuthGuards {
+  return {
+    throttle: new FailureThrottle({ ...DEFAULT_THROTTLE, ...tuning.throttle }),
+    hashGate: new ConcurrencyGate(tuning.maxConcurrentHashes ?? MAX_CONCURRENT_HASHES),
+  }
+}
+
+export function createAuthRoutes(deps: AuthDeps, guards: AuthGuards): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
-  // Per app instance, so a test gets a fresh budget and a restart forgives.
-  const throttle = new FailureThrottle({ ...DEFAULT_THROTTLE, ...tuning.throttle })
-  const hashGate = new ConcurrencyGate(tuning.maxConcurrentHashes ?? MAX_CONCURRENT_HASHES)
+  const { throttle, hashGate } = guards
 
   /** Drives the first-boot screen: the PWA asks this before rendering anything. */
   routes.get('/status', (c) =>

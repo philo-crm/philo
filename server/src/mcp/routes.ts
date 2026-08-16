@@ -3,6 +3,8 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { resolveApiKey } from '../auth/api-keys.ts'
 import { bearerToken } from '../auth/middleware.ts'
+import { wwwAuthenticate } from '../oauth/metadata.ts'
+import { resolveAccessToken } from '../oauth/tokens.ts'
 import { createMcpServer, type McpServerDeps } from './tools.ts'
 
 /**
@@ -57,21 +59,15 @@ export function createMcpRoutes(deps: McpRoutesDeps): Hono {
 
   routes.post('/', async (c) => {
     const token = bearerToken(c.req.header('authorization'))
-    const key = token === undefined ? undefined : resolveApiKey(deps.db, token)
-    if (key === undefined) {
-      // RFC 6750: `error` only when a credential was actually presented —
-      // omitting it is how a client is told to send one rather than to replace
-      // the one it has.
-      c.header(
-        'WWW-Authenticate',
-        token === undefined ? 'Bearer realm="philo"' : 'Bearer realm="philo", error="invalid_token"',
-      )
+    const actor = token === undefined ? undefined : resolveActor(deps.db, token)
+    if (actor === undefined) {
+      // The `resource_metadata` hint is what sends an OAuth-demanding client off
+      // to discover this instance's authorization server — RFC 9728 §5.1.
+      c.header('WWW-Authenticate', wwwAuthenticate(deps.publicBaseUrl, token !== undefined))
       return c.json({ error: 'unauthorized' }, 401)
     }
 
-    // Same identity the REST surface writes for a headless caller, so a lead
-    // moved by an agent is distinguishable from one moved by a person.
-    const server = createMcpServer(deps, `api_key:${key.id}`)
+    const server = createMcpServer(deps, actor)
     // No `sessionIdGenerator`, which is what puts the transport in stateless
     // mode. The SDK's own example writes it as an explicit `undefined`, which
     // `exactOptionalPropertyTypes` refuses; omitting the key is the same thing.
@@ -90,4 +86,21 @@ export function createMcpRoutes(deps: McpRoutesDeps): Hono {
   })
 
   return routes
+}
+
+/**
+ * Who the timeline records for a bearer credential — DESIGN.md (Auth and
+ * access) wants one identity per credential, so a lead moved by an agent is
+ * distinguishable from one moved by a person, and an agent holding an API key
+ * from one holding a connector's OAuth grant.
+ *
+ * Both token kinds start `philo_`; each lookup rejects the other's prefix
+ * before it reaches the database.
+ */
+function resolveActor(db: McpRoutesDeps['db'], token: string): string | undefined {
+  const key = resolveApiKey(db, token)
+  if (key !== undefined) return `api_key:${key.id}`
+  const grant = resolveAccessToken(db, token)
+  if (grant !== undefined) return `oauth:${grant.clientId}`
+  return undefined
 }

@@ -22,6 +22,13 @@
       "when": 1785352440000,
       "tag": "0002_default_intake_form",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786842394584,
+      "tag": "0003_oauth_tables",
+      "breakpoints": true
     }
   ]
 }

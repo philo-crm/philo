@@ -235,13 +235,18 @@ Three credentials, one identity:
    metadata (RFC 9728), AS metadata (RFC 8414), dynamic client registration
    (RFC 7591), authorization-code + PKCE, refresh tokens. Single
    login+consent page (one POST authenticates and consents — a
-   simplification proven in [Ollie](https://github.com/olliefms/ollie)). Implemented against the MCP TypeScript SDK's auth
-   framework rather than hand-assembled.
+   simplification proven in [Ollie](https://github.com/olliefms/ollie)). Built on the MCP TypeScript SDK's auth
+   primitives — its schemas, error classes, and redirect-URI matching —
+   served by Hono rather than the SDK's Express router; see
+   [ADR-0005](adr/0005-oauth-server-on-hono.md), which also records the
+   scope, token-lifetime, and consent-page decisions. A token it issues
+   reaches `/mcp` and nothing else.
 
 ## MCP surface
 
-Streamable HTTP at `/mcp`, sharing the REST service layer. Auth: API key
-bearer from day one; OAuth for connector clients when that issue lands.
+Streamable HTTP at `/mcp`, sharing the REST service layer. Auth: an API key
+bearer, or an OAuth access token for a connector client — the `401` names the
+protected-resource metadata that leads one to the authorization server.
 
 MVP tool set:
 

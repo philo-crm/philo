@@ -168,6 +168,89 @@ export const apiKeys = sqliteTable('api_keys', {
   lastUsedAt: timestamp('last_used_at'),
 })
 
+/**
+ * Clients registered through RFC 7591 dynamic registration — DESIGN.md (Auth and
+ * access). Nobody types these in: an MCP client that wants OAuth registers
+ * itself, so the table is written by strangers and pruned in clients.ts.
+ */
+export const oauthClients = sqliteTable('oauth_clients', {
+  /** The `client_id` handed out at registration. A UUID; never guessed, only echoed. */
+  clientId: text('client_id').primaryKey(),
+  /** SHA-256 of the issued secret. Null for a public client (`token_endpoint_auth_method: none`). */
+  clientSecretHash: text('client_secret_hash'),
+  /** Whatever the client called itself. Untrusted display text — escape it. */
+  clientName: text('client_name'),
+  /** JSON array of registered redirect URIs. */
+  redirectUris: text('redirect_uris').notNull(),
+  clientUri: text('client_uri'),
+  tokenEndpointAuthMethod: text('token_endpoint_auth_method').notNull(),
+  createdAt: createdAt(),
+})
+
+/**
+ * One-shot authorization codes. Hashed at rest for the same reason session
+ * tokens are: the row is the credential until it is redeemed.
+ */
+export const authorizationCodes = sqliteTable(
+  'authorization_codes',
+  {
+    codeHash: text('code_hash').primaryKey(),
+    clientId: text('client_id')
+      .notNull()
+      .references(() => oauthClients.clientId, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Where the code was sent. The token request must present the same one. */
+    redirectUri: text('redirect_uri').notNull(),
+    /** PKCE S256 challenge. Only S256 is accepted, so the method needs no column. */
+    codeChallenge: text('code_challenge').notNull(),
+    /** RFC 8707 target, when the client named one. */
+    resource: text('resource'),
+    scope: text('scope').notNull(),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at').notNull(),
+  },
+  (table) => [index('authorization_codes_expires_at_idx').on(table.expiresAt)],
+)
+
+export const accessTokens = sqliteTable(
+  'access_tokens',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    clientId: text('client_id')
+      .notNull()
+      .references(() => oauthClients.clientId, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    resource: text('resource'),
+    scope: text('scope').notNull(),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at').notNull(),
+  },
+  (table) => [index('access_tokens_expires_at_idx').on(table.expiresAt)],
+)
+
+/** Rotated on every use: redeeming one deletes it and issues its replacement. */
+export const refreshTokens = sqliteTable(
+  'refresh_tokens',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    clientId: text('client_id')
+      .notNull()
+      .references(() => oauthClients.clientId, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    resource: text('resource'),
+    scope: text('scope').notNull(),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at').notNull(),
+  },
+  (table) => [index('refresh_tokens_expires_at_idx').on(table.expiresAt)],
+)
+
 export const pushSubscriptions = sqliteTable(
   'push_subscriptions',
   {
