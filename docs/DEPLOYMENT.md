@@ -254,10 +254,16 @@ replace the volume's contents, and start it again:
 
 ```bash
 docker stop philo
-docker run --rm -v philo-data:/data -v "$PWD":/backup alpine \
-  sh -c "rm -rf /data/* && tar xzf /backup/$BACKUP -C /data"
+docker run --rm -v philo-data:/data -v "$PWD":/backup alpine sh -c "
+  test -f '/backup/$BACKUP' &&
+  rm -rf /data/* &&
+  tar xzf '/backup/$BACKUP' -C /data"
 docker start philo
 ```
+
+The `test -f` is load-bearing, not decoration: `rm -rf /data/*` is the second
+command in that chain, and without the guard a `BACKUP` you forgot to set in
+this shell empties the volume and *then* discovers there is nothing to extract.
 
 ### Restoring the online backup
 
@@ -270,11 +276,12 @@ than an error message:
 ```bash
 BACKUP=philo-2026-01-31.db
 docker stop philo
-docker run --rm -v philo-data:/data -v "$PWD":/backup -e BACKUP alpine sh -c \
-  'rm -f /data/philo.db /data/philo.db-wal /data/philo.db-shm && \
-   cp "/backup/$BACKUP" /data/philo.db && \
-   cp /backup/session-key /backup/vapid-keys.json /data/ && \
-   chown -R 1000:1000 /data'
+docker run --rm -v philo-data:/data -v "$PWD":/backup alpine sh -c "
+  test -f '/backup/$BACKUP' &&
+  rm -f /data/philo.db /data/philo.db-wal /data/philo.db-shm &&
+  cp '/backup/$BACKUP' /data/philo.db &&
+  cp /backup/session-key /backup/vapid-keys.json /data/ &&
+  chown -R 1000:1000 /data"
 docker start philo
 ```
 

@@ -164,7 +164,15 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   // The agent tour — DESIGN.md (MCP surface). Public, because an agent reads it
   // before it has a credential, and registered above the static handler so the
   // extension in the path does not send it to serveStatic instead.
-  app.get('/llms.txt', (c) => c.text(llmsTxt(options.publicBaseUrl)))
+  //
+  // `no-cache` for the same reason the PWA root files above get it: unhashed,
+  // served from the root, and rewritten by an upgrade. Set here rather than in
+  // that middleware because this is text/plain and matches none of its branches
+  // — which would otherwise make it the one root file whose caching a shared
+  // cache decides heuristically.
+  app.get('/llms.txt', (c) =>
+    c.text(llmsTxt(options.publicBaseUrl), 200, { 'Cache-Control': 'no-cache' }),
+  )
 
   app.use(
     `${API_PREFIX}/*`,

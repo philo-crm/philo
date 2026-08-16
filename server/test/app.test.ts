@@ -36,6 +36,9 @@ describe('GET /llms.txt', () => {
     const res = await app.request('/llms.txt')
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('text/plain')
+    // Unhashed and served from the root, like sw.js and the manifest: an
+    // upgrade rewrites it, so a shared cache must revalidate.
+    expect(res.headers.get('cache-control')).toBe('no-cache')
     await expect(res.text()).resolves.toContain('# Philo')
   })
 

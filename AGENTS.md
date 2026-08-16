@@ -102,9 +102,10 @@ npm run lint         # oxlint --deny-warnings
 npm run build        # web -> server/public, then server -> server/dist
 ```
 
-**Run test, typecheck, lint and build before calling anything done**, and `npm test` after each
-meaningful change rather than saving it for the end. CI runs the same four on
-every PR, plus a container build that must boot and answer `GET /version`.
+**Run test, typecheck, lint and build before calling anything done**, and run
+`npm test` after each meaningful change rather than saving it for the end. CI
+runs the same four on every PR, plus a container build that must boot and
+answer `GET /version`.
 
 Narrow the loop while iterating:
 
@@ -114,8 +115,10 @@ npm run dev                               # server in watch mode on :3000
 npm run dev --workspace web               # Vite with HMR, proxying /api to :3000
 ```
 
-Local state lands in `./data` (gitignored). Deleting that directory is how you
-get a fresh first-boot instance — setup screen, seeded stages and all.
+Local state lands in `server/data` (gitignored) — `npm run dev` runs in the
+`server` workspace, so the default relative data dir resolves against it, not
+the repo root. Deleting that directory is how you get a fresh first-boot
+instance: setup screen, seeded stages and all.
 
 Schema changes go through drizzle-kit and have rules of their own, including one
 about the FTS triggers that will silently break search if ignored — see
