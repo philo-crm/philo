@@ -235,7 +235,13 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
   // rather than the load-bearing part: the POST carries the operator's password,
   // which a cross-site page cannot supply, and that is what lets one request
   // both authenticate and consent.
-  routes.use('/authorize', csrf())
+  //
+  // The origin is named rather than left to the default. Without it hono
+  // compares against the request URL's origin, which @hono/node-server derives
+  // from the socket — so behind the TLS-terminating proxy DESIGN.md deploys
+  // against, the server would compute `http://host` while the browser sends
+  // `https://host`, and approval would rest entirely on `Sec-Fetch-Site`.
+  routes.use('/authorize', csrf({ origin: new URL(deps.publicBaseUrl).origin }))
 
   routes.get('/authorize', async (c) => {
     const check = checkAuthorizeRequest(deps, c.req.query())

@@ -33,6 +33,23 @@ const AUTH_METHODS: ReadonlySet<string> = new Set(['client_secret_basic', 'clien
 
 const DEFAULT_AUTH_METHOD = 'client_secret_basic'
 
+/**
+ * How much of a client's self-declared name and URI the consent page will show.
+ * Registration is unauthenticated, so these are a stranger's text on the one
+ * screen that guards the whole CRM: uncapped, a "name" of several screens of
+ * reassuring prose pushes the redirect target below the fold. Same reasoning,
+ * and roughly the same number, as `MAX_API_KEY_NAME_LENGTH`.
+ */
+export const MAX_CLIENT_NAME_LENGTH = 80
+export const MAX_CLIENT_URI_LENGTH = 200
+
+function truncate(value: string | undefined, limit: number): string | null {
+  if (value === undefined) return null
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return null
+  return trimmed.length <= limit ? trimmed : `${trimmed.slice(0, limit - 1)}…`
+}
+
 export interface RegisteredClient {
   clientId: string
   clientName: string | null
@@ -123,8 +140,8 @@ export function registerClient(
     .values({
       clientId,
       clientSecretHash: secret === undefined ? null : hashSecret(secret),
-      clientName: parsed.data.client_name ?? null,
-      clientUri: parsed.data.client_uri ?? null,
+      clientName: truncate(parsed.data.client_name, MAX_CLIENT_NAME_LENGTH),
+      clientUri: truncate(parsed.data.client_uri, MAX_CLIENT_URI_LENGTH),
       redirectUris: JSON.stringify(redirectUris),
       tokenEndpointAuthMethod: authMethod,
       createdAt: now,

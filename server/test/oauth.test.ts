@@ -2,12 +2,11 @@ import { createHash, randomBytes } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { afterEach, describe, expect, it } from 'vitest'
 import { accessTokens, leadEvents, oauthClients, refreshTokens } from '../src/db/schema.ts'
-import { MAX_REGISTERED_CLIENTS } from '../src/oauth/clients.ts'
+import { MAX_CLIENT_NAME_LENGTH, MAX_REGISTERED_CLIENTS } from '../src/oauth/clients.ts'
 import { MAX_OAUTH_BODY_BYTES } from '../src/oauth/routes.ts'
 import {
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
-  TEST_ORIGIN,
   TEST_PUBLIC_BASE_URL,
   cleanupTestApps,
   createTestApp,
@@ -32,12 +31,19 @@ function pkce(): Pkce {
   return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') }
 }
 
+/**
+ * `TEST_PUBLIC_BASE_URL`, not `TEST_ORIGIN`: the consent form is guarded
+ * against the deployment's configured origin rather than the one the socket
+ * implies, so the browser's `Origin` is what that setting says — see the
+ * `csrf()` note in oauth/routes.ts. No `Sec-Fetch-Site` here on purpose, so
+ * the origin check is the one actually under test.
+ */
 function formPost(fields: Record<string, string>, headers: Record<string, string> = {}): RequestInit {
   return {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
-      origin: TEST_ORIGIN,
+      origin: TEST_PUBLIC_BASE_URL,
       ...headers,
     },
     body: new URLSearchParams(fields).toString(),
@@ -366,6 +372,21 @@ describe('oauth authorize', () => {
     expect(res.headers.get('Cache-Control')).toBe('no-store')
   })
 
+  it('caps the name a client registered for itself', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const client = await register(testApp, { client_name: 'A'.repeat(5000) })
+    const { challenge } = pkce()
+
+    const res = await testApp.app.request(`/oauth/authorize?${authorizeQuery(client, challenge)}`)
+    const body = await res.text()
+
+    // Registration is unauthenticated, so an uncapped name is several screens
+    // of a stranger's prose pushing the redirect target below the fold.
+    expect(body).not.toContain('A'.repeat(MAX_CLIENT_NAME_LENGTH + 1))
+    expect(body).toContain('A'.repeat(MAX_CLIENT_NAME_LENGTH - 1))
+  })
+
   it('escapes the name a client registered for itself', async () => {
     const testApp = createTestApp()
     await setupAdmin(testApp)
@@ -465,6 +486,32 @@ describe('oauth authorize', () => {
 
     expect(res.status).toBe(302)
     expect(new URL(res.headers.get('location') ?? '').searchParams.get('error')).toBe('access_denied')
+  })
+
+  it('accepts the form behind a TLS-terminating proxy', async () => {
+    // The socket carries plain http there, so the origin the browser sends is
+    // the configured one and nothing else. Without `Sec-Fetch-Site` to fall
+    // back on, a request-derived origin check would refuse this.
+    const publicBaseUrl = 'https://philo.example.com'
+    const testApp = createTestApp({ publicBaseUrl })
+    await setupAdmin(testApp)
+    const client = await register(testApp)
+    const { challenge } = pkce()
+
+    const res = await testApp.app.request(
+      '/oauth/authorize',
+      formPost(
+        {
+          ...Object.fromEntries(authorizeQuery(client, challenge, { resource: `${publicBaseUrl}/mcp` })),
+          email: ADMIN_EMAIL,
+          password: ADMIN_PASSWORD,
+          approve: '1',
+        },
+        { origin: publicBaseUrl },
+      ),
+    )
+
+    expect(res.status).toBe(302)
   })
 
   it('refuses a form posted from another origin', async () => {

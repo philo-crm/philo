@@ -82,7 +82,13 @@ Shape of what was built, where a choice was open:
   a `philo_` key — OAuth exists here for connector clients, and widening it
   would mean two ways to hold the same authority.
 - **Rotating refresh tokens**, sharing the 30-day window a browser session
-  gets. Reuse of a spent token fails; it does not revoke the family.
+  gets. Reuse of a spent token fails; it does not revoke the family, so
+  whichever holder refreshes first keeps the grant. Family revocation on
+  reuse is the upgrade if a real deployment ever needs it.
+- **https and loopback-http redirect URIs only.** A private app scheme is
+  claimable by any installed app, and the clients this exists for — connector
+  clients, and local ones on an ephemeral loopback port — need neither. A
+  local MCP client that insists on a private scheme uses an API key instead.
 - **Non-expiring client secrets** (`client_secret_expires_at: 0`), against
   the SDK's 30-day default: an expiring secret breaks a working connector a
   month later with nothing on screen saying why.

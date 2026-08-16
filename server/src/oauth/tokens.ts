@@ -146,8 +146,13 @@ export function issueTokens(db: Db, subject: GrantSubject, now = new Date()): Is
 
 /**
  * Consumes a refresh token. Rotation, not reuse: the presented token is spent
- * and `issueTokens` mints its replacement, so a copy that leaked is only good
- * until the real client refreshes once.
+ * and `issueTokens` mints its replacement.
+ *
+ * What that does and does not buy, stated plainly because rotation is easy to
+ * over-credit: whichever holder refreshes first keeps the grant and the other
+ * is locked out, so a leak is bounded only if the real client refreshes before
+ * the thief does. Detecting the reuse and revoking the whole family is the
+ * upgrade, and it is deliberately not here — see ADR-0005.
  */
 export function redeemRefreshToken(db: Db, token: string, now = new Date()): GrantSubject | undefined {
   if (!token.startsWith(REFRESH_PREFIX)) return undefined
