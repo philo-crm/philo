@@ -52,8 +52,11 @@ Two things worth knowing before you write anything:
 - Email templates are live. Editing one changes what the business sends out
   under its own name from the next lead onwards.
 
-Tools answer with JSON. A refused call comes back as an error result whose text
-is a JSON object with an "error" code in it.`
+Tools answer with JSON. A call the CRM refuses comes back as an error result
+whose text is a JSON object with an "error" code in it. A call whose arguments
+do not match the schema is refused before it gets that far, and comes back as an
+error result carrying a plain sentence about what is wrong — so read the text
+before assuming it parses.`
 
 /** The shape every tool answers with: JSON an agent can parse without guessing. */
 function json(value: unknown): CallToolResult {
