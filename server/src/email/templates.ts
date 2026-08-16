@@ -7,7 +7,7 @@ import type { EmailTrigger } from './service.ts'
 import { readEmailSettings } from './settings.ts'
 
 /** The pair the MVP sends. Mirrors the `trigger` column's enum — DESIGN.md (Email). */
-export const TEMPLATE_TRIGGERS: readonly EmailTrigger[] = ['new_lead_notify', 'new_lead_ack']
+export const TEMPLATE_TRIGGERS = ['new_lead_notify', 'new_lead_ack'] as const satisfies readonly EmailTrigger[]
 
 /**
  * Handlebars source, not the rendered header — `renderSubject` caps what

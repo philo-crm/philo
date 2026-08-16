@@ -117,7 +117,9 @@ describe('caching', () => {
 })
 
 describe('unknown machine-facing paths', () => {
-  it.each(['/api/intake/some-key', '/mcp', '/mcp/anything'])(
+  // `/mcp` itself is served now (see mcp.test.ts); anything under it is not, and
+  // must still answer JSON rather than the app shell.
+  it.each(['/api/intake/some-key', '/mcp/anything'])(
     '404s %s as JSON instead of falling through to the SPA',
     async (path) => {
       const res = await app.request(path)

@@ -1,11 +1,15 @@
 /**
- * A lead that has just entered the pipeline: freshly submitted through an intake
- * form, or promoted out of the spam quarantine. Email (#11) and push (#13) hang
- * off the hook below.
+ * A lead that has just *arrived*: freshly submitted through an intake form, or
+ * promoted out of the spam quarantine. Email (#11) and push (#13) hang off the
+ * hook below.
+ *
+ * Deliberately not every new lead. One entered through MCP or REST fires nothing
+ * — DESIGN.md (Email): both templates speak to a submission, and there was none.
+ * See `createLead` in leads/service.ts.
  */
 export interface CreatedLead {
   id: number
-  /** Null for a lead whose form has since been deleted, or one created through REST. */
+  /** Null for a lead whose form has since been deleted. */
   formId: number | null
   isSpam: boolean
 }

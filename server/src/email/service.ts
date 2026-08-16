@@ -1,7 +1,7 @@
 import { and, asc, eq, gte } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { emailTemplates, leadEvents, leads, users } from '../db/schema.ts'
-import { getLead, type LeadDetail, type LeadEventRecord } from '../leads/service.ts'
+import { getLead, CREATED_VIA_API, type LeadDetail, type LeadEventRecord } from '../leads/service.ts'
 import type { LeadCreatedHook } from '../notify.ts'
 import { buildContext, renderBody, renderSubject, type TemplateContext } from './render.ts'
 import {
@@ -97,6 +97,20 @@ function gaveUp(events: LeadEventRecord[], trigger: EmailTrigger): boolean {
 /** Nothing more is owed for this trigger, whether it got through or not. */
 function settled(events: LeadEventRecord[], trigger: EmailTrigger): boolean {
   return alreadySent(events, trigger) || gaveUp(events, trigger)
+}
+
+/**
+ * Whether the lead was entered rather than submitted — `createLead` stamps
+ * `CREATED_VIA_API` on its `created` event. Nothing was ever owed for one:
+ * DESIGN.md (Email) sends only for a submission that arrived.
+ *
+ * Read from the timeline rather than trusted to the caller, because the hook is
+ * not the only road here. The sweep below asks the same question of every recent
+ * lead with no send recorded, and to it a lead the hook was never fired for is
+ * indistinguishable from one whose process died mid-send.
+ */
+function wasEntered(events: LeadEventRecord[]): boolean {
+  return events.some((event) => event.type === 'created' && event.payload['via'] === CREATED_VIA_API)
 }
 
 function recordSent(db: Db, leadId: number, trigger: EmailTrigger, subject: string, to: string[]): void {
@@ -271,6 +285,10 @@ async function attemptNewLeadEmails(deps: EmailDeps, leadId: number): Promise<Se
     // Belt to the callers' braces: intake and the promotion route both withhold
     // the hook for a quarantined lead already.
     if (lead.isSpam) return failures
+    // Not belt-and-braces: `createLead` fires no hook at all, so the sweep is
+    // the only caller that ever reaches one of these, and this is the whole of
+    // what keeps an agent-filed lead from being emailed at the next boot.
+    if (wasEntered(lead.events)) return failures
 
     const config = readEmailSettings(deps.db)
     if (!isEmailConfigured(config)) {
