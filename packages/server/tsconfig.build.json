@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    // Siblings resolve to their built output here, not their source: emit
+    // must not pull another package's files under this one's rootDir.
+    "customConditions": []
+  },
+  "include": ["src/**/*.ts"]
+}

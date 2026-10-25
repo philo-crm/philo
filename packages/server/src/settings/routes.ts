@@ -1,0 +1,191 @@
+import { Hono, type Context } from 'hono'
+import type { ContentfulStatusCode } from 'hono/utils/http-status'
+import { currentUser, type AuthEnv } from '../auth/middleware.ts'
+import type { Db } from '../db/index.ts'
+import { ackReplyTo, sendTestEmail, type TestEmailError } from '../email/service.ts'
+import {
+  readEmailSettings,
+  validateEmailSettings,
+  writeEmailSettings,
+  type EmailSettings,
+} from '../email/settings.ts'
+import {
+  isEmailTrigger,
+  getEmailTemplate,
+  listEmailTemplates,
+  previewEmailTemplate,
+  updateEmailTemplate,
+  type EmailTemplateError,
+  type TemplateResult,
+} from '../email/templates.ts'
+import type { EmailSenderFactory } from '../email/transport.ts'
+import { readJsonBody } from '../json-body.ts'
+
+export interface SettingsRoutesDeps {
+  db: Db
+  /** Builds `{{lead_url}}` in a template preview, as it does on the send path. */
+  appUrl: string
+  createEmailSender?: EmailSenderFactory | undefined
+}
+
+/**
+ * What the settings screen reads back. The SMTP password is deliberately not on
+ * it — it is write-only, and a boolean is all a form needs to say whether one is
+ * stored. Round-tripping it would put the credential in every GET, in the
+ * browser's memory, and in anything that logs a response body.
+ */
+interface EmailSettingsResponse extends Omit<EmailSettings, 'smtpPassword'> {
+  smtpPasswordSet: boolean
+}
+
+function toResponse(config: EmailSettings): EmailSettingsResponse {
+  const { smtpPassword, ...rest } = config
+  return { ...rest, smtpPasswordSet: smtpPassword !== '' }
+}
+
+const TEST_STATUS: Record<TestEmailError, ContentfulStatusCode> = {
+  invalid_email: 400,
+  // The request was fine and the instance's state is what refused it.
+  not_configured: 409,
+  // The failure came from the SMTP server, not from here.
+  send_failed: 502,
+}
+
+/** A refused template edit, with the Handlebars complaint when there is one. */
+function templateError(c: Context<AuthEnv>, result: TemplateResult<unknown> & { ok: false }) {
+  return c.json(
+    { error: result.error, ...(result.detail === undefined ? {} : { detail: result.detail }) },
+    TEMPLATE_STATUS[result.error],
+  )
+}
+
+const TEMPLATE_STATUS: Record<EmailTemplateError, ContentfulStatusCode> = {
+  not_found: 404,
+  invalid_subject: 400,
+  invalid_body: 400,
+  invalid_enabled: 400,
+  invalid_subject_template: 400,
+  invalid_body_template: 400,
+  invalid_lead: 400,
+}
+
+export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
+  const routes = new Hono<AuthEnv>()
+
+  /**
+   * The mail server settings and the test-send are open to any credential
+   * acting for the user — ADR-0007: an agent does what its user can. The stored
+   * password is still write-only; no credential reads it back.
+   */
+  routes.get('/email', (c) => c.json({ settings: toResponse(readEmailSettings(deps.db)) }))
+
+  /**
+   * PATCH rather than PUT: a key the body leaves out keeps its stored value,
+   * which is what lets the password stay write-only. Sending `""` clears it.
+   */
+  routes.patch('/email', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+
+    // Every validation code names a field the caller got wrong, so they all
+    // answer 400 — there is no state on this resource that could refuse one.
+    const validated = validateEmailSettings(readEmailSettings(deps.db), body)
+    if (!validated.ok) return c.json({ error: validated.error }, 400)
+
+    writeEmailSettings(deps.db, validated.value)
+    return c.json({ settings: toResponse(validated.value) })
+  })
+
+  /**
+   * Sends with the settings as stored, not as typed — so the screen saves before
+   * it tests, and a green result is a statement about the configuration the next
+   * lead will actually be sent with.
+   */
+  routes.post('/email/test', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+
+    const result = await sendTestEmail(
+      { createSender: deps.createEmailSender },
+      readEmailSettings(deps.db),
+      body['to'],
+    )
+    if (result.ok) return c.json({ ok: true, to: result.to })
+    return c.json(
+      { error: result.error, ...(result.detail === undefined ? {} : { detail: result.detail }) },
+      TEST_STATUS[result.error],
+    )
+  })
+
+  routes.get('/email/templates', (c) => c.json({ templates: listEmailTemplates(deps.db) }))
+
+  routes.get('/email/templates/:trigger', (c) => {
+    const trigger = c.req.param('trigger')
+    const template = isEmailTrigger(trigger) ? getEmailTemplate(deps.db, trigger) : undefined
+    if (template === undefined) return c.json({ error: 'not_found' }, 404)
+    return c.json({ template })
+  })
+
+  routes.patch('/email/templates/:trigger', async (c) => {
+    const trigger = c.req.param('trigger')
+    if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+
+    const result = updateEmailTemplate(deps.db, deps.appUrl, trigger, body)
+    if (!result.ok) return templateError(c, result)
+    return c.json({ template: result.value })
+  })
+
+  /**
+   * Renders the draft in the boxes — nothing is saved, so an operator can iterate
+   * on a template without committing anything a real lead would then be sent.
+   */
+  routes.post('/email/templates/:trigger/preview', async (c) => {
+    const trigger = c.req.param('trigger')
+    if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+
+    const result = previewEmailTemplate(deps.db, deps.appUrl, trigger, body)
+    if (!result.ok) return templateError(c, result)
+    return c.json({ preview: result.value })
+  })
+
+  /**
+   * The same rendering, put through SMTP to the address of the user the
+   * credential acts for — an agent's test lands in its user's inbox. Deliberately
+   * not an arbitrary recipient: the question a template test answers is "does
+   * this read right in my mail client", and only that inbox can answer it.
+   */
+  routes.post('/email/templates/:trigger/test', async (c) => {
+    const trigger = c.req.param('trigger')
+    if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+
+    const rendered = previewEmailTemplate(deps.db, deps.appUrl, trigger, body)
+    if (!rendered.ok) return templateError(c, rendered)
+
+    const config = readEmailSettings(deps.db)
+    const result = await sendTestEmail(
+      { createSender: deps.createEmailSender },
+      config,
+      currentUser(c).email,
+      {
+        subject: rendered.value.subject,
+        html: rendered.value.body,
+        // The acknowledgment carries one in production, so the rehearsal has to
+        // as well — a reply-to that is wrong is exactly what this test is for.
+        ...(trigger === 'new_lead_ack' ? { replyTo: ackReplyTo(config) } : {}),
+      },
+    )
+    if (result.ok) return c.json({ ok: true, to: result.to })
+    return c.json(
+      { error: result.error, ...(result.detail === undefined ? {} : { detail: result.detail }) },
+      TEST_STATUS[result.error],
+    )
+  })
+
+  return routes
+}

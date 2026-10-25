@@ -1,0 +1,42 @@
+{
+  "name": "@philo/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "db:generate": "drizzle-kit generate",
+    "dev": "node --watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.0.12",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@node-rs/argon2": "^2.0.2",
+    "better-sqlite3": "^13.0.2",
+    "drizzle-orm": "^0.45.2",
+    "handlebars": "^4.7.9",
+    "hono": "^4.12.32",
+    "jose": "^6.2.9",
+    "nodemailer": "^9.0.3",
+    "web-push": "^3.6.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.13.3",
+    "@types/nodemailer": "^8.0.1",
+    "@types/web-push": "^3.6.4",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/boot.ts",
+      "types": "./dist/boot.d.ts",
+      "default": "./dist/boot.js"
+    }
+  }
+}

@@ -41,7 +41,7 @@ jobs:
           # Test fixtures use hard-coded values that are not real findings.
           config: |
             paths-ignore:
-              - server/test
+              - packages/server/test
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@e58424170fb0262c8d7ed60a2e84b9bffe205c67 # codeql-bundle-v2.26.1

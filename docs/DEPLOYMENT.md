@@ -3,6 +3,12 @@
 One container, one directory of state, one business. This page covers running
 it, putting HTTPS in front of it, backing it up, and upgrading it.
 
+The image runs the standalone host: the headless API server, the MCP endpoint
+and the PWA together on one origin
+([ADR-0006](adr/0006-headless-server-sdk-clients.md)). Each can be run apart —
+see [Running the pieces apart](#running-the-pieces-apart) — but nothing about a
+small deployment needs that.
+
 For SMTP setup — the thing that makes notification and acknowledgment email
 work — see [EMAIL.md](EMAIL.md).
 
@@ -11,8 +17,8 @@ work — see [EMAIL.md](EMAIL.md).
 - A host that can run a container (any Linux box, a small VPS is plenty).
 - A domain name pointed at it, and TLS. Philo does not terminate TLS itself;
   put a reverse proxy in front. **Web push does not work over plain http** —
-  browsers refuse to subscribe outside a secure context — and the session
-  cookie is only marked `Secure` when the base URL is `https`.
+  browsers refuse to subscribe outside a secure context — and tokens should
+  not cross a network in the clear.
 
 SQLite means no database server to run, and single-tenancy means no queue,
 cache or worker. If you are reaching for more than one container, something has
@@ -30,7 +36,8 @@ docker run -d --name philo --restart unless-stopped \
 ```
 
 Then point your reverse proxy at `127.0.0.1:3000` and open
-`https://philo.example.com`. The first screen creates the admin account.
+`https://philo.example.com`. Signing in the first time takes you to the setup
+dialog, which creates the operator account.
 
 Or with Compose:
 
@@ -64,8 +71,8 @@ faster than that.
 
 ## Configuration
 
-Only four things are environment variables — what the process must know before
-it can serve. Everything else (SMTP, sender identity, business name, funnel
+Only these are environment variables — what the process must know before it
+can serve. Everything else (SMTP, sender identity, business name, funnel
 stages, email templates) lives in the database and is edited in the app.
 
 | Variable | Default | What it does |
@@ -74,6 +81,12 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_DATA_DIR` | `/data` in the container, `./data` otherwise | Every byte of persistent state. |
 | `PHILO_PUBLIC_BASE_URL` | `http://localhost:<port>` | The externally reachable origin. |
 | `PHILO_TRUSTED_PROXY` | `false` | Whether to believe `X-Forwarded-For`. Strictly `true`/`1` or `false`/`0` — a typo is a startup error, not a silent "no". |
+| `PHILO_APP_URL` | `PHILO_PUBLIC_BASE_URL` | Where the PWA is served. The sign-in redirect goes here, and so do the links in emails and notifications. Set it only when the PWA is hosted apart. |
+| `PHILO_MCP_URL` | `<public base url>/mcp` | Where the MCP endpoint is reachable. Set it only when the MCP app runs apart. |
+| `PHILO_OIDC_ISSUER` | unset | An external OIDC provider to use instead of the built-in IdP. See [External identity provider](#external-identity-provider). |
+| `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens are recorded as the person rather than as an agent. |
+| `PHILO_OIDC_AUDIENCE` | unset | The `aud` the provider's access tokens must carry. Set it whenever the provider issues one. |
+| `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. |
 
 ### `PHILO_PUBLIC_BASE_URL` earns its keep
 
@@ -82,9 +95,9 @@ email, the OAuth issuer and endpoints it advertises to connector clients, the
 intake URLs printed at boot. It also decides two things that are easy to get
 wrong by omission:
 
-- **`https` marks the session cookie `Secure`.** Leave it unset behind a
-  TLS-terminating proxy and the cookie loses `Secure` while everything else
-  still looks fine. Philo prints a warning at boot when this happens.
+- **It is the IdP's issuer.** A client checks the issuer it was told against
+  the one in the tokens; a base URL that is not what browsers reach makes
+  sign-in fail at the first redirect.
 - **`https` is what lets push work at all**, because a browser will not
   subscribe from an insecure context. On an http base URL the Settings toggle
   simply never succeeds, with nothing on screen saying why.
@@ -93,7 +106,8 @@ No trailing slash is needed — one is stripped.
 
 ### `PHILO_TRUSTED_PROXY` and rate limits
 
-Philo rate-limits login, first-boot setup, and form intake per caller. Behind a
+Philo rate-limits sign-in, first-boot setup, client registration and form
+intake per caller. Behind a
 reverse proxy every request arrives from the proxy's address, so without this
 setting the whole deployment shares one budget and a single flood spends
 everyone's.
@@ -106,6 +120,48 @@ who pads the header writes entries to the left of what the proxy appended, so
 the walk never reaches them; a caller who bypasses the proxy has a public peer
 address and is throttled on their own. Every failure direction is
 over-restrictive rather than permissive.
+
+### External identity provider
+
+Point Philo at an OIDC provider you already run and the built-in IdP switches
+off entirely — no password ever reaches Philo, and its `/oauth` endpoints and
+discovery documents answer 404.
+
+1. At the provider, register a **public** client for the PWA (authorization
+   code with PKCE, no secret) with redirect URI `<PHILO_APP_URL>/auth/callback`,
+   and allow the `openid email profile` scopes.
+2. Set `PHILO_OIDC_ISSUER` to the provider's issuer exactly as its tokens state
+   it, `PHILO_OIDC_CLIENT_ID` to that client's id, and `PHILO_OIDC_AUDIENCE` to
+   the audience its access tokens carry. The provider must issue JWT access
+   tokens that include `sub`, `email`, `email_verified` and `azp` (or
+   `client_id`).
+3. The first operator token on an empty instance, with a verified email,
+   creates the account and binds it to that token's subject. From then on the
+   subject is the operator — changing the email at the provider changes
+   nothing, and another person with the same address gets nothing. An
+   existing account from the built-in IdP is bound the same way, once, by its
+   verified email.
+
+API keys keep working. MCP connectors that want OAuth must be registered at the
+provider and listed in `PHILO_OIDC_AGENT_CLIENT_IDS`; everything else the
+provider issues is refused, because a valid signature only proves the token
+came from *some* application registered there.
+
+### Running the pieces apart
+
+The image is the convenient shape, not the only one. Each piece has its own
+entrypoint:
+
+- **API server:** `node packages/server/dist/index.js` — the API, intake and
+  IdP, nothing else.
+- **MCP:** `node apps/mcp/dist/index.js` with `PHILO_API_URL` (the server) and
+  `PHILO_MCP_URL` (its own public URL); `PHILO_MCP_PORT` defaults to 3001.
+- **PWA:** the static files in `apps/web/dist`, from any static host. Build it
+  with `VITE_PHILO_API_URL` set to the server's URL when it is hosted elsewhere.
+
+Tell the server where the others live with `PHILO_APP_URL` and `PHILO_MCP_URL`.
+The API answers any origin — it takes bearer tokens only, so there is no
+cookie for another site to ride on.
 
 ## Reverse proxy
 
@@ -151,13 +207,15 @@ it a host of its own.
 The boot log is the setup checklist, reprinted every start. Abridged:
 
 ```
-philo <version> listening on port 3000
+philo <version> (standalone: API, MCP and app) listening on port 3000
   public base url: https://philo.example.com
+  app url:         https://philo.example.com
+  identity:        built-in IdP at https://philo.example.com/oauth
   data dir:        /data
   database:        /data/philo.db
   intake form:     https://philo.example.com/api/intake/<form_key>
   honeypot field:  _hp (render it hidden; a filled one is filed as spam)
-  mcp endpoint:    https://philo.example.com/mcp (authenticate with an API key from Settings)
+  mcp endpoint:    https://philo.example.com/mcp (an API key from Settings, or OAuth for a connector)
   ...
 ```
 
@@ -198,11 +256,12 @@ form.
 
 | File | What it is |
 |---|---|
-| `philo.db` (plus `-wal`, `-shm`) | Everything: leads, timeline, stages, users, sessions, API keys, settings, email templates. |
-| `session-key` | HMAC key signing session cookies. Losing it signs everyone out. |
+| `philo.db` (plus `-wal`, `-shm`) | Everything: leads, timeline, stages, users, API keys, OAuth grants, settings, email templates. |
+| `oidc-signing-key.json` | The built-in IdP's id_token signing key, generated at first boot. Losing it costs nothing that lasts: access is granted by tokens in the database, and a new key is generated. |
+| `session-key` | Only on instances first booted before ADR-0006, when the app used a session cookie. Unused now; safe to delete. |
 | `vapid-keys.json` | Web push keypair, generated at first boot. Losing it costs every device its push subscription — each has to re-subscribe. |
 
-**Treat the directory as a secret.** Beyond those two keys, the database holds
+**Treat the directory as a secret.** Beyond those keys, the database holds
 your SMTP password in a form that can be read back: SMTP AUTH replays the
 credential on every connection, so there is no hashed form that could work.
 
@@ -228,7 +287,7 @@ connection, so the running instance is undisturbed:
 docker run --rm -v philo-data:/data -v "$PWD":/backup alpine sh -c \
   'apk add --no-cache sqlite >/dev/null && \
    sqlite3 /data/philo.db ".backup /backup/philo-$(date +%F).db" && \
-   cp /data/session-key /data/vapid-keys.json /backup/'
+   cp /data/oidc-signing-key.json /data/vapid-keys.json /backup/'
 ```
 
 Take the two key files alongside the database, as above, or you will restore a
@@ -280,7 +339,7 @@ docker run --rm -v philo-data:/data -v "$PWD":/backup alpine sh -c "
   test -f '/backup/$BACKUP' &&
   rm -f /data/philo.db /data/philo.db-wal /data/philo.db-shm &&
   cp '/backup/$BACKUP' /data/philo.db &&
-  cp /backup/session-key /backup/vapid-keys.json /data/ &&
+  cp /backup/oidc-signing-key.json /backup/vapid-keys.json /data/ &&
   chown -R 1000:1000 /data"
 docker start philo
 ```
@@ -317,9 +376,9 @@ Philo has no opinion about it.
 
 | Symptom | Cause |
 |---|---|
-| Login appears to do nothing | `PHILO_PUBLIC_BASE_URL` is `https` but the page is actually being served over http. The cookie is `Secure` exactly when the base URL is `https`, and a browser never returns a `Secure` cookie over http. |
+| Sign-in fails right after the redirect | `PHILO_PUBLIC_BASE_URL` (the issuer) or `PHILO_APP_URL` (the redirect) is not the URL the browser actually uses. The sign-in dialog refuses a redirect it was not configured for. |
 | The push toggle never turns on | Base URL is not `https`, or, on iOS, the site has not been added to the Home Screen. EU iOS has no PWA push at all. |
 | No email arrives, no error shown | SMTP is not configured, or a template is disabled. The boot log says which; template edits are in Settings. |
 | A legitimate submitter is rate-limited | Behind a proxy without `PHILO_TRUSTED_PROXY=true`, everyone shares one budget. |
 | Form posts fail from the browser with a CORS error | The form's origin is not in that intake form's `allowed_origins`. |
-| The app loads but every screen 401s | The session expired. Sessions are ~30 days, rolling. |
+| The app returns to the sign-in screen | The refresh token expired or was revoked. Each lasts 30 days and is replaced on every use, so this means a device unused for a month, or signed out elsewhere. |

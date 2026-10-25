@@ -36,22 +36,26 @@ If you forget, amend the most recent commit with:
 
 Node 24 or newer. From the repo root:
 
-    npm install          # install both workspaces
-    npm test             # server test suite
-    npm run typecheck    # both workspaces
-    npm run lint         # oxlint, both workspaces
-    npm run build        # web -> server/public, then server -> server/dist
+    npm install          # every workspace
+    npm test             # every workspace's test suite
+    npm run typecheck    # every workspace
+    npm run lint         # oxlint, whole repo
+    npm run build        # sdk, server, mcp, web, standalone — in that order
+
+The workspaces and how they fit are in [AGENTS.md](AGENTS.md#build-and-test)
+and [ADR-0006](docs/adr/0006-headless-server-sdk-clients.md).
 
 CI runs typecheck, lint, test, and build on every pull request, plus a
 container build that must boot and answer `GET /version`.
 
-Run the server in watch mode with `npm run dev`; for the PWA with hot reload,
-run `npm run dev --workspace web` alongside it (Vite proxies `/api` and
-`/version` to the server on port 3000).
+Run the standalone host (server and MCP) in watch mode with `npm run dev`; for
+the PWA with hot reload, run `npm run dev --workspace apps/web` alongside it.
+Vite proxies the API and the IdP to port 3000, and serves the PWA on 5173 — so
+set `PHILO_APP_URL=http://localhost:5173` for the sign-in redirect to land
+there.
 
-Configuration is environment-driven: `PHILO_PORT` (default 3000),
-`PHILO_DATA_DIR` (default `./data` locally, `/data` in the container), and
-`PHILO_PUBLIC_BASE_URL` (default `http://localhost:<port>`).
+Configuration is environment-driven; every variable is in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#configuration).
 
 The container is built from the repo root and keeps all state in one volume:
 
@@ -60,8 +64,8 @@ The container is built from the repo root and keeps all state in one volume:
 
 ## Database changes
 
-The schema is Drizzle, in `server/src/db/schema.ts`. Migrations are plain SQL
-in `server/drizzle/`, generated from the schema and committed — the server
+The schema is Drizzle, in `packages/server/src/db/schema.ts`. Migrations are plain SQL
+in `packages/server/drizzle/`, generated from the schema and committed — the server
 applies them at startup and never generates anything at runtime. After editing
 the schema:
 
@@ -90,7 +94,7 @@ triggers and then rebuild the index with
 before re-running the backfill `INSERT`. The `DELETE FROM leads` inside a table
 rebuild does not fire `leads_fts_delete`, so the old index rows are still
 there; backfilling on top of them gives every lead two index rows and every
-search duplicate hits. `server/test/db.test.ts` asserts that all three triggers
+search duplicate hits. `packages/server/test/db.test.ts` asserts that all three triggers
 exist after startup and that the index holds exactly one row per lead, so a
 migration that gets either half wrong fails the suite.
 

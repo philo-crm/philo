@@ -6,18 +6,18 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "server",
-    "web"
+    "packages/*",
+    "apps/*"
   ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run build --workspace web && npm run build --workspace server",
-    "db:generate": "npm run db:generate --workspace server --",
-    "dev": "npm run dev --workspace server",
+    "build": "npm run build --workspace packages/sdk && npm run build --workspace packages/server && npm run build --workspace apps/mcp && npm run build --workspace apps/web && npm run build --workspace apps/standalone",
+    "db:generate": "npm run db:generate --workspace packages/server --",
+    "dev": "npm run dev --workspace apps/standalone",
     "lint": "oxlint --deny-warnings",
-    "start": "node server/dist/index.js",
+    "start": "node apps/standalone/dist/index.js",
     "test": "npm run test --workspaces",
     "typecheck": "npm run typecheck --workspaces"
   },

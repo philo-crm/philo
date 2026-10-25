@@ -30,30 +30,45 @@ Full rationale: [ADR-0001](adr/0001-typescript-node-over-rust.md),
 | HTTP framework | Hono |
 | Database | SQLite via better-sqlite3, Drizzle ORM + drizzle-kit migrations |
 | Search | SQLite FTS5 (vectors deferred; upgrade path is sqlite-vec) |
-| Frontend | Vite + React PWA, served statically by the same server |
+| Frontend | Vite + React PWA, a client of the API through `@philo/sdk` |
+| SDK | `@philo/sdk`: typed API client plus OIDC/PKCE helpers, no runtime dependencies |
 | Email | Nodemailer over SMTP (provider-agnostic; Resend via SMTP in docs) |
 | Push | Web Push (VAPID) with Declarative Web Push payloads |
-| MCP | `@modelcontextprotocol/sdk`, streamable HTTP |
+| MCP | `@modelcontextprotocol/sdk`, streamable HTTP; a client of the API through `@philo/sdk` |
+| Identity | Built-in OIDC IdP (authorization code + PKCE), replaceable by an external OIDC provider |
 | Container | Single Docker image, `ghcr.io/philo-crm/philo` |
 
 ## Architecture
 
-One server process, one SQLite file, three API surfaces over one service
-layer:
+A headless server, an SDK that tracks it, and two clients of the SDK —
+[ADR-0006](adr/0006-headless-server-sdk-clients.md):
 
 ```
-                    ┌─────────────────────────────┐
-  browser (PWA) ───▶│  Hono server                │
-  agent (MCP)   ───▶│   /api/v1/*   REST          │──▶ service layer ──▶ SQLite
-  form POST     ───▶│   /mcp        MCP           │        │            (one file in
-                    │   /api/intake/{form_key}    │        └─▶ SMTP,     PHILO_DATA_DIR)
-                    │   static PWA at /           │            Web Push
-                    └─────────────────────────────┘
+  human ──▶ PWA (apps/web) ─────┐
+                                ├──▶ @philo/sdk ──▶ ┌──────────────────────────────┐
+  agent ──▶ MCP (apps/mcp) ─────┘    bearer token   │ headless server              │
+                                                    │  /api/v1/*   REST            │──▶ service layer ──▶ SQLite
+  form POST ───────────────────────────────────────▶│  /api/intake/{form_key}      │        │            (PHILO_DATA_DIR)
+                                                    │  /oauth/*    OIDC IdP + its  │        └─▶ SMTP, Web Push
+  sign-in (browser redirect) ──────────────────────▶│              dialogs         │
+                                                    └──────────────────────────────┘
 ```
+
+- **The server is headless.** It serves the API, form intake, and the IdP —
+  whose sign-in, consent and first-boot setup pages are the only HTML it
+  renders. It serves no UI files.
+- **The SDK is the only way a client reaches the API.** A response shape and
+  the SDK type that mirrors it change in the same PR.
+- **The PWA and MCP are clients on equal footing** with any third-party
+  integration. MCP holds no credential and no data: it forwards each caller's
+  token to the API, which decides what the caller may do.
+- **One container by default.** `apps/standalone` hosts the server, the MCP
+  app and the built PWA on one origin, and is what the image runs. Each can
+  also be deployed apart — `PHILO_APP_URL` and `PHILO_MCP_URL` say where.
 
 - All state lives under `PHILO_DATA_DIR` (default `/data` in the container):
-  the SQLite database plus auto-generated secrets (VAPID keys, session
-  signing key). **Backup = copy that directory.**
+  the SQLite database plus auto-generated secrets (VAPID keys, the IdP's
+  id_token signing key). **Backup = copy that directory.**
 - Install story: `docker run -d -p 3000:3000 -v philo-data:/data
   -e PHILO_PUBLIC_BASE_URL=https://philo.example.com ghcr.io/philo-crm/philo`
 - Configuration philosophy: env vars for what the process needs before it can
@@ -115,9 +130,10 @@ Full rationale for the generality decision:
 - **`email_templates`** — `id`, `trigger` (`new_lead_notify` |
   `new_lead_ack`; enum grows to `stage_changed:<stage>` post-MVP),
   `subject`, `body`, `enabled`, `updated_at`. Two rows seeded at first boot.
-- **`push_subscriptions`**, **`users`**, **`api_keys`**, **`sessions`**,
-  **`oauth_clients`**, **`authorization_codes`**, **`refresh_tokens`**,
-  **`settings`** — supporting tables per the sections below.
+- **`push_subscriptions`**, **`users`**, **`api_keys`**, **`oauth_clients`**,
+  **`authorization_codes`**, **`access_tokens`**, **`refresh_tokens`**,
+  **`settings`** — supporting tables per the sections below. (`sessions` is a
+  leftover of the cookie era and unused — ADR-0006.)
 
 ### Entity decisions
 
@@ -218,16 +234,22 @@ Full rationale: [ADR-0004](adr/0004-push-best-effort-email-guaranteed.md).
 
 ## Auth and access
 
-Three credentials, one identity:
+Every credential is a bearer token on `/api/v1` — there is no cookie, and so
+no CSRF surface. Every credential acts for a user with exactly that user's
+authority — the PWA's token, an API key, a connector's grant alike — and the
+timeline records which credential acted. Details in
+[ADR-0006](adr/0006-headless-server-sdk-clients.md) and
+[ADR-0007](adr/0007-agents-act-as-their-user.md).
 
-1. **UI: local email + password.** First-boot setup screen creates the admin
-   user. argon2id hashing, httpOnly/Secure/SameSite session cookie (~30-day
-   rolling), login rate limiting, CSRF protection on state-changing routes.
-   Rejected: magic links (login would depend on SMTP config — break email,
-   get locked out of the thing that configures email), OIDC (provider
-   ceremony for an audience of two). Reverse-proxy auth remains possible in
-   front but is never required. No 2FA in MVP; passkeys are the natural
-   post-MVP upgrade.
+1. **UI: OIDC sign-in.** The PWA is a public OIDC client of the built-in IdP:
+   authorization code + PKCE, an operator-scoped access token in memory and a
+   rotating 30-day refresh token. The IdP's dialog takes the local email and
+   password (argon2id, rate-limited) and, on an empty instance, creates the
+   account — first-boot setup. Set `PHILO_OIDC_ISSUER` and an external OIDC
+   provider replaces the built-in one. Rejected: magic links (login would
+   depend on SMTP config — break email, get locked out of the thing that
+   configures email). No 2FA in MVP; passkeys, or the external IdP's own, are
+   the upgrade.
 2. **API keys** (`philo_`-prefixed, hashed at rest, created in settings) for
    headless callers — Claude Code, scripts, cron — against MCP and REST.
 3. **OAuth 2.1 authorization server** for OAuth-demanding MCP clients
@@ -239,14 +261,15 @@ Three credentials, one identity:
    primitives — its schemas, error classes, and redirect-URI matching —
    served by Hono rather than the SDK's Express router; see
    [ADR-0005](adr/0005-oauth-server-on-hono.md), which also records the
-   scope, token-lifetime, and consent-page decisions. A token it issues
-   reaches `/mcp` and nothing else.
+   token-lifetime and consent-page decisions. A connector's token carries agent
+   authority, the same as an API key.
 
 ## MCP surface
 
-Streamable HTTP at `/mcp`, sharing the REST service layer. Auth: an API key
-bearer, or an OAuth access token for a connector client — the `401` names the
-protected-resource metadata that leads one to the authorization server.
+Streamable HTTP at `/mcp`, served by `apps/mcp` — a client of the API like the
+PWA, calling it through `@philo/sdk` with the caller's own token. Auth: an API
+key bearer, or an OAuth access token for a connector client — the `401` names
+the protected-resource metadata that leads one to the authorization server.
 
 MVP tool set:
 
