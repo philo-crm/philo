@@ -131,7 +131,7 @@ Available variables:
 | `{{lead.source}}` | The intake form's name, or whatever an entered lead was given. |
 | `{{lead.fields.*}}` | Anything else the form submitted — `{{lead.fields.years_experience}}` and so on. Field names come from your form. |
 | `{{business.name}}` | From Settings → Business. |
-| `{{lead_url}}` | A link straight to the lead, built from `PHILO_PUBLIC_BASE_URL`. |
+| `{{lead_url}}` | A link straight to the lead in the app, built from `PHILO_APP_URL` (which defaults to `PHILO_PUBLIC_BASE_URL`). |
 
 The editor previews without saving, so you can iterate freely, and there is a
 test-send that mails the rendered result to whoever is signed in — the only way
