@@ -2,8 +2,9 @@ import { createApp } from './app.ts'
 import { createExternalIdp } from './auth/external-idp.ts'
 import type { Config } from './config.ts'
 import { openDatabase, type Db } from './db/index.ts'
-import { createLeadEmailHook, sweepUnsentEmails } from './email/service.ts'
+import { createLeadEmailHook, sweepUnsentEmails, type EmailDeps } from './email/service.ts'
 import { isEmailConfigured, readEmailSettings } from './email/settings.ts'
+import { createSmtpSender, smtpGreetingName } from './email/transport.ts'
 import { HONEYPOT_FIELD } from './intake/payload.ts'
 import { intakeUrls } from './intake/routes.ts'
 import { combineLeadCreatedHooks } from './notify.ts'
@@ -37,7 +38,8 @@ export function bootServer(config: Config): BootedServer {
   const signingKey = loadOrCreateSigningKey(config.dataDir)
 
   // Links in emails and notifications open the PWA, wherever it is served.
-  const emailDeps = { db, appUrl: config.appUrl }
+  const createSender = createSmtpSender(smtpGreetingName(config.publicBaseUrl))
+  const emailDeps: EmailDeps = { db, appUrl: config.appUrl, createSender }
 
   // Also after openDatabase, for the data dir.
   const vapid = loadOrCreateVapidKeys(config.dataDir)
@@ -54,6 +56,7 @@ export function bootServer(config: Config): BootedServer {
     externalIdp: config.externalIdp === undefined ? undefined : createExternalIdp(config.externalIdp),
     vapidPublicKey: vapid.keys.publicKey,
     trustProxy: config.trustProxy,
+    createEmailSender: createSender,
     // Email is the guaranteed notification channel and push is the fast one —
     // ADR-0004. Independent by construction: each is isolated from the other.
     onLeadCreated: combineLeadCreatedHooks(createLeadEmailHook(emailDeps), createLeadPushHook(pushDeps)),
@@ -62,7 +65,7 @@ export function bootServer(config: Config): BootedServer {
   return { app, onListening: () => onListening(config, db, emailDeps) }
 }
 
-function onListening(config: Config, db: Db, emailDeps: { db: Db; appUrl: string }): void {
+function onListening(config: Config, db: Db, emailDeps: EmailDeps): void {
   console.log(`  public base url: ${config.publicBaseUrl}`)
   console.log(`  app url:         ${config.appUrl}`)
   console.log(

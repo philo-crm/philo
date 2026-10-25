@@ -33,20 +33,36 @@ export interface SendResult {
 
 export type SendEmail = (email: OutgoingEmail) => Promise<SendResult>
 
-/** Substituted in tests; production always passes `smtpSender`. */
+/** Substituted in tests; production passes `createSmtpSender`. */
 export type EmailSenderFactory = (config: EmailSettings) => SendEmail
 
 /**
- * A sender bound to the stored SMTP settings. The connection is opened per send
- * and closed after: this is a handful of messages a day on a single-tenant
- * instance, and a pooled connection would only add a socket to keep alive
- * across the settings edit that invalidates it.
+ * The name to greet an SMTP server with (EHLO), from the host this instance is
+ * reached at. nodemailer's default is the machine's hostname, which in a
+ * container is a bare id it swaps for `[127.0.0.1]` — a greeting strict relays
+ * refuse outright. Undefined for a host no relay would accept either, such as
+ * the `localhost` default, so nodemailer's own fallback stands.
  */
-export const smtpSender: EmailSenderFactory = (config) => async (email) => {
+export function smtpGreetingName(publicBaseUrl: string): string | undefined {
+  const host = new URL(publicBaseUrl).hostname
+  if (host.startsWith('[')) return `[IPv6:${host.slice(1, -1)}]`
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return `[${host}]`
+  if (!host.includes('.') || host.endsWith('.localhost')) return undefined
+  return host
+}
+
+/**
+ * A sender bound to the stored SMTP settings, greeting the server as `name`.
+ * The connection is opened per send and closed after: this is a handful of
+ * messages a day on a single-tenant instance, and a pooled connection would
+ * only add a socket to keep alive across the settings edit that invalidates it.
+ */
+export const createSmtpSender = (name: string | undefined): EmailSenderFactory => (config) => async (email) => {
   const transport = createTransport({
     host: config.smtpHost,
     port: config.smtpPort,
     secure: config.smtpSecure,
+    ...(name === undefined ? {} : { name }),
     // An empty username is a relay that takes no credentials — passing `auth`
     // with blank values makes such a server refuse the session outright.
     auth: config.smtpUsername === ''
@@ -77,6 +93,9 @@ export const smtpSender: EmailSenderFactory = (config) => async (email) => {
     transport.close()
   }
 }
+
+/** Greets with nodemailer's default name. Production boots pass their own. */
+export const smtpSender: EmailSenderFactory = createSmtpSender(undefined)
 
 /**
  * nodemailer reports a recipient as either the bare address or an object, and
