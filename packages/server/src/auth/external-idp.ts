@@ -81,13 +81,21 @@ export async function verifyExternalToken(
     throw error
   }
 
-  const clientId = clientOf(claims) ?? 'external'
-  if (clientId !== idp.clientId) return { kind: 'agent', clientId }
-
   // An id_token sent where an access token belongs proves identity, not
   // authorisation. Providers that mark the difference do so with `typ`; for
   // the rest, PHILO_OIDC_AUDIENCE is what keeps the two apart.
   if (claims['typ'] === 'ID') return undefined
+
+  // Fail closed on the client. An IdP issues tokens to every application
+  // registered with it, and a valid signature says only that one of them was
+  // issued this — so a token that names no client, or a client nobody listed,
+  // is refused rather than let in at the lowest level of authority.
+  const clientId = clientOf(claims)
+  if (clientId === undefined) return undefined
+  if (clientId !== idp.clientId) {
+    return idp.agentClientIds.includes(clientId) ? { kind: 'agent', clientId } : undefined
+  }
+
   if (claims['email_verified'] === false) return undefined
   const email = normalizeEmail(claims['email'])
   if (email === undefined) return undefined

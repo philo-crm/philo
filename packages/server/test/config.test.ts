@@ -21,6 +21,7 @@ describe('loadConfig', () => {
       PHILO_OIDC_ISSUER: 'https://idp.example.com/realms/philo',
       PHILO_OIDC_AUDIENCE: 'philo-api',
       PHILO_OIDC_CLIENT_ID: 'philo-web',
+      PHILO_OIDC_AGENT_CLIENT_IDS: ' connector-a, ,connector-b,philo-web',
     })
     expect(config).toEqual({
       port: 8080,
@@ -33,6 +34,8 @@ describe('loadConfig', () => {
         issuer: 'https://idp.example.com/realms/philo',
         audience: 'philo-api',
         clientId: 'philo-web',
+        // Trimmed, blanks dropped, and the operator's own client never doubles as an agent.
+        agentClientIds: ['connector-a', 'connector-b'],
       },
     })
   })

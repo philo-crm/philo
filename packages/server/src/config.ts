@@ -32,6 +32,12 @@ export interface ExternalIdpConfig {
   audience: string | undefined
   /** The PWA's client id at that IdP: tokens it holds carry operator authority. */
   clientId: string
+  /**
+   * Other clients at that IdP allowed in as agents. Empty by default: an IdP
+   * issues tokens to every application registered with it, and only the ones
+   * named here are this CRM's agents. Everything else is refused.
+   */
+  agentClientIds: string[]
 }
 
 const DEFAULT_PORT = 3000
@@ -86,7 +92,16 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
   // apart from the validation.
   parseUrl('PHILO_OIDC_ISSUER', issuer)
   const audience = env['PHILO_OIDC_AUDIENCE']
-  return { issuer, clientId, audience: audience === undefined || audience === '' ? undefined : audience }
+  const agentClientIds = (env['PHILO_OIDC_AGENT_CLIENT_IDS'] ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id !== '' && id !== clientId)
+  return {
+    issuer,
+    clientId,
+    audience: audience === undefined || audience === '' ? undefined : audience,
+    agentClientIds,
+  }
 }
 
 /**

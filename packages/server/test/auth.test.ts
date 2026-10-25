@@ -166,6 +166,7 @@ describe('external IdP', () => {
       issuer: ISSUER,
       audience: 'philo-api',
       clientId: PWA_CLIENT,
+      agentClientIds: ['some-connector'],
       keys: createLocalJWKSet({ keys: [jwk] }),
     }
   })
@@ -211,7 +212,27 @@ describe('external IdP', () => {
     expect(testApp.db.select().from(users).all()).toHaveLength(1)
   })
 
-  it('treats a token held by any other client as an agent', async () => {
+  it('refuses a token held by a client nobody listed', async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    // Another application registered at the same IdP: its tokens verify, and
+    // must still get nothing here.
+    const jwt = await token({ azp: 'unrelated-app', email: 'owner@example.com' })
+    expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${jwt}`))).status).toBe(401)
+  })
+
+  it('refuses a token that names no client at all', async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    const jwt = await token({ email: 'owner@example.com' })
+    expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${jwt}`))).status).toBe(401)
+  })
+
+  it('refuses an id_token from a listed agent client too', async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    const jwt = await token({ azp: 'some-connector', typ: 'ID' })
+    expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${jwt}`))).status).toBe(401)
+  })
+
+  it('treats a token held by a listed agent client as an agent', async () => {
     const testApp = createTestApp({ externalIdp: idp })
     const jwt = await token({ azp: 'some-connector', email: 'owner@example.com' })
 

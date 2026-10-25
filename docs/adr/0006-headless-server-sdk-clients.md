@@ -92,8 +92,10 @@ exactly the HTTP handling a remote one would, auth included.
   The token's `email` claim names the account; on an instance with no account
   yet, the first valid token creates it. A token whose `azp`/`client_id` is
   `PHILO_OIDC_CLIENT_ID` — the PWA's client at that IdP — carries operator
-  authority; any other client is an agent. The PWA learns which issuer to use
-  from `GET /api/v1/auth/config`.
+  authority. Agents are allow-listed in `PHILO_OIDC_AGENT_CLIENT_IDS`; a token
+  from any other client, or naming no client, is refused. An IdP issues tokens
+  to every application registered with it, so a valid signature alone grants
+  nothing. The PWA learns which issuer to use from `GET /api/v1/auth/config`.
 
 ## Consequences
 
