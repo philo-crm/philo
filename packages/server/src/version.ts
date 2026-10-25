@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 export const VERSION: string = readVersion()
 
 function readVersion(): string {
-  const packageJsonUrl = new URL('../../package.json', import.meta.url)
+  const packageJsonUrl = new URL('../../../package.json', import.meta.url)
   const parsed: unknown = JSON.parse(readFileSync(packageJsonUrl, 'utf8'))
   const version =
     typeof parsed === 'object' && parsed !== null ? (parsed as { version?: unknown }).version : undefined

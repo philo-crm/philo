@@ -10,5 +10,5 @@ data/
 .playwright-mcp/
 node_modules/
 dist/
-server/public/
+packages/server/public/
 /target

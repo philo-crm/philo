@@ -1,6 +1,6 @@
 **/node_modules
 **/dist
-server/public
+packages/server/public
 data
 .git
 .github

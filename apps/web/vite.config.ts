@@ -79,7 +79,7 @@ export function serviceWorker(
 export default defineConfig({
   plugins: [react(), serviceWorker()],
   build: {
-    outDir: '../server/public',
+    outDir: '../../packages/server/public',
     emptyOutDir: true,
   },
   server: {

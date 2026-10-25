@@ -143,7 +143,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       # The image must actually boot and serve JSON before we publish it.
-      # `server/src/version.ts` resolves package.json relative to its own module
+      # `packages/server/src/version.ts` resolves package.json relative to its own module
       # URL, so a layout change in the runtime stage breaks /version without
       # breaking the build — only running the container catches that.
       - name: Smoke test image
