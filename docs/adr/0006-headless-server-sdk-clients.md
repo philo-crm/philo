@@ -89,8 +89,10 @@ exactly the HTTP handling a remote one would, auth included.
 - **External IdP.** With `PHILO_OIDC_ISSUER` set, the built-in dialogs and
   token endpoints are switched off and the API accepts JWT access tokens from
   that issuer, verified against its JWKS (`PHILO_OIDC_AUDIENCE`, optional).
-  The token's `email` claim names the account; on an instance with no account
-  yet, the first valid token creates it. A token whose `azp`/`client_id` is
+  The operator is bound to the token's `iss`+`sub`, never to its email, which
+  can change at the IdP. On an instance with no account yet, the first valid
+  operator token with `email_verified: true` creates it; an account from the
+  built-in IdP era is bound once, by its verified email. A token whose `azp`/`client_id` is
   `PHILO_OIDC_CLIENT_ID` — the PWA's client at that IdP — carries operator
   authority. Agents are allow-listed in `PHILO_OIDC_AGENT_CLIENT_IDS`; a token
   from any other client, or naming no client, is refused. An IdP issues tokens

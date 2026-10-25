@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, type CryptoKey } from 'jose'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { createFirstUser } from '../src/auth/credentials.ts'
 import type { ExternalIdp } from '../src/auth/external-idp.ts'
 import { accessTokens, leadEvents, users } from '../src/db/schema.ts'
 import { eq } from 'drizzle-orm'
@@ -193,12 +194,12 @@ describe('external IdP', () => {
     }
   })
 
-  function token(claims: Record<string, unknown>, options: { issuer?: string; audience?: string } = {}) {
+  function token(claims: Record<string, unknown>, options: { issuer?: string; audience?: string; subject?: string } = {}) {
     return new SignJWT(claims)
       .setProtectedHeader({ alg: 'ES256', kid: 'k1' })
       .setIssuer(options.issuer ?? ISSUER)
       .setAudience(options.audience ?? 'philo-api')
-      .setSubject('external-sub')
+      .setSubject(options.subject ?? 'external-sub')
       .setIssuedAt()
       .setExpirationTime('5m')
       .sign(privateKey)
@@ -227,9 +228,9 @@ describe('external IdP', () => {
 
   it('refuses a second person once the instance has its operator', async () => {
     const testApp = createTestApp({ externalIdp: idp })
-    await testApp.app.request('/api/v1/auth/session', as(`Bearer ${await token({ azp: PWA_CLIENT, email: 'owner@example.com' })}`))
+    await testApp.app.request('/api/v1/auth/session', as(`Bearer ${await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })}`))
 
-    const other = await token({ azp: PWA_CLIENT, email: 'someone@example.com' })
+    const other = await token({ azp: PWA_CLIENT, email: 'someone@example.com', email_verified: true }, { subject: 'someone-else' })
     expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${other}`))).status).toBe(401)
     expect(testApp.db.select().from(users).all()).toHaveLength(1)
   })
@@ -271,6 +272,7 @@ describe('external IdP', () => {
     ['another audience', { azp: PWA_CLIENT, email: 'owner@example.com' }, { audience: 'someone-else' }],
     ['an id_token', { azp: PWA_CLIENT, email: 'owner@example.com', typ: 'ID' }, {}],
     ['an unverified email', { azp: PWA_CLIENT, email: 'owner@example.com', email_verified: false }, {}],
+    ['an email nobody vouched for', { azp: PWA_CLIENT, email: 'owner@example.com' }, {}],
     ['no email', { azp: PWA_CLIENT }, {}],
   ])('refuses %s', async (_label, claims, options) => {
     const testApp = createTestApp({ externalIdp: idp })
@@ -279,9 +281,38 @@ describe('external IdP', () => {
     expect(testApp.db.select().from(users).all()).toHaveLength(0)
   })
 
+  it('binds the operator to the subject, so a changed email at the IdP still signs them in', async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    await testApp.app.request('/api/v1/auth/session', as(`Bearer ${await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })}`))
+
+    const renamed = await token({ azp: PWA_CLIENT, email: 'new-address@example.com', email_verified: true })
+    expect(await (await testApp.app.request('/api/v1/auth/session', as(`Bearer ${renamed}`))).json()).toMatchObject({
+      user: { id: 1, email: 'owner@example.com' },
+    })
+  })
+
+  it('refuses another subject that claims the operator\'s email', async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    await testApp.app.request('/api/v1/auth/session', as(`Bearer ${await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })}`))
+
+    const impostor = await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true }, { subject: 'impostor' })
+    expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${impostor}`))).status).toBe(401)
+  })
+
+  it('binds an account from the built-in IdP era by its verified email, once', async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    createFirstUser(testApp.db, { email: ADMIN_EMAIL, passwordHash: 'unused', name: 'Admin' })
+    const jwt = await token({ azp: PWA_CLIENT, email: ADMIN_EMAIL, email_verified: true })
+    expect(await (await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))).json()).toMatchObject({
+      user: { id: 1, email: ADMIN_EMAIL },
+    })
+    const [row] = testApp.db.select().from(users).all()
+    expect(row?.externalSubject).toBe(`${ISSUER} external-sub`)
+  })
+
   it('still accepts API keys', async () => {
     const testApp = createTestApp({ externalIdp: idp })
-    const operator = await token({ azp: PWA_CLIENT, email: 'owner@example.com' })
+    const operator = await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })
     const minted = await testApp.app.request('/api/v1/api-keys', as(`Bearer ${operator}`, jsonPost({ name: 'cron' })))
     const { secret } = (await minted.json()) as { secret: string }
 

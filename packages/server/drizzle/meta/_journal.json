@@ -36,6 +36,13 @@
       "when": 1792963905652,
       "tag": "0004_authorization_code_nonce",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792965277691,
+      "tag": "0005_user_external_subject",
+      "breakpoints": true
     }
   ]
 }

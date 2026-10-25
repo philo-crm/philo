@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from 'jose'
 import type { ExternalIdpConfig } from '../config.ts'
 import type { Db } from '../db/index.ts'
@@ -96,36 +96,68 @@ export async function verifyExternalToken(
     return idp.agentClientIds.includes(clientId) ? { kind: 'agent', clientId } : undefined
   }
 
-  if (claims['email_verified'] === false) return undefined
-  const email = normalizeEmail(claims['email'])
-  if (email === undefined) return undefined
-  const user = await findOrProvisionOperator(db, email, claims['name'])
+  if (typeof claims.sub !== 'string' || claims.sub === '') return undefined
+  const user = await findOrProvisionOperator(db, `${idp.issuer} ${claims.sub}`, claims)
   return user === undefined ? undefined : { kind: 'operator', user }
 }
 
+const USER_COLUMNS = { id: users.id, email: users.email, name: users.name }
+
+/** Positive proof only: a provider that says nothing about the address has not vouched for it. */
+function verifiedEmail(claims: JWTPayload): string | undefined {
+  if (claims['email_verified'] !== true) return undefined
+  return normalizeEmail(claims['email'])
+}
+
 /**
- * The account an operator token names, by email. On an instance with no
- * account yet, the first valid operator token creates one — the external
- * equivalent of first-boot setup, and bounded the same way: only someone the
- * operator's IdP issues a token to, for the operator's own client, gets here.
+ * The operator an external token names. Bound to the IdP's stable subject —
+ * an email address can be changed at the IdP, `iss`+`sub` cannot — and the
+ * email is consulted only to make that binding, never to match afterwards:
+ *
+ * - **Known subject:** that account.
+ * - **No account yet:** the first operator token with a verified email creates
+ *   one — the external equivalent of first-boot setup, bounded the same way:
+ *   only someone the operator's IdP issues a token to, for the operator's own
+ *   client, gets here.
+ * - **An account never bound** (an instance that used the built-in IdP until
+ *   now): a verified email matching it binds it, once.
+ *
+ * Anything else — a second person, an address already bound to another
+ * subject — is refused.
  */
-async function findOrProvisionOperator(db: Db, email: string, rawName: unknown): Promise<SessionUser | undefined> {
-  const byEmail = () =>
-    db.select({ id: users.id, email: users.email, name: users.name }).from(users).where(eq(users.email, email)).all()
-  const [existing] = byEmail()
-  if (existing !== undefined) return existing
-  if (db.select({ id: users.id }).from(users).limit(1).all().length > 0) return undefined
+async function findOrProvisionOperator(
+  db: Db,
+  subject: string,
+  claims: JWTPayload,
+): Promise<SessionUser | undefined> {
+  const [bound] = db.select(USER_COLUMNS).from(users).where(eq(users.externalSubject, subject)).all()
+  if (bound !== undefined) return bound
+
+  const email = verifiedEmail(claims)
+  if (email === undefined) return undefined
+
+  if (db.select({ id: users.id }).from(users).limit(1).all().length > 0) {
+    const [unbound] = db
+      .update(users)
+      .set({ externalSubject: subject })
+      .where(and(eq(users.email, email), isNull(users.externalSubject)))
+      .returning(USER_COLUMNS)
+      .all()
+    return unbound
+  }
 
   // A password nobody knows: the built-in sign-in is switched off in this mode,
   // and if it is ever switched back on the operator resets rather than inherits.
   const passwordHash = await hashPassword(`external-idp:${randomUUID()}`)
+  const rawName = claims['name']
   const name = typeof rawName === 'string' && rawName.trim() !== '' ? rawName.trim().slice(0, 200) : null
   return db.transaction((tx) => {
-    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return byEmail()[0]
+    // Lost a race with another first token: whoever won is the operator.
+    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return undefined
     const [created] = tx
       .insert(users)
-      .values({ email, passwordHash, name })
-      .returning({ id: users.id, email: users.email, name: users.name })
+      .values({ email, passwordHash, name, externalSubject: subject })
+      .returning(USER_COLUMNS)
       .all()
     return created
   })

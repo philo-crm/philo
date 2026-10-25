@@ -143,6 +143,12 @@ export const users = sqliteTable('users', {
   /** argon2id. */
   passwordHash: text('password_hash').notNull(),
   name: text('name'),
+  /**
+   * `<iss> <sub>` from an external IdP — ADR-0006. The stable identity the
+   * operator is bound to once seen; an email address can change at the IdP,
+   * this cannot.
+   */
+  externalSubject: text('external_subject').unique(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 })

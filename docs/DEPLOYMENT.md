@@ -133,9 +133,14 @@ discovery documents answer 404.
 2. Set `PHILO_OIDC_ISSUER` to the provider's issuer exactly as its tokens state
    it, `PHILO_OIDC_CLIENT_ID` to that client's id, and `PHILO_OIDC_AUDIENCE` to
    the audience its access tokens carry. The provider must issue JWT access
-   tokens that include `email` and `azp` (or `client_id`).
-3. The first operator token on an empty instance creates the account from its
-   `email` claim. After that, only that email is the operator.
+   tokens that include `sub`, `email`, `email_verified` and `azp` (or
+   `client_id`).
+3. The first operator token on an empty instance, with a verified email,
+   creates the account and binds it to that token's subject. From then on the
+   subject is the operator — changing the email at the provider changes
+   nothing, and another person with the same address gets nothing. An
+   existing account from the built-in IdP is bound the same way, once, by its
+   verified email.
 
 API keys keep working. MCP connectors that want OAuth must be registered at the
 provider and listed in `PHILO_OIDC_AGENT_CLIENT_IDS`; everything else the
