@@ -30,7 +30,7 @@ const MAX_FAILURE_DETAIL = 400
 export interface EmailDeps {
   db: Db
   /** Builds `{{lead_url}}`, so the operator's notification links somewhere real. */
-  publicBaseUrl: string
+  appUrl: string
   /** Tests substitute one. Production leaves it unset and gets SMTP. */
   createSender?: EmailSenderFactory | undefined
   /** Attempt count and backoff curve. Defaults are the production ones. */
@@ -302,7 +302,7 @@ async function attemptNewLeadEmails(deps: EmailDeps, leadId: number): Promise<Se
     const context = buildContext(lead, {
       businessName: config.businessName,
       fromName: config.fromName,
-      publicBaseUrl: deps.publicBaseUrl,
+      appUrl: deps.appUrl,
     })
     const send = (deps.createSender ?? smtpSender)(config)
 

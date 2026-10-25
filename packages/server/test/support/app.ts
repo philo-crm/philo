@@ -1,11 +1,12 @@
 import { serve, type ServerType } from '@hono/node-server'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../../src/app.ts'
+import { createFirstUser } from '../../src/auth/credentials.ts'
+import type { ExternalIdp } from '../../src/auth/external-idp.ts'
+import { hashPassword } from '../../src/auth/password.ts'
 import type { AuthTuning } from '../../src/auth/routes.ts'
-import { loadOrCreateSessionKey } from '../../src/auth/session-key.ts'
-import { SESSION_COOKIE_NAME } from '../../src/auth/session.ts'
 import { openDatabase, type Db } from '../../src/db/index.ts'
 import { intakeForms } from '../../src/db/schema.ts'
 import {
@@ -16,14 +17,17 @@ import {
 import type { EmailSenderFactory, OutgoingEmail } from '../../src/email/transport.ts'
 import type { IntakeTuning } from '../../src/intake/routes.ts'
 import type { CreatedLead } from '../../src/notify.ts'
+import { FIRST_PARTY_CLIENT_ID } from '../../src/oauth/first-party.ts'
+import { loadOrCreateSigningKey, type SigningKey } from '../../src/oauth/signing-key.ts'
+import { issueTokens, MCP_SCOPE } from '../../src/oauth/tokens.ts'
 import { loadOrCreateVapidKeys } from '../../src/push/keys.ts'
 
 export interface TestApp {
   app: ReturnType<typeof createApp>
   db: Db
   dataDir: string
-  publicDir: string
   vapidPublicKey: string
+  signingKey: SigningKey
 }
 
 const dataDirs: string[] = []
@@ -36,65 +40,53 @@ export function cleanupTestApps(): void {
 }
 
 /**
- * A minimal stand-in for the Vite build, so static-asset routes have something
- * to serve. `withPwaFiles: false` models a build that never emitted them.
- */
-export function createPublicDir({ withPwaFiles = true } = {}): string {
-  const dir = mkdtempSync(join(tmpdir(), 'philo-public-'))
-  dataDirs.push(dir)
-  mkdirSync(join(dir, 'assets'))
-  writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Philo</title>')
-  writeFileSync(join(dir, 'app.js'), 'console.log("philo")')
-  writeFileSync(join(dir, 'assets', 'index-abc123.js'), 'console.log("hashed")')
-  if (withPwaFiles) {
-    writeFileSync(join(dir, 'sw.js'), 'self.addEventListener("push", () => {})')
-    writeFileSync(join(dir, 'manifest.webmanifest'), '{"name":"Philo","short_name":"Philo"}')
-  }
-  return dir
-}
-
-/**
  * Throttle delays shrunk to ~nothing. The curve is unit-tested directly; making
  * the route tests sleep the production seconds would buy nothing.
  */
 const FAST_THROTTLE = { baseDelayMs: 1, maxDelayMs: 2 }
 
-/** What `{{lead_url}}` resolves against in tests, mirroring the config default. */
+/** The issuer and API origin in tests, mirroring the config default. */
 export const TEST_PUBLIC_BASE_URL = 'http://localhost:3000'
+
+/** What `{{lead_url}}` resolves against: where the PWA is served. */
+export const TEST_APP_URL = 'http://localhost:3000'
 
 export function createTestApp(
   options: {
     publicBaseUrl?: string
-    cookieSecure?: boolean
+    appUrl?: string
+    mcpUrl?: string
+    externalIdp?: ExternalIdp | undefined
     authTuning?: AuthTuning
     intakeTuning?: IntakeTuning | undefined
     onLeadCreated?: ((lead: CreatedLead) => void) | undefined
     createEmailSender?: EmailSenderFactory | undefined
     trustProxy?: boolean
-    publicDir?: string
   } = {},
 ): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
   dataDirs.push(dataDir)
   const db = openDatabase(dataDir)
   openDbs.push(db)
-  const publicDir = options.publicDir ?? createPublicDir()
   const tuning = options.authTuning ?? {}
   const vapidPublicKey = loadOrCreateVapidKeys(dataDir).keys.publicKey
+  const signingKey = loadOrCreateSigningKey(dataDir)
+  const publicBaseUrl = options.publicBaseUrl ?? TEST_PUBLIC_BASE_URL
   const app = createApp({
     db,
-    sessionKey: loadOrCreateSessionKey(dataDir),
-    publicBaseUrl: options.publicBaseUrl ?? TEST_PUBLIC_BASE_URL,
+    publicBaseUrl,
+    appUrl: options.appUrl ?? TEST_APP_URL,
+    mcpUrl: options.mcpUrl ?? `${publicBaseUrl}/mcp`,
+    signingKey,
+    externalIdp: options.externalIdp,
     vapidPublicKey,
-    cookieSecure: options.cookieSecure ?? false,
     trustProxy: options.trustProxy ?? false,
-    publicDir,
     authTuning: { ...tuning, throttle: { ...FAST_THROTTLE, ...tuning.throttle } },
     intakeTuning: options.intakeTuning,
     onLeadCreated: options.onLeadCreated,
     createEmailSender: options.createEmailSender,
   })
-  return { app, db, dataDir, publicDir, vapidPublicKey }
+  return { app, db, dataDir, vapidPublicKey, signingKey }
 }
 
 /** Enough stored settings for `isEmailConfigured` to be true. */
@@ -192,60 +184,54 @@ export function createIntakeForm(
   return formKey
 }
 
-/** Same origin as the URL `app.request()` builds, so `csrf()` treats calls as first-party. */
-export const TEST_ORIGIN = 'http://localhost'
-
 export function jsonPost(body: unknown, headers: Record<string, string> = {}): RequestInit {
   return {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: TEST_ORIGIN, ...headers },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   }
-}
-
-/**
- * The last `Set-Cookie` line for the session cookie. Last, not first, because a
- * response can carry more than one for the same name — a request presenting a
- * dead cookie has it cleared by the middleware and re-set by the handler — and a
- * browser's jar ends up holding whichever came last.
- */
-export function sessionCookieAttributes(res: Response): string | undefined {
-  return res.headers.getSetCookie().findLast((raw) => raw.startsWith(`${SESSION_COOKIE_NAME}=`))
-}
-
-/**
- * The session cookie's `name=value` pair, ready to send back as a `Cookie`
- * header. Undefined when the response cleared the cookie or never set one.
- */
-export function sessionCookie(res: Response): string | undefined {
-  const raw = sessionCookieAttributes(res)
-  if (raw === undefined) return undefined
-  const [pair] = raw.split(';')
-  if (pair === undefined) return undefined
-  const value = pair.slice(`${SESSION_COOKIE_NAME}=`.length)
-  return value.length > 0 ? pair : undefined
 }
 
 export const ADMIN_EMAIL = 'admin@example.com'
 export const ADMIN_PASSWORD = 'correct-horse-battery-staple'
 
-/** Completes first-boot setup and returns the resulting session cookie. */
+/**
+ * Creates the operator account directly, as first-boot setup would, and
+ * returns an `Authorization` header value for an operator token — what the PWA
+ * holds after signing in. The dialog that does this for real is covered in
+ * oauth.test.ts.
+ */
 export async function setupAdmin(
   testApp: TestApp,
   email = ADMIN_EMAIL,
   password = ADMIN_PASSWORD,
 ): Promise<string> {
-  const res = await testApp.app.request('/api/v1/auth/setup', jsonPost({ email, password, name: 'Admin' }))
-  if (res.status !== 201) throw new Error(`setup failed: ${res.status} ${await res.text()}`)
-  const cookie = sessionCookie(res)
-  if (cookie === undefined) throw new Error('setup did not set a session cookie')
-  return cookie
+  const user = createFirstUser(testApp.db, { email, passwordHash: await hashPassword(password), name: 'Admin' })
+  if (user === undefined) throw new Error('setup failed: an account already exists')
+  return operatorAuth(testApp, user.id)
 }
 
-export async function login(
-  testApp: TestApp,
-  email = ADMIN_EMAIL,
-  password = ADMIN_PASSWORD,
-): Promise<Response> {
-  return testApp.app.request('/api/v1/auth/login', jsonPost({ email, password }))
+/** A fresh operator token for an existing account. */
+export function operatorAuth(testApp: TestApp, userId: number): string {
+  const { accessToken } = issueTokens(testApp.db, {
+    clientId: FIRST_PARTY_CLIENT_ID,
+    userId,
+    resource: null,
+    scope: 'openid operator',
+  })
+  return `Bearer ${accessToken}`
+}
+
+/**
+ * An agent token from a dynamically registered connector — the same authority
+ * as an API key. Registers the client row the token references.
+ */
+export async function agentAuth(testApp: TestApp, userId: number): Promise<{ authorization: string; clientId: string }> {
+  const res = await testApp.app.request(
+    '/oauth/register',
+    jsonPost({ redirect_uris: ['https://client.example.com/cb'], token_endpoint_auth_method: 'none' }),
+  )
+  const { client_id: clientId } = (await res.json()) as { client_id: string }
+  const { accessToken } = issueTokens(testApp.db, { clientId, userId, resource: null, scope: MCP_SCOPE })
+  return { authorization: `Bearer ${accessToken}`, clientId }
 }

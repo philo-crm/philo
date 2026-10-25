@@ -195,14 +195,14 @@ export interface TemplatePreview {
  */
 function previewContext(
   db: Db,
-  publicBaseUrl: string,
+  appUrl: string,
   rawLeadId: unknown,
 ): TemplateResult<{ context: TemplateContext; leadId: number | null }> {
   const config = readEmailSettings(db)
   const options = {
     businessName: config.businessName,
     fromName: config.fromName,
-    publicBaseUrl,
+    appUrl,
   }
 
   if (rawLeadId === undefined || rawLeadId === null) {
@@ -223,7 +223,7 @@ function previewContext(
  */
 export function previewEmailTemplate(
   db: Db,
-  publicBaseUrl: string,
+  appUrl: string,
   trigger: EmailTrigger,
   input: Record<string, unknown>,
 ): TemplateResult<TemplatePreview> {
@@ -233,7 +233,7 @@ export function previewEmailTemplate(
   const draft = applyPatch(fieldsOf(stored), input)
   if (!draft.ok) return draft
 
-  const resolved = previewContext(db, publicBaseUrl, input['leadId'])
+  const resolved = previewContext(db, appUrl, input['leadId'])
   if (!resolved.ok) return resolved
 
   const subject = renderSubjectResult(draft.value.subject, resolved.value.context)
@@ -256,7 +256,7 @@ export function previewEmailTemplate(
  */
 export function updateEmailTemplate(
   db: Db,
-  publicBaseUrl: string,
+  appUrl: string,
   trigger: EmailTrigger,
   patch: Record<string, unknown>,
 ): TemplateResult<EmailTemplateRecord> {
@@ -273,7 +273,7 @@ export function updateEmailTemplate(
   // question here is whether the template is well-formed, and one lead's data
   // must not be what decides whether a save is allowed.
   if ('subject' in patch || 'body' in patch) {
-    const rendered = previewEmailTemplate(db, publicBaseUrl, trigger, {
+    const rendered = previewEmailTemplate(db, appUrl, trigger, {
       subject: next.value.subject,
       body: next.value.body,
     })

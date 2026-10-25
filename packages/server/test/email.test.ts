@@ -22,7 +22,6 @@ import {
   recordingSender,
   setupAdmin,
   TEST_EMAIL_SETTINGS,
-  TEST_ORIGIN,
   type TestApp,
 } from './support/app.ts'
 
@@ -86,7 +85,7 @@ function byTemplate(sent: OutgoingEmail[], subjectFragment: string): OutgoingEma
 function onceDeps(testApp: TestApp, factory: EmailSenderFactory): EmailDeps {
   return {
     db: testApp.db,
-    publicBaseUrl: PUBLIC_BASE_URL,
+    appUrl: PUBLIC_BASE_URL,
     createSender: factory,
     retry: { maxAttempts: 1, jitterRatio: 0 },
   }
@@ -382,7 +381,7 @@ describe('retrying a failed send', () => {
   function retryDeps(testApp: TestApp, factory: EmailSenderFactory, schedule: ScheduleRetry, attempts = 5) {
     return {
       db: testApp.db,
-      publicBaseUrl: PUBLIC_BASE_URL,
+      appUrl: PUBLIC_BASE_URL,
       createSender: factory,
       retry: { maxAttempts: attempts, jitterRatio: 0 },
       scheduleRetry: schedule,
@@ -637,7 +636,7 @@ describe('promotion out of quarantine', () => {
         pending = sendNewLeadEmails(onceDeps(testApp, sender.factory), lead.id)
       },
     })
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
     const leadId = await submitLead(testApp, {
       name: 'Dana Rivers',
@@ -649,7 +648,7 @@ describe('promotion out of quarantine', () => {
     const promote = () =>
       testApp.app.request(`/api/v1/leads/${leadId}/not-spam`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', origin: TEST_ORIGIN, cookie },
+        headers: { 'content-type': 'application/json', authorization },
         body: '{}',
       })
 

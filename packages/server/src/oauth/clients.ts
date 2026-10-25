@@ -1,9 +1,10 @@
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js'
 import { OAuthClientMetadataSchema } from '@modelcontextprotocol/sdk/shared/auth.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { and, asc, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, lt, ne, notExists, sql } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { accessTokens, authorizationCodes, oauthClients, refreshTokens } from '../db/schema.ts'
+import { FIRST_PARTY_CLIENT_ID } from './first-party.ts'
 
 const SECRET_BYTES = 32
 
@@ -210,10 +211,12 @@ function countClients(db: Db): number {
 /**
  * "Unused" means holding no token and no live authorization code — the rows
  * that cascade from `oauth_clients`. Everything that deletes a registration is
- * qualified by this, so none of it can reach a working connector.
+ * qualified by this, so none of it can reach a working connector. The PWA's own
+ * row is never a candidate: it is configuration, not a registration.
  */
 function isUnused(db: Db) {
   return and(
+    ne(oauthClients.clientId, FIRST_PARTY_CLIENT_ID),
     notExists(
       db.select({ one: sql`1` }).from(accessTokens).where(eq(accessTokens.clientId, oauthClients.clientId)),
     ),

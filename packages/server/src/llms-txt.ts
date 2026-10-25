@@ -14,8 +14,9 @@ import { VERSION } from './version.ts'
  * Nothing here is a secret: every path is fixed by the code or by an RFC, and
  * the base URL is the one the caller already used to ask.
  */
-export function llmsTxt(publicBaseUrl: string): string {
+export function llmsTxt(publicBaseUrl: string, mcpUrl: string): string {
   const base = publicBaseUrl.replace(/\/+$/, '')
+  const mcp = mcpUrl.replace(/\/+$/, '')
   return `# Philo
 
 > Philo is a self-hosted CRM that serves exactly one business. Leads arrive from
@@ -37,15 +38,15 @@ its own name from the next lead onwards.
 
 ## Surfaces
 
-- ${base}/mcp — MCP over streamable HTTP, POST only. The agent surface; start here.
-- ${base}/api/v1/... — REST over the same service layer and the same data.
+- ${mcp} — MCP over streamable HTTP, POST only. The agent surface; start here.
+- ${base}/api/v1/... — REST: the API itself. MCP is a client of it.
 - ${base}/api/intake/{form_key} — public form intake. No credential, and not for you.
 - ${base}/version — {"name":"philo","version":"..."}. No credential.
 - ${base}/llms.txt — this file.
 
-Prefer MCP. It carries the tool schemas, the same validation, and instructions
-this file would otherwise have to repeat. REST is there for a script that has no
-MCP client.
+Prefer MCP. It carries the tool schemas and instructions this file would
+otherwise have to repeat. REST is there for a script that has no MCP client; the
+TypeScript SDK, \`@philo/sdk\` in the repository, is the typed way to call it.
 
 ## Credentials
 
@@ -53,28 +54,30 @@ Both machine surfaces take \`Authorization: Bearer <token>\`. Two kinds of token
 work, and neither is the operator's password:
 
 1. **An API key**, created by the operator in the app under Settings and shown
-   exactly once. Starts \`philo_\`. Reaches /mcp and /api/v1.
+   exactly once. Starts \`philo_\`.
 2. **An OAuth 2.1 access token**, for a connector client that will not hold a
-   static key. Reaches /mcp only.
+   static key.
 
-A browser session cookie also authenticates /api/v1 — that is how the app itself
-calls it — but it is not something to obtain programmatically.
+Both reach MCP and /api/v1 with the same authority. MCP forwards your token to
+the API unchanged, so what one refuses the other refuses too.
 
 ### OAuth, if you need it
 
-POST /mcp without a token answers 401 and a \`WWW-Authenticate\` header naming
-the protected-resource metadata. From there it is the ordinary discovery chain,
-with everything on this same origin:
+POST to the MCP endpoint without a token answers 401 and a \`WWW-Authenticate\`
+header naming the protected-resource metadata. From there it is the ordinary
+discovery chain:
 
-- ${base}/.well-known/oauth-protected-resource/mcp (RFC 9728)
-- ${base}/.well-known/oauth-authorization-server (RFC 8414)
+- ${mcp.replace(/\/mcp$/, '')}/.well-known/oauth-protected-resource/mcp (RFC 9728)
+- ${base}/.well-known/openid-configuration (OIDC Discovery; RFC 8414 at
+  /.well-known/oauth-authorization-server)
 - ${base}/oauth/register — dynamic client registration (RFC 7591), open
 - ${base}/oauth/authorize — authorization code + PKCE, S256 only
 - ${base}/oauth/token — code exchange and refresh
 
-One scope, \`mcp\`; a requested scope is not honoured and the token response says
-so. Access tokens last an hour, refresh tokens thirty days. The operator signs in
-and consents on one page, so an unattended client cannot complete the flow.
+Your client is granted \`mcp\` whatever it asks for (plus \`openid\` if you
+ask), and the token response says so. Access tokens last an hour, refresh
+tokens thirty days. The operator signs in and consents on one page, so an
+unattended client cannot complete the flow.
 
 ## What you can do over MCP
 
@@ -90,13 +93,14 @@ Call \`tools/list\` for the schemas. In outline:
 ## The REST surface
 
 Every path below is under ${base}/api/v1, answers JSON, and refuses an
-unauthenticated caller with 401. A state-changing request must send
-\`Content-Type: application/json\` — anything else is 415.
+unauthenticated caller with 401. Bodies are JSON.
 
 - GET /leads — \`?stage=&form=&spam=&search=&createdAfter=&createdBefore=&limit=&offset=\`.
   Newest first, with a total. \`limit\` defaults to 50, maximum 200. \`spam\`
   defaults to false, so the quarantine is opt-in. A filter that does not parse is
   a 400, never a filter silently dropped.
+- POST /leads — files a lead by hand: \`name\`, \`email\`, \`phone\`, \`source\`,
+  \`stageId\`, \`fields\`. At least one of email or phone. Sends no email.
 - GET /leads/{id} — the lead and its timeline.
 - PATCH /leads/{id} — \`name\`, \`email\`, \`phone\`. Null clears a field; the lead
   must still have an email or a phone afterwards. The submitted \`fields\` are the
@@ -108,13 +112,10 @@ unauthenticated caller with 401. A state-changing request must send
 - GET /stages, POST /stages, PATCH /stages/{id}, DELETE /stages/{id},
   POST /stages/reorder — the funnel. A stage holding leads will not delete, and
   neither will the last one left.
-- GET /settings/email/templates, PATCH /settings/email/templates/{trigger},
+- GET /settings/email/templates, GET and PATCH /settings/email/templates/{trigger},
   POST /settings/email/templates/{trigger}/preview — the two templates.
 
-Note there is no \`POST /leads\`. A lead is either submitted through an intake
-form or entered through MCP's \`create_lead\`.
-
-An API key deliberately does not reach a few routes that a signed-in operator
+An agent credential deliberately does not reach a few routes that the operator
 does: creating or revoking API keys, push subscriptions, the mail server
 settings, and the test-send. Those answer 403 \`session_required\` — the
 credential is fine, the route is not for it, so do not re-authenticate.

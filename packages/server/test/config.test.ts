@@ -16,13 +16,40 @@ describe('loadConfig', () => {
       PHILO_DATA_DIR: '/srv/philo-data',
       PHILO_PUBLIC_BASE_URL: 'https://crm.example.com',
       PHILO_TRUSTED_PROXY: 'true',
+      PHILO_APP_URL: 'https://app.example.com/',
+      PHILO_MCP_URL: 'https://agents.example.com/mcp',
+      PHILO_OIDC_ISSUER: 'https://idp.example.com/realms/philo',
+      PHILO_OIDC_AUDIENCE: 'philo-api',
+      PHILO_OIDC_CLIENT_ID: 'philo-web',
     })
     expect(config).toEqual({
       port: 8080,
       dataDir: '/srv/philo-data',
       publicBaseUrl: 'https://crm.example.com',
       trustProxy: true,
+      appUrl: 'https://app.example.com',
+      mcpUrl: 'https://agents.example.com/mcp',
+      externalIdp: {
+        issuer: 'https://idp.example.com/realms/philo',
+        audience: 'philo-api',
+        clientId: 'philo-web',
+      },
     })
+  })
+
+  it('serves the app and the MCP endpoint from the public base URL by default', () => {
+    const config = loadConfig({ PHILO_PUBLIC_BASE_URL: 'https://crm.example.com' })
+    expect(config.appUrl).toBe('https://crm.example.com')
+    expect(config.mcpUrl).toBe('https://crm.example.com/mcp')
+    expect(config.externalIdp).toBeUndefined()
+  })
+
+  it('refuses an external issuer without the client id that marks the operator', () => {
+    expect(() => loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com' })).toThrow(/PHILO_OIDC_CLIENT_ID/)
+  })
+
+  it('refuses an issuer that is not a URL', () => {
+    expect(() => loadConfig({ PHILO_OIDC_ISSUER: 'idp', PHILO_OIDC_CLIENT_ID: 'x' })).toThrow(/PHILO_OIDC_ISSUER/)
   })
 
   it('trusts no proxy unless told to', () => {

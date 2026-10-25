@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server'
 import { createApp } from './app.ts'
-import { loadOrCreateSessionKey } from './auth/session-key.ts'
+import { createExternalIdp } from './auth/external-idp.ts'
 import { loadConfig } from './config.ts'
 import { openDatabase } from './db/index.ts'
 import { createLeadEmailHook, sweepUnsentEmails } from './email/service.ts'
@@ -8,6 +8,7 @@ import { isEmailConfigured, readEmailSettings } from './email/settings.ts'
 import { HONEYPOT_FIELD } from './intake/payload.ts'
 import { intakeUrls } from './intake/routes.ts'
 import { combineLeadCreatedHooks } from './notify.ts'
+import { loadOrCreateSigningKey } from './oauth/signing-key.ts'
 import { loadOrCreateVapidKeys } from './push/keys.ts'
 import { createLeadPushHook, resetSubscriptionsForNewKeys } from './push/service.ts'
 import { VERSION } from './version.ts'
@@ -19,25 +20,24 @@ const config = loadConfig()
 const db = openDatabase(config.dataDir)
 
 // After openDatabase, which is what creates the data dir.
-const sessionKey = loadOrCreateSessionKey(config.dataDir)
+const signingKey = loadOrCreateSigningKey(config.dataDir)
 
-// A Secure cookie is never returned over plain http, so following the deployment's
-// own base URL is what keeps localhost dev working without a special case.
-const cookieSecure = config.publicBaseUrl.startsWith('https://')
-
-const emailDeps = { db, publicBaseUrl: config.publicBaseUrl }
+// Links in emails and notifications open the PWA, wherever it is served.
+const emailDeps = { db, appUrl: config.appUrl }
 
 // Also after openDatabase, for the data dir.
 const vapid = loadOrCreateVapidKeys(config.dataDir)
 resetSubscriptionsForNewKeys(db, vapid)
 
-const pushDeps = { db, publicBaseUrl: config.publicBaseUrl, vapidKeys: vapid.keys }
+const pushDeps = { db, appUrl: config.appUrl, vapidKeys: vapid.keys }
 
 const app = createApp({
   db,
-  sessionKey,
-  cookieSecure,
   publicBaseUrl: config.publicBaseUrl,
+  appUrl: config.appUrl,
+  mcpUrl: config.mcpUrl,
+  signingKey,
+  externalIdp: config.externalIdp === undefined ? undefined : createExternalIdp(config.externalIdp),
   vapidPublicKey: vapid.keys.publicKey,
   trustProxy: config.trustProxy,
   // Email is the guaranteed notification channel and push is the fast one —
@@ -46,8 +46,14 @@ const app = createApp({
 })
 
 serve({ fetch: app.fetch, port: config.port }, () => {
-  console.log(`philo ${VERSION} listening on port ${config.port}`)
+  console.log(`philo ${VERSION} (headless API) listening on port ${config.port}`)
   console.log(`  public base url: ${config.publicBaseUrl}`)
+  console.log(`  app url:         ${config.appUrl}`)
+  console.log(
+    config.externalIdp === undefined
+      ? `  identity:        built-in IdP at ${config.publicBaseUrl}/oauth`
+      : `  identity:        external IdP ${config.externalIdp.issuer} (operator client ${config.externalIdp.clientId})`,
+  )
   console.log(`  data dir:        ${config.dataDir}`)
   console.log(`  database:        ${db.$client.name}`)
   // The only place a form key is surfaced until there is a forms UI. Printed
@@ -58,19 +64,6 @@ serve({ fetch: app.fetch, port: config.port }, () => {
     console.log(`  intake form:     ${url}`)
   }
   console.log(`  honeypot field:  ${HONEYPOT_FIELD} (render it hidden; a filled one is filed as spam)`)
-  // The only place the agent surface is surfaced. Nothing in the UI names it,
-  // and an operator pointing Claude Code at this instance needs the URL and the
-  // fact that it wants an API key from Settings, not their password.
-  console.log(
-    `  mcp endpoint:    ${config.publicBaseUrl.replace(/\/+$/, '')}/mcp (authenticate with an API key from Settings)`,
-  )
-  // The same URL is what a claude.ai-style connector is pointed at: it finds the
-  // authorization server from the 401 and registers itself, so nothing else has
-  // to be configured — but only if PHILO_PUBLIC_BASE_URL is what the client can
-  // actually reach, since every advertised endpoint is built from it.
-  console.log(
-    '                   a connector client that wants OAuth uses the same URL and signs in on the consent page',
-  )
   // Email is the channel a missed lead is missed through, and an unconfigured
   // instance looks identical to a working one from the outside — every send is
   // best-effort and nothing upstream reports it. So say so at boot.
@@ -110,15 +103,6 @@ serve({ fetch: app.fetch, port: config.port }, () => {
     console.warn(
       '  note: rate limits key on the socket address. If a reverse proxy sits in front, ' +
         'set PHILO_TRUSTED_PROXY=true so limits apply per caller instead of per deployment.',
-    )
-  }
-  if (!cookieSecure) {
-    // Easy to reach by accident: terminate TLS at a proxy but leave
-    // PHILO_PUBLIC_BASE_URL unset, and the session cookie loses `Secure`
-    // without anything else looking wrong.
-    console.warn(
-      '  warning: session cookies are not marked Secure because PHILO_PUBLIC_BASE_URL is not https. ' +
-        'Set it to the https URL you serve on before exposing this instance.',
     )
   }
 })

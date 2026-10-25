@@ -68,7 +68,7 @@ export type SendPush = (subscription: StoredSubscription, payload: string) => Pr
 export interface PushDeps {
   db: Db
   /** Builds the URL a tap opens, as it does on the email path. */
-  publicBaseUrl: string
+  appUrl: string
   vapidKeys: VapidKeys
   send?: SendPush | undefined
 }
@@ -83,7 +83,7 @@ function clamp(value: string): string {
  * The body carries whatever contact detail exists, so the operator can decide
  * whether to open the app without opening the app.
  */
-export function buildLeadNotification(lead: LeadRecord, publicBaseUrl: string): DeclarativeNotification {
+export function buildLeadNotification(lead: LeadRecord, appUrl: string): DeclarativeNotification {
   const name = lead.name?.trim() ?? ''
   const details = [lead.email, lead.phone, lead.source]
     .map((value) => value?.trim() ?? '')
@@ -93,7 +93,7 @@ export function buildLeadNotification(lead: LeadRecord, publicBaseUrl: string): 
     notification: {
       title: clamp(name === '' ? 'New lead' : `New lead: ${name}`),
       body: clamp(details.length === 0 ? 'Open Philo to see the details.' : details.join(' · ')),
-      navigate: `${publicBaseUrl.replace(/\/+$/, '')}/leads/${lead.id}`,
+      navigate: `${appUrl.replace(/\/+$/, '')}/leads/${lead.id}`,
       tag: `philo-lead-${lead.id}`,
     },
   }
@@ -153,7 +153,7 @@ export async function sendNewLeadPush(deps: PushDeps, leadId: number): Promise<v
     const send = deps.send ?? buildSender(deps)
     if (send === undefined) return
 
-    const payload = JSON.stringify(buildLeadNotification(lead, deps.publicBaseUrl))
+    const payload = JSON.stringify(buildLeadNotification(lead, deps.appUrl))
     await Promise.all(
       subscriptions.map(async (subscription) => {
         try {
@@ -170,7 +170,7 @@ export async function sendNewLeadPush(deps: PushDeps, leadId: number): Promise<v
 
 /** Undefined when there is no usable VAPID subject, which is a send that cannot be signed. */
 function buildSender(deps: PushDeps): SendPush | undefined {
-  const subject = vapidSubject(deps.publicBaseUrl, firstOperatorEmail(deps.db))
+  const subject = vapidSubject(deps.appUrl, firstOperatorEmail(deps.db))
   if (subject === undefined) {
     console.warn(
       'push: no VAPID contact could be determined, so no notification was sent. ' +

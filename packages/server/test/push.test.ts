@@ -16,7 +16,7 @@ import {
   defaultFormKey,
   jsonPost,
   setupAdmin,
-  TEST_PUBLIC_BASE_URL,
+  TEST_APP_URL,
   type TestApp,
 } from './support/app.ts'
 
@@ -30,8 +30,8 @@ const PUSH_BASE = '/api/v1/push'
 const ENDPOINT = 'https://push.example.com/subscription/abc123'
 const SUBSCRIPTION = { endpoint: ENDPOINT, keys: { p256dh: 'BNc-public-key', auth: 'auth-secret' } }
 
-function authed(cookie: string, body: unknown, method: 'POST' | 'DELETE' = 'POST'): RequestInit {
-  return { ...jsonPost(body), method, headers: { ...jsonPost(body).headers, cookie } }
+function authed(authorization: string, body: unknown, method: 'POST' | 'DELETE' = 'POST'): RequestInit {
+  return { ...jsonPost(body), method, headers: { ...jsonPost(body).headers, authorization } }
 }
 
 /** A sender that records instead of reaching a push service. */
@@ -49,7 +49,7 @@ function recordingPush(failWith?: (endpoint: string) => unknown) {
 function deps(testApp: TestApp, send: SendPush) {
   return {
     db: testApp.db,
-    publicBaseUrl: TEST_PUBLIC_BASE_URL,
+    appUrl: TEST_APP_URL,
     vapidKeys: { publicKey: testApp.vapidPublicKey, privateKey: 'private' },
     send,
   }
@@ -82,9 +82,9 @@ async function submitLead(testApp: TestApp, body: Record<string, unknown>): Prom
 describe('GET /api/v1/push/key', () => {
   it('hands back the generated VAPID public key', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const res = await testApp.app.request(PUSH_BASE + '/key', { headers: { cookie } })
+    const res = await testApp.app.request(PUSH_BASE + '/key', { headers: { authorization } })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ publicKey: testApp.vapidPublicKey })
@@ -103,9 +103,9 @@ describe('GET /api/v1/push/key', () => {
 describe('POST /api/v1/push/subscriptions', () => {
   it('stores the subscription against the signed-in user', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const res = await testApp.app.request(PUSH_BASE + '/subscriptions', authed(cookie, SUBSCRIPTION))
+    const res = await testApp.app.request(PUSH_BASE + '/subscriptions', authed(authorization, SUBSCRIPTION))
 
     expect(res.status).toBe(201)
     expect(listSubscriptions(testApp.db)).toEqual([
@@ -117,11 +117,11 @@ describe('POST /api/v1/push/subscriptions', () => {
   // rotated keys. A second row would push the same lead to one device twice.
   it('replaces the keys on a re-subscribe rather than storing a second row', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    await testApp.app.request(PUSH_BASE + '/subscriptions', authed(cookie, SUBSCRIPTION))
+    const authorization = await setupAdmin(testApp)
+    await testApp.app.request(PUSH_BASE + '/subscriptions', authed(authorization, SUBSCRIPTION))
 
     const rotated = { endpoint: ENDPOINT, keys: { p256dh: 'BNc-rotated', auth: 'auth-rotated' } }
-    const res = await testApp.app.request(PUSH_BASE + '/subscriptions', authed(cookie, rotated))
+    const res = await testApp.app.request(PUSH_BASE + '/subscriptions', authed(authorization, rotated))
 
     expect(res.status).toBe(201)
     expect(listSubscriptions(testApp.db)).toEqual([
@@ -131,11 +131,11 @@ describe('POST /api/v1/push/subscriptions', () => {
 
   it('refuses a subscription it could never send to', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       PUSH_BASE + '/subscriptions',
-      authed(cookie, { endpoint: 'http://push.example.com/abc', keys: SUBSCRIPTION.keys }),
+      authed(authorization, { endpoint: 'http://push.example.com/abc', keys: SUBSCRIPTION.keys }),
     )
 
     expect(res.status).toBe(400)
@@ -157,12 +157,12 @@ describe('POST /api/v1/push/subscriptions', () => {
 describe('DELETE /api/v1/push/subscriptions', () => {
   it('forgets the endpoint', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    await testApp.app.request(PUSH_BASE + '/subscriptions', authed(cookie, SUBSCRIPTION))
+    const authorization = await setupAdmin(testApp)
+    await testApp.app.request(PUSH_BASE + '/subscriptions', authed(authorization, SUBSCRIPTION))
 
     const res = await testApp.app.request(
       PUSH_BASE + '/subscriptions',
-      authed(cookie, { endpoint: ENDPOINT }, 'DELETE'),
+      authed(authorization, { endpoint: ENDPOINT }, 'DELETE'),
     )
 
     expect(res.status).toBe(200)
@@ -173,11 +173,11 @@ describe('DELETE /api/v1/push/subscriptions', () => {
   // reporting the truth, not making a mistake.
   it('is idempotent for an endpoint that was never stored', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       PUSH_BASE + '/subscriptions',
-      authed(cookie, { endpoint: ENDPOINT }, 'DELETE'),
+      authed(authorization, { endpoint: ENDPOINT }, 'DELETE'),
     )
 
     expect(res.status).toBe(200)
@@ -185,9 +185,9 @@ describe('DELETE /api/v1/push/subscriptions', () => {
 
   it('refuses a body with no endpoint in it', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const res = await testApp.app.request(PUSH_BASE + '/subscriptions', authed(cookie, {}, 'DELETE'))
+    const res = await testApp.app.request(PUSH_BASE + '/subscriptions', authed(authorization, {}, 'DELETE'))
 
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'invalid_subscription' })
@@ -217,7 +217,7 @@ describe('sendNewLeadPush', () => {
         title: 'New lead: Dana Rivers',
         // Intake stamps the form name as the source — see intake/routes.ts.
         body: 'dana@example.com · Default',
-        navigate: `${TEST_PUBLIC_BASE_URL}/leads/${leadId}`,
+        navigate: `${TEST_APP_URL}/leads/${leadId}`,
         tag: `philo-lead-${leadId}`,
       },
     })
@@ -298,8 +298,8 @@ describe('the lead pipeline', () => {
       void sendNewLeadPush(deps(testApp, push.send), lead.id)
     }
     testApp = createTestApp({ onLeadCreated: hook })
-    const cookie = await setupAdmin(testApp)
-    await testApp.app.request(PUSH_BASE + '/subscriptions', authed(cookie, SUBSCRIPTION))
+    const authorization = await setupAdmin(testApp)
+    await testApp.app.request(PUSH_BASE + '/subscriptions', authed(authorization, SUBSCRIPTION))
 
     const res = await testApp.app.request(
       `/api/intake/${defaultFormKey(testApp)}`,
@@ -318,8 +318,8 @@ describe('the lead pipeline', () => {
     const push = recordingPush()
     const seen: number[] = []
     const testApp = createTestApp({ onLeadCreated: (lead) => seen.push(lead.id) })
-    const cookie = await setupAdmin(testApp)
-    await testApp.app.request(PUSH_BASE + '/subscriptions', authed(cookie, SUBSCRIPTION))
+    const authorization = await setupAdmin(testApp)
+    await testApp.app.request(PUSH_BASE + '/subscriptions', authed(authorization, SUBSCRIPTION))
 
     const res = await testApp.app.request(
       `/api/intake/${defaultFormKey(testApp)}`,

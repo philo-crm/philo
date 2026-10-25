@@ -11,6 +11,7 @@ import {
 } from '../email/settings.ts'
 import {
   isEmailTrigger,
+  getEmailTemplate,
   listEmailTemplates,
   previewEmailTemplate,
   updateEmailTemplate,
@@ -23,7 +24,7 @@ import { readJsonBody } from '../json-body.ts'
 export interface SettingsRoutesDeps {
   db: Db
   /** Builds `{{lead_url}}` in a template preview, as it does on the send path. */
-  publicBaseUrl: string
+  appUrl: string
   createEmailSender?: EmailSenderFactory | undefined
 }
 
@@ -126,13 +127,20 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
 
   routes.get('/email/templates', (c) => c.json({ templates: listEmailTemplates(deps.db) }))
 
+  routes.get('/email/templates/:trigger', (c) => {
+    const trigger = c.req.param('trigger')
+    const template = isEmailTrigger(trigger) ? getEmailTemplate(deps.db, trigger) : undefined
+    if (template === undefined) return c.json({ error: 'not_found' }, 404)
+    return c.json({ template })
+  })
+
   routes.patch('/email/templates/:trigger', async (c) => {
     const trigger = c.req.param('trigger')
     if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
-    const result = updateEmailTemplate(deps.db, deps.publicBaseUrl, trigger, body)
+    const result = updateEmailTemplate(deps.db, deps.appUrl, trigger, body)
     if (!result.ok) return templateError(c, result)
     return c.json({ template: result.value })
   })
@@ -147,7 +155,7 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
-    const result = previewEmailTemplate(deps.db, deps.publicBaseUrl, trigger, body)
+    const result = previewEmailTemplate(deps.db, deps.appUrl, trigger, body)
     if (!result.ok) return templateError(c, result)
     return c.json({ preview: result.value })
   })
@@ -165,7 +173,7 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
-    const rendered = previewEmailTemplate(deps.db, deps.publicBaseUrl, trigger, body)
+    const rendered = previewEmailTemplate(deps.db, deps.appUrl, trigger, body)
     if (!rendered.ok) return templateError(c, rendered)
 
     const config = readEmailSettings(deps.db)

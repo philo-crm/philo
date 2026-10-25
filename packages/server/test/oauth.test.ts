@@ -148,23 +148,9 @@ async function connect(testApp: TestApp): Promise<{ client: RegisteredClient; to
   return { client, tokens: (await res.json()) as TokenResponse }
 }
 
-const INITIALIZE = {
-  jsonrpc: '2.0',
-  id: 1,
-  method: 'initialize',
-  params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } },
-}
-
-function mcpPost(token: string, body: unknown = INITIALIZE): RequestInit {
-  return {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-      authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-  }
+/** A bearer request to the API, which is what every issued token is for now. */
+function apiGet(token: string): RequestInit {
+  return { headers: { authorization: `Bearer ${token}` } }
 }
 
 describe('oauth discovery', () => {
@@ -185,36 +171,31 @@ describe('oauth discovery', () => {
     })
   })
 
-  it('advertises the protected resource at both paths a client may try', async () => {
+  it('serves the same document as OIDC discovery, with the OIDC endpoints', async () => {
     const testApp = createTestApp()
-    const expected = {
-      resource: RESOURCE,
-      authorization_servers: [TEST_PUBLIC_BASE_URL],
-      bearer_methods_supported: ['header'],
-    }
+    const res = await testApp.app.request('/.well-known/openid-configuration')
 
-    for (const path of [
-      '/.well-known/oauth-protected-resource',
-      '/.well-known/oauth-protected-resource/mcp',
-    ]) {
-      const res = await testApp.app.request(path)
-      expect(res.status, path).toBe(200)
-      expect(await res.json()).toMatchObject(expected)
-    }
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      issuer: TEST_PUBLIC_BASE_URL,
+      jwks_uri: `${TEST_PUBLIC_BASE_URL}/oauth/jwks`,
+      userinfo_endpoint: `${TEST_PUBLIC_BASE_URL}/oauth/userinfo`,
+      revocation_endpoint: `${TEST_PUBLIC_BASE_URL}/oauth/revoke`,
+      id_token_signing_alg_values_supported: ['ES256'],
+      scopes_supported: ['openid', 'operator', 'mcp'],
+    })
   })
 
-  it('points an unauthenticated MCP client at that metadata', async () => {
+  it('advertises the API as a protected resource of its own issuer', async () => {
     const testApp = createTestApp()
-    const res = await testApp.app.request('/mcp', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-      body: JSON.stringify(INITIALIZE),
-    })
+    const res = await testApp.app.request('/.well-known/oauth-protected-resource')
 
-    expect(res.status).toBe(401)
-    expect(res.headers.get('WWW-Authenticate')).toContain(
-      `resource_metadata="${TEST_PUBLIC_BASE_URL}/.well-known/oauth-protected-resource/mcp"`,
-    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      resource: TEST_PUBLIC_BASE_URL,
+      authorization_servers: [TEST_PUBLIC_BASE_URL],
+      bearer_methods_supported: ['header'],
+    })
   })
 
   it('404s an unknown well-known path instead of serving the app shell', async () => {
@@ -763,7 +744,7 @@ describe('oauth refresh', () => {
       .update(accessTokens)
       .set({ expiresAt: new Date(Date.now() - 1000) })
       .run()
-    expect((await testApp.app.request('/mcp', mcpPost(tokens.access_token))).status).toBe(401)
+    expect((await testApp.app.request('/api/v1/leads', apiGet(tokens.access_token))).status).toBe(401)
 
     const res = await testApp.app.request(
       '/oauth/token',
@@ -773,7 +754,7 @@ describe('oauth refresh', () => {
     const refreshed = (await res.json()) as TokenResponse
 
     expect(refreshed.access_token).not.toBe(tokens.access_token)
-    expect((await testApp.app.request('/mcp', mcpPost(refreshed.access_token))).status).toBe(200)
+    expect((await testApp.app.request('/api/v1/leads', apiGet(refreshed.access_token))).status).toBe(200)
   })
 
   it('rotates the refresh token, so the spent one stops working', async () => {
@@ -810,7 +791,9 @@ describe('oauth refresh', () => {
     // Spending it here would hand anyone who learns a token they cannot use a
     // way to break the operator's connector anyway — registration is open, so
     // authenticating as some other client costs an attacker nothing.
-    expect(testApp.db.select().from(refreshTokens).all()).toHaveLength(1)
+    expect(
+      testApp.db.select().from(refreshTokens).where(eq(refreshTokens.clientId, client.client_id)).all(),
+    ).toHaveLength(1)
     const owner = await testApp.app.request(
       '/oauth/token',
       tokenPost(client, { grant_type: 'refresh_token', refresh_token: tokens.refresh_token }),
@@ -860,38 +843,43 @@ describe('oauth refresh', () => {
   })
 })
 
-describe('oauth access at the mcp surface', () => {
-  it('lets an issued token call tools', async () => {
+describe('a connector token at the API', () => {
+  it('reaches the API with agent authority', async () => {
     const testApp = createTestApp()
     const { tokens } = await connect(testApp)
 
-    const res = await testApp.app.request(
-      '/mcp',
-      mcpPost(tokens.access_token, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
-    )
+    expect((await testApp.app.request('/api/v1/leads', apiGet(tokens.access_token))).status).toBe(200)
+    // Agent, not operator: the routes an API key cannot reach, a connector cannot either.
+    const keys = await testApp.app.request('/api/v1/api-keys', apiGet(tokens.access_token))
+    expect(keys.status).toBe(403)
+    expect(await keys.json()).toEqual({ error: 'session_required' })
+  })
 
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { result?: { tools?: unknown[] } }
-    expect(body.result?.tools?.length).toBeGreaterThan(0)
+  it('is granted mcp even when it asks for operator', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const client = await register(testApp)
+    const { verifier, challenge } = pkce()
+    const { code } = await approve(testApp, client, challenge, { scope: 'openid operator' })
+    const res = await testApp.app.request(
+      '/oauth/token',
+      tokenPost(client, { grant_type: 'authorization_code', code, code_verifier: verifier }),
+    )
+    const tokens = (await res.json()) as TokenResponse
+    expect(tokens.scope).toBe('openid mcp')
+    expect((await testApp.app.request('/api/v1/api-keys', apiGet(tokens.access_token))).status).toBe(403)
   })
 
   it('records the client on the timeline, not the operator', async () => {
     const testApp = createTestApp()
     const { client, tokens } = await connect(testApp)
 
-    const created = await testApp.app.request(
-      '/mcp',
-      mcpPost(tokens.access_token, {
-        jsonrpc: '2.0',
-        id: 3,
-        method: 'tools/call',
-        params: {
-          name: 'create_lead',
-          arguments: { name: 'Pat Applicant', email: 'pat@example.com' },
-        },
-      }),
-    )
-    expect(created.status).toBe(200)
+    const created = await testApp.app.request('/api/v1/leads', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${tokens.access_token}` },
+      body: JSON.stringify({ name: 'Pat Applicant', email: 'pat@example.com' }),
+    })
+    expect(created.status).toBe(201)
 
     // DESIGN.md (Auth and access): one identity per credential, so a lead moved
     // by a connector is distinguishable from one moved by a person.
@@ -903,23 +891,10 @@ describe('oauth access at the mcp surface', () => {
     const testApp = createTestApp()
     const { tokens } = await connect(testApp)
 
-    expect((await testApp.app.request('/mcp', mcpPost(tokens.access_token))).status).toBe(200)
+    expect((await testApp.app.request('/api/v1/leads', apiGet(tokens.access_token))).status).toBe(200)
     testApp.db.delete(accessTokens).run()
 
-    expect((await testApp.app.request('/mcp', mcpPost(tokens.access_token))).status).toBe(401)
-  })
-
-  it('does not let an access token reach the REST surface', async () => {
-    const testApp = createTestApp()
-    const { tokens } = await connect(testApp)
-
-    // OAuth exists here for MCP connector clients — DESIGN.md (Auth and access).
-    // A key from Settings is what a script pointed at /api/v1 uses.
-    const res = await testApp.app.request('/api/v1/leads', {
-      headers: { authorization: `Bearer ${tokens.access_token}` },
-    })
-
-    expect(res.status).toBe(401)
+    expect((await testApp.app.request('/api/v1/leads', apiGet(tokens.access_token))).status).toBe(401)
   })
 })
 

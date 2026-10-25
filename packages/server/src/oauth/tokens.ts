@@ -2,15 +2,35 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { and, eq, lt } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { accessTokens, authorizationCodes, refreshTokens } from '../db/schema.ts'
+import { FIRST_PARTY_CLIENT_ID } from './first-party.ts'
 
 /**
- * The only scope this server has. Philo is single-tenant with one operator
- * account, so an access token either reaches the agent surface or it does not
- * — there is nothing a second scope would separate. Requested scopes are
- * therefore not honoured; every grant is this one, and the token response says
- * so, which is what RFC 6749 §5.1 requires when the two differ.
+ * Agent authority: everything an API key reaches. Granted to every dynamically
+ * registered client, whatever it asked for — ADR-0006.
  */
 export const MCP_SCOPE = 'mcp'
+
+/** Operator authority. Granted only to the first-party client, the PWA. */
+export const OPERATOR_SCOPE = 'operator'
+
+/** OIDC: an id_token comes back with the tokens. Honoured when asked for. */
+export const OPENID_SCOPE = 'openid'
+
+/**
+ * What a client is granted, which RFC 6749 §5.1 lets differ from what it asked
+ * for. Authority comes from the client, never the request: a connector that
+ * asks for `operator` gets `mcp`, so registering oneself buys nothing more than
+ * an API key would.
+ */
+export function grantedScope(clientId: string, requested: string | undefined): string {
+  const asked = new Set((requested ?? '').split(' ').filter((scope) => scope !== ''))
+  const authority = clientId === FIRST_PARTY_CLIENT_ID ? OPERATOR_SCOPE : MCP_SCOPE
+  return asked.has(OPENID_SCOPE) ? `${OPENID_SCOPE} ${authority}` : authority
+}
+
+export function hasScope(scope: string, wanted: string): boolean {
+  return scope.split(' ').includes(wanted)
+}
 
 /**
  * Long enough to survive a slow redirect back to the client, short enough that
@@ -49,12 +69,14 @@ export interface GrantSubject {
   userId: number
   /** RFC 8707 target, when the client named one. */
   resource: string | null
+  /** Space-separated, as `grantedScope` built it. */
+  scope: string
 }
 
 export interface AuthorizationCodeGrant extends GrantSubject {
   redirectUri: string
   codeChallenge: string
-  scope: string
+  nonce: string | null
 }
 
 export interface IssuedTokens {
@@ -62,11 +84,12 @@ export interface IssuedTokens {
   refreshToken: string
   /** Access token lifetime in seconds, for the token response. */
   expiresIn: number
+  scope: string
 }
 
 export function createAuthorizationCode(
   db: Db,
-  grant: Omit<AuthorizationCodeGrant, 'scope'>,
+  grant: AuthorizationCodeGrant,
   now = new Date(),
 ): string {
   deleteExpiredGrants(db, now)
@@ -79,7 +102,8 @@ export function createAuthorizationCode(
       redirectUri: grant.redirectUri,
       codeChallenge: grant.codeChallenge,
       resource: grant.resource,
-      scope: MCP_SCOPE,
+      scope: grant.scope,
+      nonce: grant.nonce,
       createdAt: now,
       expiresAt: new Date(now.getTime() + AUTHORIZATION_CODE_TTL_MS),
     })
@@ -113,6 +137,7 @@ export function redeemAuthorizationCode(
     codeChallenge: row.codeChallenge,
     resource: row.resource,
     scope: row.scope,
+    nonce: row.nonce,
   }
 }
 
@@ -124,7 +149,7 @@ export function issueTokens(db: Db, subject: GrantSubject, now = new Date()): Is
     clientId: subject.clientId,
     userId: subject.userId,
     resource: subject.resource,
-    scope: MCP_SCOPE,
+    scope: subject.scope,
     createdAt: now,
   }
   db.insert(accessTokens)
@@ -141,7 +166,7 @@ export function issueTokens(db: Db, subject: GrantSubject, now = new Date()): Is
       expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS),
     })
     .run()
-  return { accessToken, refreshToken, expiresIn: Math.floor(ACCESS_TOKEN_TTL_MS / 1000) }
+  return { accessToken, refreshToken, expiresIn: Math.floor(ACCESS_TOKEN_TTL_MS / 1000), scope: subject.scope }
 }
 
 /**
@@ -175,7 +200,7 @@ export function redeemRefreshToken(
     .all()
   if (row === undefined) return undefined
   if (row.expiresAt.getTime() <= now.getTime()) return undefined
-  return { clientId: row.clientId, userId: row.userId, resource: row.resource }
+  return { clientId: row.clientId, userId: row.userId, resource: row.resource, scope: row.scope }
 }
 
 export interface AccessTokenPrincipal {
@@ -213,6 +238,24 @@ export function resolveAccessToken(db: Db, token: string, now = new Date()): Acc
 }
 
 /**
+ * RFC 7009. Either kind of token, held by `clientId`; one the client does not
+ * hold is ignored rather than refused, as §2.2 requires, so revocation cannot
+ * be used to probe which tokens exist.
+ */
+export function revokeToken(db: Db, token: string, clientId: string): void {
+  const tokenHash = hashToken(token)
+  if (token.startsWith(REFRESH_PREFIX)) {
+    db.delete(refreshTokens)
+      .where(and(eq(refreshTokens.tokenHash, tokenHash), eq(refreshTokens.clientId, clientId)))
+      .run()
+  } else if (token.startsWith(ACCESS_PREFIX)) {
+    db.delete(accessTokens)
+      .where(and(eq(accessTokens.tokenHash, tokenHash), eq(accessTokens.clientId, clientId)))
+      .run()
+  }
+}
+
+/**
  * PKCE S256 (RFC 7636 §4.6). `plain` is not accepted anywhere in this server —
  * OAuth 2.1 removed it, and a challenge equal to its verifier protects nothing
  * against the interception this exists to stop.
@@ -226,8 +269,7 @@ export function verifyPkce(codeChallenge: string, codeVerifier: string): boolean
 
 /**
  * Grants are minted rarely and the expiry indexes make this cheap, so issuing
- * one is a natural place to keep dead rows from accumulating forever — the same
- * trade `createSession` makes.
+ * one is a natural place to keep dead rows from accumulating forever.
  */
 export function deleteExpiredGrants(db: Db, now = new Date()): void {
   db.delete(authorizationCodes).where(lt(authorizationCodes.expiresAt, now)).run()

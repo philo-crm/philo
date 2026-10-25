@@ -7,6 +7,7 @@ import { notifyLeadCreated, type LeadCreatedHook } from '../notify.ts'
 import {
   addLeadNote,
   clearLeadSpam,
+  createLead,
   getLead,
   listLeads,
   moveLeadStage,
@@ -129,6 +130,17 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     const filters = parseListQuery(c)
     if (!filters.ok) return c.json({ error: filters.error }, 400)
     return c.json(listLeads(deps.db, filters.value))
+  })
+
+  /**
+   * A lead filed by hand — an agent writing up a phone screen. DESIGN.md
+   * (Email): sends neither email, because there was no submission.
+   */
+  routes.post('/', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+    const result = createLead(deps.db, body, actorOf(c))
+    return result.ok ? c.json({ lead: result.value }, 201) : fail(c, result.error)
   })
 
   routes.get('/:id', (c) => {

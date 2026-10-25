@@ -8,7 +8,6 @@ import {
   createTestApp,
   jsonPost,
   setupAdmin,
-  TEST_ORIGIN,
   type TestApp,
 } from './support/app.ts'
 
@@ -24,16 +23,16 @@ interface StageResponse {
   leadCount: number
 }
 
-function jsonRequest(method: string, body: unknown, cookie: string): RequestInit {
+function jsonRequest(method: string, body: unknown, authorization: string): RequestInit {
   return {
     method,
-    headers: { 'content-type': 'application/json', origin: TEST_ORIGIN, cookie },
+    headers: { 'content-type': 'application/json', authorization },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }
 }
 
-async function listStages(testApp: TestApp, cookie: string): Promise<StageResponse[]> {
-  const res = await testApp.app.request('/api/v1/stages', { headers: { cookie } })
+async function listStages(testApp: TestApp, authorization: string): Promise<StageResponse[]> {
+  const res = await testApp.app.request('/api/v1/stages', { headers: { authorization } })
   expect(res.status).toBe(200)
   const body = (await res.json()) as { stages: StageResponse[] }
   return body.stages
@@ -53,8 +52,8 @@ function seedLead(testApp: TestApp, stageId: number, isSpam = false): number {
 describe('GET /api/v1/stages', () => {
   it('returns the seeded funnel in order, with lead counts', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const listed = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const listed = await listStages(testApp, authorization)
 
     expect(listed.map((stage) => stage.name)).toEqual(DEFAULT_STAGES.map((stage) => stage.name))
     expect(listed.map((stage) => stage.position)).toEqual([0, 1, 2, 3])
@@ -64,11 +63,11 @@ describe('GET /api/v1/stages', () => {
 
   it('counts quarantined leads too, so an empty count means deletable', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const [first] = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const [first] = await listStages(testApp, authorization)
     seedLead(testApp, first?.id ?? 0, true)
 
-    const listed = await listStages(testApp, cookie)
+    const listed = await listStages(testApp, authorization)
     expect(listed[0]?.leadCount).toBe(1)
   })
 
@@ -82,26 +81,26 @@ describe('GET /api/v1/stages', () => {
 describe('POST /api/v1/stages', () => {
   it('appends a stage to the end of the funnel', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       '/api/v1/stages',
-      jsonPost({ name: '  Screening  ' }, { cookie }),
+      jsonPost({ name: '  Screening  ' }, { authorization }),
     )
     expect(res.status).toBe(201)
     const created = (await res.json()) as { stage: StageResponse }
     expect(created.stage).toMatchObject({ name: 'Screening', position: 4, isTerminal: false, leadCount: 0 })
 
-    const listed = await listStages(testApp, cookie)
+    const listed = await listStages(testApp, authorization)
     expect(listed.at(-1)?.name).toBe('Screening')
   })
 
   it('accepts a terminal stage', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     const res = await testApp.app.request(
       '/api/v1/stages',
-      jsonPost({ name: 'Rejected', isTerminal: true }, { cookie }),
+      jsonPost({ name: 'Rejected', isTerminal: true }, { authorization }),
     )
     expect(res.status).toBe(201)
     await expect(res.json()).resolves.toMatchObject({ stage: { isTerminal: true } })
@@ -114,18 +113,18 @@ describe('POST /api/v1/stages', () => {
     ['an over-long name', { name: 'x'.repeat(MAX_STAGE_NAME_LENGTH + 1) }],
   ])('rejects %s', async (_label, body) => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const res = await testApp.app.request('/api/v1/stages', jsonPost(body, { cookie }))
+    const authorization = await setupAdmin(testApp)
+    const res = await testApp.app.request('/api/v1/stages', jsonPost(body, { authorization }))
     expect(res.status).toBe(400)
     await expect(res.json()).resolves.toEqual({ error: 'invalid_name' })
   })
 
   it('rejects a non-boolean isTerminal rather than coercing it', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     const res = await testApp.app.request(
       '/api/v1/stages',
-      jsonPost({ name: 'Screening', isTerminal: 'yes' }, { cookie }),
+      jsonPost({ name: 'Screening', isTerminal: 'yes' }, { authorization }),
     )
     expect(res.status).toBe(400)
     await expect(res.json()).resolves.toEqual({ error: 'invalid_terminal' })
@@ -133,7 +132,7 @@ describe('POST /api/v1/stages', () => {
 
   it('refuses to grow the funnel past the ceiling', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     const [pipeline] = testApp.db.select({ id: stages.pipelineId }).from(stages).limit(1).all()
     const existing = testApp.db.select({ id: stages.id }).from(stages).all().length
     testApp.db
@@ -147,7 +146,7 @@ describe('POST /api/v1/stages', () => {
       )
       .run()
 
-    const res = await testApp.app.request('/api/v1/stages', jsonPost({ name: 'One too many' }, { cookie }))
+    const res = await testApp.app.request('/api/v1/stages', jsonPost({ name: 'One too many' }, { authorization }))
     expect(res.status).toBe(409)
     await expect(res.json()).resolves.toEqual({ error: 'too_many_stages' })
   })
@@ -156,12 +155,12 @@ describe('POST /api/v1/stages', () => {
 describe('PATCH /api/v1/stages/:id', () => {
   it('renames a stage', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const [first] = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const [first] = await listStages(testApp, authorization)
 
     const res = await testApp.app.request(
       `/api/v1/stages/${first?.id}`,
-      jsonRequest('PATCH', { name: 'Applied' }, cookie),
+      jsonRequest('PATCH', { name: 'Applied' }, authorization),
     )
     expect(res.status).toBe(200)
     await expect(res.json()).resolves.toMatchObject({ stage: { id: first?.id, name: 'Applied' } })
@@ -169,13 +168,13 @@ describe('PATCH /api/v1/stages/:id', () => {
 
   it('flips the terminal flag', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const listed = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const listed = await listStages(testApp, authorization)
     const terminal = listed.at(-1)
 
     const res = await testApp.app.request(
       `/api/v1/stages/${terminal?.id}`,
-      jsonRequest('PATCH', { isTerminal: false }, cookie),
+      jsonRequest('PATCH', { isTerminal: false }, authorization),
     )
     expect(res.status).toBe(200)
     await expect(res.json()).resolves.toMatchObject({ stage: { isTerminal: false } })
@@ -183,10 +182,10 @@ describe('PATCH /api/v1/stages/:id', () => {
 
   it('404s an unknown stage', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     const res = await testApp.app.request(
       '/api/v1/stages/9999',
-      jsonRequest('PATCH', { name: 'Nope' }, cookie),
+      jsonRequest('PATCH', { name: 'Nope' }, authorization),
     )
     expect(res.status).toBe(404)
     await expect(res.json()).resolves.toEqual({ error: 'not_found' })
@@ -194,11 +193,11 @@ describe('PATCH /api/v1/stages/:id', () => {
 
   it('rejects a blank rename', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const [first] = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const [first] = await listStages(testApp, authorization)
     const res = await testApp.app.request(
       `/api/v1/stages/${first?.id}`,
-      jsonRequest('PATCH', { name: '' }, cookie),
+      jsonRequest('PATCH', { name: '' }, authorization),
     )
     expect(res.status).toBe(400)
     await expect(res.json()).resolves.toEqual({ error: 'invalid_name' })
@@ -208,11 +207,11 @@ describe('PATCH /api/v1/stages/:id', () => {
 describe('POST /api/v1/stages/reorder', () => {
   it('applies a new order and renumbers positions from zero', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const listed = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const listed = await listStages(testApp, authorization)
     const reversed = listed.toReversed().map((stage) => stage.id)
 
-    const res = await testApp.app.request('/api/v1/stages/reorder', jsonPost({ stageIds: reversed }, { cookie }))
+    const res = await testApp.app.request('/api/v1/stages/reorder', jsonPost({ stageIds: reversed }, { authorization }))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { stages: StageResponse[] }
     expect(body.stages.map((stage) => stage.id)).toEqual(reversed)
@@ -232,23 +231,23 @@ describe('POST /api/v1/stages/reorder', () => {
     ['an unknown id', (ids: number[]) => [...ids.slice(1), 9999]],
   ])('rejects %s without touching the order', async (_label, mangle) => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const before = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const before = await listStages(testApp, authorization)
     const ids = before.map((stage) => stage.id)
 
     const res = await testApp.app.request(
       '/api/v1/stages/reorder',
-      jsonPost({ stageIds: mangle(ids) }, { cookie }),
+      jsonPost({ stageIds: mangle(ids) }, { authorization }),
     )
     expect(res.status).toBe(400)
     await expect(res.json()).resolves.toEqual({ error: 'invalid_order' })
-    expect((await listStages(testApp, cookie)).map((stage) => stage.id)).toEqual(ids)
+    expect((await listStages(testApp, authorization)).map((stage) => stage.id)).toEqual(ids)
   })
 
   it('rejects a non-array payload', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const res = await testApp.app.request('/api/v1/stages/reorder', jsonPost({ stageIds: 'all' }, { cookie }))
+    const authorization = await setupAdmin(testApp)
+    const res = await testApp.app.request('/api/v1/stages/reorder', jsonPost({ stageIds: 'all' }, { authorization }))
     expect(res.status).toBe(400)
     await expect(res.json()).resolves.toEqual({ error: 'invalid_order' })
   })
@@ -257,13 +256,13 @@ describe('POST /api/v1/stages/reorder', () => {
 describe('DELETE /api/v1/stages/:id', () => {
   it('deletes an empty stage and returns the remaining funnel', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const listed = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const listed = await listStages(testApp, authorization)
     const doomed = listed[1]
 
     const res = await testApp.app.request(
       `/api/v1/stages/${doomed?.id}`,
-      jsonRequest('DELETE', undefined, cookie),
+      jsonRequest('DELETE', undefined, authorization),
     )
     expect(res.status).toBe(200)
     const body = (await res.json()) as { stages: StageResponse[] }
@@ -273,13 +272,13 @@ describe('DELETE /api/v1/stages/:id', () => {
 
   it('refuses a stage that still holds a lead', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const listed = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const listed = await listStages(testApp, authorization)
     seedLead(testApp, listed[1]?.id ?? 0)
 
     const res = await testApp.app.request(
       `/api/v1/stages/${listed[1]?.id}`,
-      jsonRequest('DELETE', undefined, cookie),
+      jsonRequest('DELETE', undefined, authorization),
     )
     expect(res.status).toBe(409)
     await expect(res.json()).resolves.toEqual({ error: 'stage_not_empty' })
@@ -287,13 +286,13 @@ describe('DELETE /api/v1/stages/:id', () => {
 
   it('refuses a quarantined lead as an occupant too', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const listed = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const listed = await listStages(testApp, authorization)
     seedLead(testApp, listed[1]?.id ?? 0, true)
 
     const res = await testApp.app.request(
       `/api/v1/stages/${listed[1]?.id}`,
-      jsonRequest('DELETE', undefined, cookie),
+      jsonRequest('DELETE', undefined, authorization),
     )
     expect(res.status).toBe(409)
     await expect(res.json()).resolves.toEqual({ error: 'stage_not_empty' })
@@ -301,22 +300,22 @@ describe('DELETE /api/v1/stages/:id', () => {
 
   it('keeps the last stage, so intake always has somewhere to file', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const listed = await listStages(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const listed = await listStages(testApp, authorization)
 
     for (const stage of listed.slice(1)) {
       const res = await testApp.app.request(
         `/api/v1/stages/${stage.id}`,
-        jsonRequest('DELETE', undefined, cookie),
+        jsonRequest('DELETE', undefined, authorization),
       )
       expect(res.status).toBe(200)
     }
 
-    const last = await listStages(testApp, cookie)
+    const last = await listStages(testApp, authorization)
     expect(last).toHaveLength(1)
     const res = await testApp.app.request(
       `/api/v1/stages/${last[0]?.id}`,
-      jsonRequest('DELETE', undefined, cookie),
+      jsonRequest('DELETE', undefined, authorization),
     )
     expect(res.status).toBe(409)
     await expect(res.json()).resolves.toEqual({ error: 'last_stage' })
@@ -324,8 +323,8 @@ describe('DELETE /api/v1/stages/:id', () => {
 
   it('404s an unknown stage', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const res = await testApp.app.request('/api/v1/stages/9999', jsonRequest('DELETE', undefined, cookie))
+    const authorization = await setupAdmin(testApp)
+    const res = await testApp.app.request('/api/v1/stages/9999', jsonRequest('DELETE', undefined, authorization))
     expect(res.status).toBe(404)
   })
 })

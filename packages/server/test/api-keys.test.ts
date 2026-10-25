@@ -37,17 +37,17 @@ function bearer(key: string, init: RequestInit = {}): RequestInit {
   return { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${key}` } }
 }
 
-function withCookie(cookie: string, init: RequestInit = {}): RequestInit {
-  return { ...init, headers: { ...(init.headers as Record<string, string>), cookie } }
+function asOperator(authorization: string, init: RequestInit = {}): RequestInit {
+  return { ...init, headers: { ...(init.headers as Record<string, string>), authorization } }
 }
 
 /** Creates a key through the API, as the settings screen does, and hands back its secret. */
 async function mintKey(
   testApp: TestApp,
-  cookie: string,
+  authorization: string,
   name = 'Claude Code',
 ): Promise<{ id: number; secret: string }> {
-  const res = await testApp.app.request(KEYS_BASE, withCookie(cookie, jsonPost({ name })))
+  const res = await testApp.app.request(KEYS_BASE, asOperator(authorization, jsonPost({ name })))
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`)
   const body = (await res.json()) as { key: { id: number }; secret: string }
   return { id: body.key.id, secret: body.secret }
@@ -171,16 +171,16 @@ describe('api key storage', () => {
 describe('api key management', () => {
   it('hands the secret back exactly once', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const res = await testApp.app.request(KEYS_BASE, withCookie(cookie, jsonPost({ name: 'Cron job' })))
+    const res = await testApp.app.request(KEYS_BASE, asOperator(authorization, jsonPost({ name: 'Cron job' })))
     expect(res.status).toBe(201)
     const created = (await res.json()) as { key: Record<string, unknown>; secret: string }
     expect(created.secret.startsWith(API_KEY_PREFIX)).toBe(true)
     expect(created.key['keyPrefix']).toBe(apiKeyDisplayPrefix(created.secret))
     expect(created.key['lastUsedAt']).toBeNull()
 
-    const list = await testApp.app.request(KEYS_BASE, withCookie(cookie))
+    const list = await testApp.app.request(KEYS_BASE, asOperator(authorization))
     const body = (await list.json()) as { keys: Record<string, unknown>[] }
     expect(body.keys).toHaveLength(1)
     expect(body.keys[0]?.['name']).toBe('Cron job')
@@ -190,13 +190,13 @@ describe('api key management', () => {
 
   it('trims the name and refuses one that says nothing', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const named = await testApp.app.request(KEYS_BASE, withCookie(cookie, jsonPost({ name: '  Cron  ' })))
+    const named = await testApp.app.request(KEYS_BASE, asOperator(authorization, jsonPost({ name: '  Cron  ' })))
     expect(((await named.json()) as { key: { name: string } }).key.name).toBe('Cron')
 
     for (const name of ['', '   ', 'x'.repeat(MAX_API_KEY_NAME_LENGTH + 1), 42]) {
-      const res = await testApp.app.request(KEYS_BASE, withCookie(cookie, jsonPost({ name })))
+      const res = await testApp.app.request(KEYS_BASE, asOperator(authorization, jsonPost({ name })))
       expect(res.status).toBe(400)
       expect(await res.json()).toEqual({ error: 'invalid_name' })
     }
@@ -204,12 +204,12 @@ describe('api key management', () => {
 
   it('refuses an id that is not one', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     for (const id of ['abc', '0', '-1', '1.5']) {
       const res = await testApp.app.request(
         `${KEYS_BASE}/${id}`,
-        withCookie(cookie, { ...jsonPost({}), method: 'DELETE' }),
+        asOperator(authorization, { ...jsonPost({}), method: 'DELETE' }),
       )
       expect(res.status).toBe(400)
     }
@@ -217,11 +217,11 @@ describe('api key management', () => {
 
   it('answers 404 for a key that is already gone', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { id } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { id } = await mintKey(testApp, authorization)
 
     const revoke = () =>
-      testApp.app.request(`${KEYS_BASE}/${id}`, withCookie(cookie, { ...jsonPost({}), method: 'DELETE' }))
+      testApp.app.request(`${KEYS_BASE}/${id}`, asOperator(authorization, { ...jsonPost({}), method: 'DELETE' }))
 
     expect((await revoke()).status).toBe(200)
     expect((await revoke()).status).toBe(404)
@@ -239,15 +239,15 @@ describe('api key management', () => {
 describe('bearer authentication', () => {
   it('authenticates a REST call, and stops the moment the key is revoked', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { id, secret } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { id, secret } = await mintKey(testApp, authorization)
 
     const authenticated = await testApp.app.request('/api/v1/leads', bearer(secret))
     expect(authenticated.status).toBe(200)
 
     const revoked = await testApp.app.request(
       `${KEYS_BASE}/${id}`,
-      withCookie(cookie, { ...jsonPost({}), method: 'DELETE' }),
+      asOperator(authorization, { ...jsonPost({}), method: 'DELETE' }),
     )
     expect(revoked.status).toBe(200)
 
@@ -258,8 +258,8 @@ describe('bearer authentication', () => {
 
   it('records the key on the timeline, not a user', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { id, secret } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { id, secret } = await mintKey(testApp, authorization)
     const leadId = await submitLead(testApp)
 
     const stages = (await (await testApp.app.request('/api/v1/stages', bearer(secret))).json()) as {
@@ -277,32 +277,13 @@ describe('bearer authentication', () => {
     expect(event?.actor).toBe(`api_key:${id}`)
   })
 
-  it('does not let a cookie riding along upgrade a key to a user', async () => {
-    const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { id, secret } = await mintKey(testApp, cookie)
-    const leadId = await submitLead(testApp)
-
-    const noted = await testApp.app.request(
-      `/api/v1/leads/${leadId}/notes`,
-      withCookie(cookie, bearer(secret, jsonPost({ note: 'Called, left a message.' }))),
-    )
-    expect(noted.status).toBe(200)
-
-    const body = (await noted.json()) as { lead: { events: { type: string; actor: string }[] } }
-    const event = body.lead.events.findLast((entry) => entry.type === 'note_added')
-    expect(event?.actor).toBe(`api_key:${id}`)
-  })
-
   it('accepts a state change from a caller with no browser behind it', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { secret } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { secret } = await mintKey(testApp, authorization)
     const leadId = await submitLead(testApp)
 
-    // No `Origin`, which is what curl, cron and an agent actually send. The
-    // CSRF layers on this surface have to let that through or the key is
-    // read-only in practice.
+    // No `Origin`, which is what curl, cron and an agent actually send.
     const res = await testApp.app.request(
       `/api/v1/leads/${leadId}/notes`,
       bearer(secret, {
@@ -314,36 +295,22 @@ describe('bearer authentication', () => {
     expect(res.status).toBe(200)
   })
 
-  it('falls back to the cookie when the bearer token is not a live key', async () => {
-    const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-
-    const withSession = await testApp.app.request(
-      '/api/v1/leads',
-      withCookie(cookie, bearer(generateApiKey())),
-    )
-    expect(withSession.status).toBe(200)
-
-    const without = await testApp.app.request('/api/v1/leads', bearer(generateApiKey()))
-    expect(without.status).toBe(401)
-  })
-
   it('records last use, so a stale key is visible as one', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { secret } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { secret } = await mintKey(testApp, authorization)
 
     await testApp.app.request('/api/v1/leads', bearer(secret))
 
-    const list = await testApp.app.request(KEYS_BASE, withCookie(cookie))
+    const list = await testApp.app.request(KEYS_BASE, asOperator(authorization))
     const body = (await list.json()) as { keys: { lastUsedAt: string | null }[] }
     expect(body.keys[0]?.lastUsedAt).not.toBeNull()
   })
 
   it('keeps a key out of everything that needs a person behind it', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { secret } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { secret } = await mintKey(testApp, authorization)
 
     const sessionOnly: [string, RequestInit][] = [
       ['/api/v1/auth/session', {}],
@@ -369,8 +336,8 @@ describe('bearer authentication', () => {
 
   it('leaves a key no way to repoint the mail server', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { secret } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { secret } = await mintKey(testApp, authorization)
     configureEmail(testApp)
 
     await testApp.app.request(
@@ -383,8 +350,8 @@ describe('bearer authentication', () => {
 
   it('leaves leads, the funnel and the email templates open to a key', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { secret } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { secret } = await mintKey(testApp, authorization)
 
     // Templates are the deliberate exception on the settings surface: DESIGN.md
     // (MCP surface) puts designing the emails in an agent's hands. Note what
@@ -404,8 +371,8 @@ describe('bearer authentication', () => {
 
   it('does not authenticate the public intake endpoint into something more', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    const { secret } = await mintKey(testApp, cookie)
+    const authorization = await setupAdmin(testApp)
+    const { secret } = await mintKey(testApp, authorization)
 
     // The revoked-key story only holds if a key is never a way past the guards
     // on a surface that has its own — intake stays what it was.

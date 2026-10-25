@@ -6,7 +6,6 @@ import {
   configureEmail,
   createTestApp,
   setupAdmin,
-  TEST_ORIGIN,
   type TestApp,
 } from './support/app.ts'
 
@@ -34,16 +33,16 @@ interface EmailSettingsResponse {
   businessName: string
 }
 
-function authed(method: string, body: unknown, cookie: string): RequestInit {
+function authed(method: string, body: unknown, authorization: string): RequestInit {
   return {
     method,
-    headers: { 'content-type': 'application/json', origin: TEST_ORIGIN, cookie },
+    headers: { 'content-type': 'application/json', authorization },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }
 }
 
-async function readSettings(testApp: TestApp, cookie: string): Promise<EmailSettingsResponse> {
-  const res = await testApp.app.request(EMAIL_PATH, { headers: { cookie } })
+async function readSettings(testApp: TestApp, authorization: string): Promise<EmailSettingsResponse> {
+  const res = await testApp.app.request(EMAIL_PATH, { headers: { authorization } })
   if (res.status !== 200) throw new Error(`GET settings failed: ${res.status}`)
   const body = (await res.json()) as { settings: EmailSettingsResponse }
   return body.settings
@@ -58,8 +57,8 @@ describe('GET /api/v1/settings/email', () => {
 
   it('answers with defaults on a fresh instance', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
-    expect(await readSettings(testApp, cookie)).toEqual({
+    const authorization = await setupAdmin(testApp)
+    expect(await readSettings(testApp, authorization)).toEqual({
       smtpHost: '',
       smtpPort: 587,
       smtpSecure: false,
@@ -74,10 +73,10 @@ describe('GET /api/v1/settings/email', () => {
 
   it('never hands back the stored password', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
-    const res = await testApp.app.request(EMAIL_PATH, { headers: { cookie } })
+    const res = await testApp.app.request(EMAIL_PATH, { headers: { authorization } })
     const raw = await res.text()
 
     expect(raw).not.toContain('secret-token')
@@ -88,7 +87,7 @@ describe('GET /api/v1/settings/email', () => {
 describe('PATCH /api/v1/settings/email', () => {
   it('stores what it was given and answers with the result', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       EMAIL_PATH,
@@ -105,7 +104,7 @@ describe('PATCH /api/v1/settings/email', () => {
           replyTo: 'hello@example.com',
           businessName: 'Example Co',
         },
-        cookie,
+        authorization,
       ),
     )
 
@@ -121,12 +120,12 @@ describe('PATCH /api/v1/settings/email', () => {
 
   it('keeps the stored password when the patch does not mention it', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
     const res = await testApp.app.request(
       EMAIL_PATH,
-      authed('PATCH', { smtpHost: 'smtp2.example.com' }, cookie),
+      authed('PATCH', { smtpHost: 'smtp2.example.com' }, authorization),
     )
 
     expect(res.status).toBe(200)
@@ -138,22 +137,22 @@ describe('PATCH /api/v1/settings/email', () => {
 
   it('clears the password when the patch sends an empty one', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
-    await testApp.app.request(EMAIL_PATH, authed('PATCH', { smtpPassword: '' }, cookie))
+    await testApp.app.request(EMAIL_PATH, authed('PATCH', { smtpPassword: '' }, authorization))
 
     expect(readEmailSettings(testApp.db).smtpPassword).toBe('')
-    expect((await readSettings(testApp, cookie)).smtpPasswordSet).toBe(false)
+    expect((await readSettings(testApp, authorization)).smtpPasswordSet).toBe(false)
   })
 
   it('names the field it refused, and stores nothing', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       EMAIL_PATH,
-      authed('PATCH', { smtpHost: 'smtp.example.com', fromAddress: 'nope' }, cookie),
+      authed('PATCH', { smtpHost: 'smtp.example.com', fromAddress: 'nope' }, authorization),
     )
 
     expect(res.status).toBe(400)
@@ -185,10 +184,10 @@ describe('POST /api/v1/settings/email/test', () => {
   it('sends with the stored settings', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
-    const res = await testApp.app.request(TEST_PATH, authed('POST', { to: 'ops@example.com' }, cookie))
+    const res = await testApp.app.request(TEST_PATH, authed('POST', { to: 'ops@example.com' }, authorization))
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true, to: 'ops@example.com' })
@@ -199,10 +198,10 @@ describe('POST /api/v1/settings/email/test', () => {
   it('refuses an address that is not one', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
-    const res = await testApp.app.request(TEST_PATH, authed('POST', { to: 'nope' }, cookie))
+    const res = await testApp.app.request(TEST_PATH, authed('POST', { to: 'nope' }, authorization))
 
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'invalid_email' })
@@ -212,9 +211,9 @@ describe('POST /api/v1/settings/email/test', () => {
   it('says so when SMTP has not been set up', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const res = await testApp.app.request(TEST_PATH, authed('POST', { to: 'ops@example.com' }, cookie))
+    const res = await testApp.app.request(TEST_PATH, authed('POST', { to: 'ops@example.com' }, authorization))
 
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: 'not_configured' })
@@ -223,10 +222,10 @@ describe('POST /api/v1/settings/email/test', () => {
 
   it('passes the SMTP server’s complaint back to the operator', async () => {
     const testApp = withSender([], '535 authentication failed')
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
-    const res = await testApp.app.request(TEST_PATH, authed('POST', { to: 'ops@example.com' }, cookie))
+    const res = await testApp.app.request(TEST_PATH, authed('POST', { to: 'ops@example.com' }, authorization))
 
     expect(res.status).toBe(502)
     expect(await res.json()).toEqual({ error: 'send_failed', detail: '535 authentication failed' })

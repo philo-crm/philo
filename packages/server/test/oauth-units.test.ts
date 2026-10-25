@@ -4,13 +4,19 @@ import { accessTokens, oauthClients } from '../src/db/schema.ts'
 import {
   UNUSED_CLIENT_TTL_MS,
   deleteUnusedClients,
+  getClient,
   isAllowedRedirectUri,
   registerClient,
 } from '../src/oauth/clients.ts'
+import { FIRST_PARTY_CLIENT_ID } from '../src/oauth/first-party.ts'
 import {
   createAuthorizationCode,
+  grantedScope,
+  issueTokens,
   redeemAuthorizationCode,
+  redeemRefreshToken,
   resolveAccessToken,
+  revokeToken,
   verifyPkce,
 } from '../src/oauth/tokens.ts'
 import { cleanupTestApps, createTestApp, setupAdmin, type TestApp } from './support/app.ts'
@@ -89,6 +95,8 @@ describe('authorization codes', () => {
       redirectUri: 'https://example.com/cb',
       codeChallenge: 'challenge',
       resource: null,
+      scope: 'mcp',
+      nonce: null,
     })
 
     expect(redeemAuthorizationCode(testApp.db, code)?.clientId).toBe(clientId)
@@ -107,6 +115,8 @@ describe('authorization codes', () => {
         redirectUri: 'https://example.com/cb',
         codeChallenge: 'challenge',
         resource: null,
+        scope: 'mcp',
+        nonce: null,
       },
       issued,
     )
@@ -141,11 +151,23 @@ describe('access tokens', () => {
       .run()
 
     expect(resolveAccessToken(testApp.db, token)).toBeUndefined()
-    expect(testApp.db.select().from(accessTokens).all()).toHaveLength(0)
+    const hash = createHash('sha256').update(token).digest('hex')
+    expect(testApp.db.select().from(accessTokens).all().filter((row) => row.tokenHash === hash)).toHaveLength(0)
   })
 })
 
+/** Dynamic registrations only — the first-party row is configuration and always there. */
+function registrations(testApp: TestApp) {
+  return testApp.db.select().from(oauthClients).all().filter((row) => row.clientId !== FIRST_PARTY_CLIENT_ID)
+}
+
 describe('deleteUnusedClients', () => {
+  it('never sweeps the first-party client, however old and unused', () => {
+    const testApp = createTestApp()
+    deleteUnusedClients(testApp.db, new Date(Date.now() + 365 * UNUSED_CLIENT_TTL_MS))
+    expect(getClient(testApp.db, FIRST_PARTY_CLIENT_ID)).toBeDefined()
+  })
+
   it('sweeps a stale registration that never finished a flow', () => {
     const testApp = createTestApp()
     const old = new Date(Date.now() - UNUSED_CLIENT_TTL_MS - 1000)
@@ -153,7 +175,7 @@ describe('deleteUnusedClients', () => {
 
     deleteUnusedClients(testApp.db)
 
-    expect(testApp.db.select().from(oauthClients).all()).toHaveLength(0)
+    expect(registrations(testApp)).toHaveLength(0)
   })
 
   it('leaves a fresh registration alone', () => {
@@ -162,7 +184,7 @@ describe('deleteUnusedClients', () => {
 
     deleteUnusedClients(testApp.db)
 
-    expect(testApp.db.select().from(oauthClients).all()).toHaveLength(1)
+    expect(registrations(testApp)).toHaveLength(1)
   })
 
   it('leaves an old registration that holds a token', async () => {
@@ -187,6 +209,40 @@ describe('deleteUnusedClients', () => {
     deleteUnusedClients(testApp.db)
 
     // A working connector must never be swept out from under the operator.
-    expect(testApp.db.select().from(oauthClients).all()).toHaveLength(1)
+    expect(registrations(testApp)).toHaveLength(1)
+  })
+})
+
+describe('grantedScope', () => {
+  it('grants operator authority to the first-party client only', () => {
+    expect(grantedScope(FIRST_PARTY_CLIENT_ID, 'openid operator')).toBe('openid operator')
+    expect(grantedScope(FIRST_PARTY_CLIENT_ID, undefined)).toBe('operator')
+  })
+
+  it('grants a registered client agent authority, whatever it asked for', () => {
+    expect(grantedScope('some-uuid', 'openid operator')).toBe('openid mcp')
+    expect(grantedScope('some-uuid', 'operator')).toBe('mcp')
+  })
+})
+
+describe('revokeToken', () => {
+  it('revokes a refresh token held by the client presenting it', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const clientId = client(testApp)
+    const { refreshToken } = issueTokens(testApp.db, { clientId, userId: 1, resource: null, scope: 'mcp' })
+
+    revokeToken(testApp.db, refreshToken, 'someone-else')
+    expect(redeemRefreshToken(testApp.db, refreshToken, clientId)).toBeDefined()
+  })
+
+  it('cuts an access token off at once', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const clientId = client(testApp)
+    const { accessToken } = issueTokens(testApp.db, { clientId, userId: 1, resource: null, scope: 'mcp' })
+
+    revokeToken(testApp.db, accessToken, clientId)
+    expect(resolveAccessToken(testApp.db, accessToken)).toBeUndefined()
   })
 })

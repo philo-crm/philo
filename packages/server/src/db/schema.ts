@@ -211,6 +211,8 @@ export const authorizationCodes = sqliteTable(
     /** RFC 8707 target, when the client named one. */
     resource: text('resource'),
     scope: text('scope').notNull(),
+    /** OIDC: echoed into the id_token so the client can tie it to its request. */
+    nonce: text('nonce'),
     createdAt: createdAt(),
     expiresAt: timestamp('expires_at').notNull(),
   },

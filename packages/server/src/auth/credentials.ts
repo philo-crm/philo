@@ -32,8 +32,8 @@ export function validatePassword(raw: unknown): string | undefined {
 /**
  * The account behind an email and password, or undefined.
  *
- * Shared by the two places a password is checked — the login route and the
- * OAuth consent page — so both get the same constant-time behaviour rather than
+ * The one place a password is checked — the authorize dialog — kept apart
+ * from it so the check gets the same constant-time behaviour rather than
  * one of them growing a subtly cheaper version.
  *
  * Callers hold a `ConcurrencyGate` slot around this: argon2id is deliberately
@@ -72,4 +72,37 @@ function unmatchableHash(): Promise<string> {
     throw error
   })
   return unmatchable
+}
+
+export function hasAnyUser(db: Db): boolean {
+  return db.select({ id: users.id }).from(users).limit(1).all().length > 0
+}
+
+/**
+ * First-boot setup: the instance's one account, created only while there is
+ * none. Hash before calling — better-sqlite3 is synchronous, so awaiting inside
+ * the transaction would hold it open across the whole hash.
+ *
+ * The existence check and the insert share a transaction, so two racing setups
+ * cannot both find an empty table and both create an account.
+ *
+ * Unauthenticated by design, per DESIGN.md (Auth and access) — whoever reaches
+ * a fresh instance first becomes its operator, including a scanner that finds
+ * it before the operator does. Accepted rather than overlooked: the window
+ * closes at the first success and exists only while the instance holds no
+ * data, so the worst case is deleting an empty database and starting over.
+ */
+export function createFirstUser(
+  db: Db,
+  account: { email: string; passwordHash: string; name: string | null },
+): SessionUser | undefined {
+  return db.transaction((tx) => {
+    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return undefined
+    const [user] = tx
+      .insert(users)
+      .values(account)
+      .returning({ id: users.id, email: users.email, name: users.name })
+      .all()
+    return user
+  })
 }

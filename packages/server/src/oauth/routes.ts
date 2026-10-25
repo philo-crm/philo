@@ -3,27 +3,48 @@ import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
-import { normalizeEmail, validatePassword, verifyCredentials } from '../auth/credentials.ts'
+import { eq } from 'drizzle-orm'
+import { SignJWT } from 'jose'
+import {
+  createFirstUser,
+  hasAnyUser,
+  normalizeEmail,
+  validatePassword,
+  verifyCredentials,
+} from '../auth/credentials.ts'
+import { bearerToken } from '../auth/middleware.ts'
+import { hashPassword } from '../auth/password.ts'
 import type { AuthGuards } from '../auth/routes.ts'
 import { delay } from '../auth/rate-limit.ts'
 import type { SessionUser } from '../auth/session.ts'
 import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
+import { users } from '../db/schema.ts'
 import { getClient, registerClient, clientSecretMatches, type RegisteredClient } from './clients.ts'
-import { renderAuthorizeError, renderConsentPage, type ConsentRequest } from './consent.ts'
+import { renderAuthorizeError, renderConsentPage, type ConsentPage, type ConsentRequest } from './consent.ts'
+import { FIRST_PARTY_CLIENT_ID } from './first-party.ts'
 import {
   authorizationServerMetadata,
-  mcpResourceUrl,
   protectedResourceMetadata,
-  MCP_PATH,
+  AUTHORIZATION_SERVER_METADATA_PATH,
+  OPENID_CONFIGURATION_PATH,
+  PROTECTED_RESOURCE_METADATA_PATH,
 } from './metadata.ts'
+import { ID_TOKEN_ALG, type SigningKey } from './signing-key.ts'
 import {
   createAuthorizationCode,
+  grantedScope,
+  hasScope,
   issueTokens,
   redeemAuthorizationCode,
   redeemRefreshToken,
+  resolveAccessToken,
+  revokeToken,
   verifyPkce,
-  MCP_SCOPE,
+  ACCESS_TOKEN_TTL_MS,
+  OPENID_SCOPE,
+  type GrantSubject,
+  type IssuedTokens,
 } from './tokens.ts'
 
 /**
@@ -39,12 +60,23 @@ const CODE_CHALLENGE_RE = /^[A-Za-z0-9\-._~]{43,128}$/
 /** Long enough for any real `state`, short enough to bound the redirect we build. */
 const MAX_STATE_LENGTH = 2048
 
+/** Same bound for the values the form carries back and the code row stores. */
+const MAX_NONCE_LENGTH = 512
+const MAX_SCOPE_LENGTH = 512
+
+/** Bounds an optional display name typed into the setup dialog. */
+const MAX_NAME_LENGTH = 200
+
 export interface OAuthDeps {
   db: Db
   /** Externally reachable origin. The issuer, and what every advertised URL is built from. */
   publicBaseUrl: string
   trustProxy: boolean
   guards: AuthGuards
+  /** Signs id_tokens; published at `/oauth/jwks`. */
+  signingKey: SigningKey
+  /** The MCP app's URL — a resource a token may name besides this server. */
+  mcpUrl: string
 }
 
 /** A form or query value, when it is a string rather than an uploaded file. */
@@ -124,7 +156,13 @@ function checkAuthorizeRequest(deps: OAuthDeps, params: Record<string, unknown>)
     description,
   })
 
-  if (state !== undefined && state.length > MAX_STATE_LENGTH) {
+  const scope = field(params, 'scope')
+  const nonce = field(params, 'nonce')
+  if (
+    (state !== undefined && state.length > MAX_STATE_LENGTH) ||
+    (scope !== undefined && scope.length > MAX_SCOPE_LENGTH) ||
+    (nonce !== undefined && nonce.length > MAX_NONCE_LENGTH)
+  ) {
     return { kind: 'refuse', message: 'The request was too large to process.' }
   }
   if (field(params, 'response_type') !== 'code') {
@@ -140,19 +178,23 @@ function checkAuthorizeRequest(deps: OAuthDeps, params: Record<string, unknown>)
   }
 
   const resource = field(params, 'resource')
-  if (resource !== undefined && !resourceMatches(deps.publicBaseUrl, resource)) {
-    return fail('invalid_target', 'This authorization server issues tokens for its own MCP endpoint only.')
+  if (resource !== undefined && !resourceMatches(deps, resource)) {
+    return fail('invalid_target', 'This authorization server issues tokens for this Philo instance only.')
   }
 
-  return { kind: 'ok', client, request: { clientId, redirectUri, codeChallenge, state, resource } }
+  return {
+    kind: 'ok',
+    client,
+    request: { clientId, redirectUri, codeChallenge, state, resource, scope, nonce },
+  }
 }
 
 /**
- * RFC 8707: the token is for one resource, and this server has exactly one. The
- * base URL is accepted alongside the MCP endpoint because clients differ on
- * whether the identifier includes the path, and both name the same instance.
+ * RFC 8707: a token is for this instance — the API, or the MCP app that
+ * forwards it to the API. Clients differ on whether the identifier includes a
+ * path, so the bare base URL and the API prefix name the instance too.
  */
-function resourceMatches(publicBaseUrl: string, resource: string): boolean {
+function resourceMatches(deps: Pick<OAuthDeps, 'publicBaseUrl' | 'mcpUrl'>, resource: string): boolean {
   let normalized: string
   try {
     const url = new URL(resource)
@@ -161,13 +203,25 @@ function resourceMatches(publicBaseUrl: string, resource: string): boolean {
   } catch {
     return false
   }
-  return normalized === mcpResourceUrl(publicBaseUrl) || normalized === publicBaseUrl
+  return [deps.publicBaseUrl, `${deps.publicBaseUrl}/api/v1`, deps.mcpUrl].includes(normalized)
 }
 
 /**
- * The OAuth 2.1 authorization server — DESIGN.md (Auth and access). Exists for
- * MCP clients that will not carry an API key, which is every connector-style
- * client; a token it issues reaches `/mcp` and nothing else.
+ * Which dialog an authorization request gets. The PWA's own sign-in has no
+ * third party to approve, and on an instance with no account yet it is where
+ * that account is made — ADR-0006. A third-party client on an empty instance
+ * sees the consent page, whose sign-in cannot succeed until setup is done.
+ */
+function dialogMode(db: Db, clientId: string): ConsentPage['mode'] {
+  if (clientId !== FIRST_PARTY_CLIENT_ID) return 'consent'
+  return hasAnyUser(db) ? 'signin' : 'setup'
+}
+
+/**
+ * The built-in IdP: an OAuth 2.1 authorization server with the OIDC layer on
+ * top — DESIGN.md (Auth and access), ADR-0006. Every client signs in here: the
+ * PWA as the operator, connector clients as agents. Its tokens are bearer
+ * credentials for the API, and an external IdP can stand in for all of it.
  */
 export function createOAuthRoutes(deps: OAuthDeps): Hono {
   const routes = new Hono()
@@ -186,12 +240,11 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     }),
   )
 
-  // Registration and token exchange are called by MCP clients running in a
-  // browser as well as on a server, and neither reads a cookie — so opening
-  // them to any origin adds no authority. The consent page is deliberately not
-  // in here: it is a form, and `csrf()` below is what guards it.
-  routes.use('/register', cors())
-  routes.use('/token', cors())
+  // Called by clients running in a browser as well as on a server — the PWA
+  // among them, from its own origin — and none reads a cookie, so opening them
+  // to any origin adds no authority. The dialog is deliberately not in here: it
+  // is a form, and `csrf()` below is what guards it.
+  for (const path of ['/register', '/token', '/revoke', '/userinfo', '/jwks']) routes.use(path, cors())
 
   routes.post('/register', async (c) => {
     // Unauthenticated by construction (RFC 7591), so the only bound on how fast
@@ -252,6 +305,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     return c.html(
       renderConsentPage({
         ...check.request,
+        mode: dialogMode(deps.db, check.request.clientId),
         clientName: check.client.clientName,
         clientUri: check.client.clientUri,
       }),
@@ -266,6 +320,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
       return redirectWithError(c, check.redirectUri, check.state, check.error, check.description)
     }
     const { request } = check
+    const mode = dialogMode(deps.db, request.clientId)
 
     if (field(body, 'deny') !== undefined) {
       return redirectWithError(
@@ -281,6 +336,65 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     const password = validatePassword(field(body, 'password'))
     const { throttle, hashGate } = deps.guards
 
+    const refuse = (message: string, status: 400 | 401 | 409 | 429) =>
+      c.html(
+        renderConsentPage({
+          ...request,
+          mode: dialogMode(deps.db, request.clientId),
+          clientName: check.client.clientName,
+          clientUri: check.client.clientUri,
+          error: message,
+          email: email ?? undefined,
+        }),
+        status,
+      )
+    const approve = (account: SessionUser) => {
+      const code = createAuthorizationCode(deps.db, {
+        clientId: request.clientId,
+        userId: account.id,
+        redirectUri: request.redirectUri,
+        codeChallenge: request.codeChallenge,
+        resource: request.resource ?? null,
+        scope: grantedScope(request.clientId, request.scope),
+        nonce: request.nonce ?? null,
+      })
+      const url = new URL(request.redirectUri)
+      url.searchParams.set('code', code)
+      if (request.state !== undefined) url.searchParams.set('state', request.state)
+      return c.redirect(url.toString(), 302)
+    }
+
+    if (field(body, 'setup') !== undefined) {
+      // Decided by the server's state, not the form: a setup POST to an
+      // instance that has an account is refused, whatever the page said.
+      if (mode !== 'setup') return refuse('This instance already has an account. Sign in instead.', 409)
+
+      // Every attempt counts while the window is open, not only failures —
+      // there is no account to lock anyone out of, and the first success
+      // closes the window for good.
+      const setupKey = `setup:${clientKey(c, deps.trustProxy)}`
+      throttle.recordAttempt(setupKey)
+      await delay(throttle.delayFor(setupKey), c.req.raw.signal)
+
+      if (email === undefined) return refuse('Enter a valid email address.', 400)
+      if (password === undefined) return refuse('Choose a longer password.', 400)
+      if (!hashGate.tryAcquire()) {
+        c.header('Retry-After', '1')
+        return refuse('Philo is busy. Try again.', 429)
+      }
+      let passwordHash: string
+      try {
+        passwordHash = await hashPassword(password)
+      } finally {
+        hashGate.release()
+      }
+      const rawName = field(body, 'name')?.trim()
+      const name = rawName === undefined || rawName === '' ? null : rawName.slice(0, MAX_NAME_LENGTH)
+      const created = createFirstUser(deps.db, { email, passwordHash, name })
+      if (created === undefined) return refuse('This instance already has an account. Sign in instead.', 409)
+      return approve(created)
+    }
+
     // Both keys matter, and both are the same buckets the login route uses: the
     // address bounds credential stuffing against the one account, the caller
     // bounds someone working through many.
@@ -293,18 +407,6 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
       emailKey === undefined ? 0 : throttle.delayFor(emailKey),
     )
     await delay(wait, c.req.raw.signal)
-
-    const refuse = (message: string, status: 401 | 429) =>
-      c.html(
-        renderConsentPage({
-          ...request,
-          clientName: check.client.clientName,
-          clientUri: check.client.clientUri,
-          error: message,
-          email: email ?? undefined,
-        }),
-        status,
-      )
 
     if (email === undefined || password === undefined) {
       return refuse('That email or password is not right.', 401)
@@ -325,19 +427,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
 
     throttle.reset(ipKey)
     if (emailKey !== undefined) throttle.reset(emailKey)
-
-    const code = createAuthorizationCode(deps.db, {
-      clientId: request.clientId,
-      userId: account.id,
-      redirectUri: request.redirectUri,
-      codeChallenge: request.codeChallenge,
-      resource: request.resource ?? null,
-    })
-
-    const url = new URL(request.redirectUri)
-    url.searchParams.set('code', code)
-    if (request.state !== undefined) url.searchParams.set('state', request.state)
-    return c.redirect(url.toString(), 302)
+    return approve(account)
   })
 
   routes.post('/token', async (c) => {
@@ -353,10 +443,61 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     return oauthError(c, 400, 'unsupported_grant_type', 'Supported grants: authorization_code, refresh_token.')
   })
 
+  // RFC 7009. How the PWA's sign-out actually ends the grant rather than just
+  // forgetting it locally.
+  routes.post('/revoke', async (c) => {
+    const body = await c.req.parseBody()
+    const client = authenticateClient(deps.db, c, body)
+    if (client === undefined) {
+      return oauthError(c, 401, 'invalid_client', 'Client authentication failed.')
+    }
+    const token = field(body, 'token')
+    if (token === undefined) return oauthError(c, 400, 'invalid_request', 'token is required.')
+    revokeToken(deps.db, token, client.clientId)
+    return c.body(null, 200)
+  })
+
+  // OIDC Core §5.3. Only for a token granted `openid`: identity is what the
+  // client asked to learn, and a token that never asked has no business here.
+  routes.on(['GET', 'POST'], '/userinfo', (c) => {
+    const token = bearerToken(c.req.header('authorization'))
+    const grant = token === undefined ? undefined : resolveAccessToken(deps.db, token)
+    if (grant === undefined || !hasScope(grant.scope, OPENID_SCOPE)) {
+      c.header('WWW-Authenticate', 'Bearer realm="philo", error="invalid_token"')
+      return c.json({ error: 'invalid_token' }, 401)
+    }
+    const user = userClaims(deps.db, grant.userId)
+    if (user === undefined) return c.json({ error: 'invalid_token' }, 401)
+    return c.json(user)
+  })
+
+  routes.get('/jwks', (c) => c.json({ keys: [deps.signingKey.publicJwk] }))
+
   return routes
 }
 
-function exchangeCode(
+function userClaims(db: Db, userId: number): { sub: string; email: string; name?: string } | undefined {
+  const [user] = db.select({ email: users.email, name: users.name }).from(users).where(eq(users.id, userId)).all()
+  if (user === undefined) return undefined
+  return { sub: String(userId), email: user.email, ...(user.name === null ? {} : { name: user.name }) }
+}
+
+/** OIDC Core §2. Signed, never encrypted: it travels only in a TLS response to its own client. */
+async function idToken(deps: OAuthDeps, subject: GrantSubject, nonce: string | null): Promise<string | undefined> {
+  const claims = userClaims(deps.db, subject.userId)
+  if (claims === undefined) return undefined
+  const { sub, ...rest } = claims
+  const jwt = new SignJWT({ ...rest, ...(nonce === null ? {} : { nonce }) })
+    .setProtectedHeader({ alg: ID_TOKEN_ALG, kid: deps.signingKey.kid, typ: 'JWT' })
+    .setIssuer(deps.publicBaseUrl)
+    .setSubject(sub)
+    .setAudience(subject.clientId)
+    .setIssuedAt()
+    .setExpirationTime(`${Math.floor(ACCESS_TOKEN_TTL_MS / 1000)}s`)
+  return jwt.sign(deps.signingKey.privateKey)
+}
+
+async function exchangeCode(
   deps: OAuthDeps,
   c: Context,
   client: RegisteredClient,
@@ -384,18 +525,19 @@ function exchangeCode(
   }
 
   const resource = field(body, 'resource')
-  if (resource !== undefined && !resourceMatches(deps.publicBaseUrl, resource)) {
+  if (resource !== undefined && !resourceMatches(deps, resource)) {
     return oauthError(c, 400, 'invalid_target', 'That resource is not one this server issues tokens for.')
   }
 
-  return tokenResponse(
-    c,
-    issueTokens(deps.db, {
-      clientId: grant.clientId,
-      userId: grant.userId,
-      resource: grant.resource,
-    }),
-  )
+  const subject: GrantSubject = {
+    clientId: grant.clientId,
+    userId: grant.userId,
+    resource: grant.resource,
+    scope: grant.scope,
+  }
+  const tokens = issueTokens(deps.db, subject)
+  const id = hasScope(grant.scope, OPENID_SCOPE) ? await idToken(deps, subject, grant.nonce) : undefined
+  return tokenResponse(c, tokens, id)
 }
 
 function exchangeRefreshToken(
@@ -417,7 +559,7 @@ function exchangeRefreshToken(
   // from before `PHILO_PUBLIC_BASE_URL` was corrected would otherwise destroy
   // its own grant on the first refresh, and need the whole consent flow again.
   const resource = field(body, 'resource')
-  if (resource !== undefined && !resourceMatches(deps.publicBaseUrl, resource)) {
+  if (resource !== undefined && !resourceMatches(deps, resource)) {
     return oauthError(c, 400, 'invalid_target', 'That resource is not one this server issues tokens for.')
   }
 
@@ -430,14 +572,15 @@ function exchangeRefreshToken(
   return tokenResponse(c, issueTokens(deps.db, subject))
 }
 
-function tokenResponse(c: Context, tokens: { accessToken: string; refreshToken: string; expiresIn: number }) {
+function tokenResponse(c: Context, tokens: IssuedTokens, signedIdToken?: string | undefined) {
   return c.json({
     access_token: tokens.accessToken,
     token_type: 'Bearer',
     expires_in: tokens.expiresIn,
     refresh_token: tokens.refreshToken,
-    // Stated because it is not necessarily what was asked for — see MCP_SCOPE.
-    scope: MCP_SCOPE,
+    // Stated because it is not necessarily what was asked for — see grantedScope.
+    scope: tokens.scope,
+    ...(signedIdToken === undefined ? {} : { id_token: signedIdToken }),
   })
 }
 
@@ -489,23 +632,18 @@ function parseBasicAuth(header: string | undefined): { clientId: string; clientS
 }
 
 /**
- * Discovery, mounted at `/.well-known`. Both documents are public and read by
- * clients that have no credential yet — which is the whole point of them.
- *
- * Each is served both bare and with the MCP endpoint's path appended: RFC 9728
- * §3.1 puts the resource's path after the well-known prefix, and clients differ
- * on whether they try that form first or the bare one.
+ * Discovery, mounted at `/.well-known`. Public, and read by clients that have
+ * no credential yet — which is the whole point of them.
  */
 export function createWellKnownRoutes(deps: { publicBaseUrl: string }): Hono {
   const routes = new Hono()
   routes.use('/*', cors())
-
-  for (const path of ['/oauth-authorization-server', `/oauth-authorization-server${MCP_PATH}`]) {
-    routes.get(path, (c) => c.json(authorizationServerMetadata(deps.publicBaseUrl)))
+  const prefix = '/.well-known'
+  for (const path of [AUTHORIZATION_SERVER_METADATA_PATH, OPENID_CONFIGURATION_PATH]) {
+    routes.get(path.slice(prefix.length), (c) => c.json(authorizationServerMetadata(deps.publicBaseUrl)))
   }
-  for (const path of ['/oauth-protected-resource', `/oauth-protected-resource${MCP_PATH}`]) {
-    routes.get(path, (c) => c.json(protectedResourceMetadata(deps.publicBaseUrl)))
-  }
-
+  routes.get(PROTECTED_RESOURCE_METADATA_PATH.slice(prefix.length), (c) =>
+    c.json(protectedResourceMetadata(deps.publicBaseUrl, deps.publicBaseUrl)),
+  )
   return routes
 }

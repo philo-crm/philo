@@ -14,7 +14,6 @@ import {
   createTestApp,
   defaultFormKey,
   setupAdmin,
-  TEST_ORIGIN,
   TEST_PUBLIC_BASE_URL,
   type TestApp,
 } from './support/app.ts'
@@ -46,16 +45,16 @@ interface PreviewResponse {
   leadId: number | null
 }
 
-function authed(method: string, body: unknown, cookie: string): RequestInit {
+function authed(method: string, body: unknown, authorization: string): RequestInit {
   return {
     method,
-    headers: { 'content-type': 'application/json', origin: TEST_ORIGIN, cookie },
+    headers: { 'content-type': 'application/json', authorization },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }
 }
 
-async function listTemplates(testApp: TestApp, cookie: string): Promise<TemplateResponse[]> {
-  const res = await testApp.app.request(TEMPLATES_PATH, { headers: { cookie } })
+async function listTemplates(testApp: TestApp, authorization: string): Promise<TemplateResponse[]> {
+  const res = await testApp.app.request(TEMPLATES_PATH, { headers: { authorization } })
   expect(res.status).toBe(200)
   const body = (await res.json()) as { templates: TemplateResponse[] }
   return body.templates
@@ -63,11 +62,11 @@ async function listTemplates(testApp: TestApp, cookie: string): Promise<Template
 
 async function preview(
   testApp: TestApp,
-  cookie: string,
+  authorization: string,
   draft: unknown,
   path = NOTIFY_PATH,
 ): Promise<PreviewResponse> {
-  const res = await testApp.app.request(`${path}/preview`, authed('POST', draft, cookie))
+  const res = await testApp.app.request(`${path}/preview`, authed('POST', draft, authorization))
   expect(res.status).toBe(200)
   const body = (await res.json()) as { preview: PreviewResponse }
   return body.preview
@@ -101,9 +100,9 @@ describe('GET /api/v1/settings/email/templates', () => {
 
   it('answers with the seeded pair, in seed order', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const templates = await listTemplates(testApp, cookie)
+    const templates = await listTemplates(testApp, authorization)
 
     expect(templates.map((template) => template.trigger)).toEqual([
       'new_lead_notify',
@@ -115,14 +114,33 @@ describe('GET /api/v1/settings/email/templates', () => {
   })
 })
 
+describe('GET /api/v1/settings/email/templates/:trigger', () => {
+  it('answers one template', async () => {
+    const testApp = createTestApp()
+    const authorization = await setupAdmin(testApp)
+    const res = await testApp.app.request('/api/v1/settings/email/templates/new_lead_ack', { headers: { authorization } })
+    expect(res.status).toBe(200)
+    const { template } = (await res.json()) as { template: TemplateResponse }
+    const listed = (await listTemplates(testApp, authorization)).find((entry) => entry.trigger === 'new_lead_ack')
+    expect(template).toEqual(listed)
+  })
+
+  it('404s a trigger that does not exist', async () => {
+    const testApp = createTestApp()
+    const authorization = await setupAdmin(testApp)
+    const res = await testApp.app.request('/api/v1/settings/email/templates/nope', { headers: { authorization } })
+    expect(res.status).toBe(404)
+  })
+})
+
 describe('PATCH /api/v1/settings/email/templates/:trigger', () => {
   it('stores an edited subject and body', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       ACK_PATH,
-      authed('PATCH', { subject: 'Hello {{lead.name}}', body: '<p>Hi {{lead.name}}</p>' }, cookie),
+      authed('PATCH', { subject: 'Hello {{lead.name}}', body: '<p>Hi {{lead.name}}</p>' }, authorization),
     )
 
     expect(res.status).toBe(200)
@@ -133,9 +151,9 @@ describe('PATCH /api/v1/settings/email/templates/:trigger', () => {
 
   it('keeps what the patch leaves out', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    await testApp.app.request(NOTIFY_PATH, authed('PATCH', { enabled: false }, cookie))
+    await testApp.app.request(NOTIFY_PATH, authed('PATCH', { enabled: false }, authorization))
 
     const stored = storedTemplate(testApp, 'new_lead_notify')
     expect(stored?.enabled).toBe(false)
@@ -144,11 +162,11 @@ describe('PATCH /api/v1/settings/email/templates/:trigger', () => {
 
   it('refuses a subject that is not valid Handlebars, and stores nothing', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       NOTIFY_PATH,
-      authed('PATCH', { subject: 'New lead: {{#if lead.name}}{{lead.name}}' }, cookie),
+      authed('PATCH', { subject: 'New lead: {{#if lead.name}}{{lead.name}}' }, authorization),
     )
 
     expect(res.status).toBe(400)
@@ -164,11 +182,11 @@ describe('PATCH /api/v1/settings/email/templates/:trigger', () => {
 
   it('refuses a body that is not valid Handlebars, and stores nothing', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       ACK_PATH,
-      authed('PATCH', { body: '<p>{{#each lead.fields}}{{this}}</p>' }, cookie),
+      authed('PATCH', { body: '<p>{{#each lead.fields}}{{this}}</p>' }, authorization),
     )
 
     expect(res.status).toBe(400)
@@ -178,44 +196,44 @@ describe('PATCH /api/v1/settings/email/templates/:trigger', () => {
 
   it('refuses an empty subject or body', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const blankSubject = await testApp.app.request(
       NOTIFY_PATH,
-      authed('PATCH', { subject: '   ' }, cookie),
+      authed('PATCH', { subject: '   ' }, authorization),
     )
     expect(blankSubject.status).toBe(400)
     expect(((await blankSubject.json()) as { error: string }).error).toBe('invalid_subject')
 
-    const blankBody = await testApp.app.request(NOTIFY_PATH, authed('PATCH', { body: '' }, cookie))
+    const blankBody = await testApp.app.request(NOTIFY_PATH, authed('PATCH', { body: '' }, authorization))
     expect(((await blankBody.json()) as { error: string }).error).toBe('invalid_body')
   })
 
   it('refuses source past the length caps', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const longSubject = await testApp.app.request(
       NOTIFY_PATH,
-      authed('PATCH', { subject: 'x'.repeat(MAX_TEMPLATE_SUBJECT_LENGTH + 1) }, cookie),
+      authed('PATCH', { subject: 'x'.repeat(MAX_TEMPLATE_SUBJECT_LENGTH + 1) }, authorization),
     )
     expect(((await longSubject.json()) as { error: string }).error).toBe('invalid_subject')
 
     const longBody = await testApp.app.request(
       NOTIFY_PATH,
-      authed('PATCH', { body: 'x'.repeat(MAX_TEMPLATE_BODY_LENGTH + 1) }, cookie),
+      authed('PATCH', { body: 'x'.repeat(MAX_TEMPLATE_BODY_LENGTH + 1) }, authorization),
     )
     expect(((await longBody.json()) as { error: string }).error).toBe('invalid_body')
   })
 
   it('still switches off a template whose stored source no longer renders', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     // Only reachable by writing around the API — but an operator staring at a
     // template that cannot send needs the off switch to work regardless.
     testApp.db.update(emailTemplates).set({ subject: '{{#if}}' }).run()
 
-    const res = await testApp.app.request(NOTIFY_PATH, authed('PATCH', { enabled: false }, cookie))
+    const res = await testApp.app.request(NOTIFY_PATH, authed('PATCH', { enabled: false }, authorization))
 
     expect(res.status).toBe(200)
     expect(storedTemplate(testApp, 'new_lead_notify')?.enabled).toBe(false)
@@ -223,11 +241,11 @@ describe('PATCH /api/v1/settings/email/templates/:trigger', () => {
 
   it('404s a trigger that is not one of the pair', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       `${TEMPLATES_PATH}/stage_changed`,
-      authed('PATCH', { subject: 'x' }, cookie),
+      authed('PATCH', { subject: 'x' }, authorization),
     )
 
     expect(res.status).toBe(404)
@@ -244,9 +262,9 @@ describe('PATCH /api/v1/settings/email/templates/:trigger', () => {
 describe('POST /api/v1/settings/email/templates/:trigger/preview', () => {
   it('renders the stored template against the sample lead', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const rendered = await preview(testApp, cookie, {})
+    const rendered = await preview(testApp, authorization, {})
 
     expect(rendered.leadId).toBeNull()
     expect(rendered.subject).toBe(`New lead: ${SAMPLE_LEAD.name}`)
@@ -256,9 +274,9 @@ describe('POST /api/v1/settings/email/templates/:trigger/preview', () => {
 
   it('renders the draft in the boxes without saving it', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const rendered = await preview(testApp, cookie, {
+    const rendered = await preview(testApp, authorization, {
       subject: 'Draft: {{lead.name}}',
       body: '<p>{{lead.fields.endorsements}}</p>',
     })
@@ -272,11 +290,11 @@ describe('POST /api/v1/settings/email/templates/:trigger/preview', () => {
 
   it('renders against a real lead when one is named', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com', endorsements: 'Doubles' })
-    const leadId = (await listLeadIds(testApp, cookie))[0]
+    const leadId = (await listLeadIds(testApp, authorization))[0]
 
-    const rendered = await preview(testApp, cookie, {
+    const rendered = await preview(testApp, authorization, {
       leadId,
       body: '<p>{{lead.name}} — {{lead.fields.endorsements}}</p>',
     })
@@ -288,11 +306,11 @@ describe('POST /api/v1/settings/email/templates/:trigger/preview', () => {
 
   it('escapes what a stranger typed into the form', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     await submitLead(testApp, { name: '<script>alert(1)</script>', email: 'dana@example.com' })
-    const leadId = (await listLeadIds(testApp, cookie))[0]
+    const leadId = (await listLeadIds(testApp, authorization))[0]
 
-    const rendered = await preview(testApp, cookie, { leadId, body: '<p>{{lead.name}}</p>' })
+    const rendered = await preview(testApp, authorization, { leadId, body: '<p>{{lead.name}}</p>' })
 
     expect(rendered.body).not.toContain('<script>')
     expect(rendered.body).toContain('&lt;script&gt;')
@@ -300,11 +318,11 @@ describe('POST /api/v1/settings/email/templates/:trigger/preview', () => {
 
   it('refuses a lead that does not exist', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       `${NOTIFY_PATH}/preview`,
-      authed('POST', { leadId: 9999 }, cookie),
+      authed('POST', { leadId: 9999 }, authorization),
     )
 
     expect(res.status).toBe(400)
@@ -313,11 +331,11 @@ describe('POST /api/v1/settings/email/templates/:trigger/preview', () => {
 
   it('reports what Handlebars said about a broken draft', async () => {
     const testApp = createTestApp()
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
     const res = await testApp.app.request(
       `${NOTIFY_PATH}/preview`,
-      authed('POST', { body: '{{#if lead.name}}' }, cookie),
+      authed('POST', { body: '{{#if lead.name}}' }, authorization),
     )
 
     expect(res.status).toBe(400)
@@ -333,8 +351,8 @@ describe('POST /api/v1/settings/email/templates/:trigger/preview', () => {
   })
 })
 
-async function listLeadIds(testApp: TestApp, cookie: string): Promise<number[]> {
-  const res = await testApp.app.request('/api/v1/leads', { headers: { cookie } })
+async function listLeadIds(testApp: TestApp, authorization: string): Promise<number[]> {
+  const res = await testApp.app.request('/api/v1/leads', { headers: { authorization } })
   const body = (await res.json()) as { leads: { id: number }[] }
   return body.leads.map((lead) => lead.id)
 }
@@ -353,12 +371,12 @@ describe('POST /api/v1/settings/email/templates/:trigger/test', () => {
   it('sends the rendered draft to whoever is signed in', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
     const res = await testApp.app.request(
       `${ACK_PATH}/test`,
-      authed('POST', { subject: 'Draft: {{lead.name}}', body: '<p>Draft body</p>' }, cookie),
+      authed('POST', { subject: 'Draft: {{lead.name}}', body: '<p>Draft body</p>' }, authorization),
     )
 
     expect(res.status).toBe(200)
@@ -373,12 +391,12 @@ describe('POST /api/v1/settings/email/templates/:trigger/test', () => {
   it('carries the acknowledgment’s reply-to, as the real send does', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp, { replyTo: 'hello@example.com' })
 
-    await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, cookie))
+    await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, authorization))
     // The notification has no reply-to in production, so its rehearsal has none.
-    await testApp.app.request(`${NOTIFY_PATH}/test`, authed('POST', {}, cookie))
+    await testApp.app.request(`${NOTIFY_PATH}/test`, authed('POST', {}, authorization))
 
     expect(sent[0]?.replyTo).toBe('hello@example.com')
     expect(sent[1]?.replyTo).toBeUndefined()
@@ -387,10 +405,10 @@ describe('POST /api/v1/settings/email/templates/:trigger/test', () => {
   it('falls back to the from address when no reply-to is set', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp, { replyTo: '' })
 
-    await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, cookie))
+    await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, authorization))
 
     expect(sent[0]?.replyTo).toBe('no-reply@example.com')
   })
@@ -398,9 +416,9 @@ describe('POST /api/v1/settings/email/templates/:trigger/test', () => {
   it('says so when SMTP has not been set up', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
 
-    const res = await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, cookie))
+    const res = await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, authorization))
 
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: 'not_configured' })
@@ -409,10 +427,10 @@ describe('POST /api/v1/settings/email/templates/:trigger/test', () => {
 
   it('passes the SMTP server’s complaint back to the operator', async () => {
     const testApp = withSender([], '535 authentication failed')
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
-    const res = await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, cookie))
+    const res = await testApp.app.request(`${ACK_PATH}/test`, authed('POST', {}, authorization))
 
     expect(res.status).toBe(502)
     expect(await res.json()).toEqual({ error: 'send_failed', detail: '535 authentication failed' })
@@ -421,12 +439,12 @@ describe('POST /api/v1/settings/email/templates/:trigger/test', () => {
   it('refuses to send a draft that does not render', async () => {
     const sent: OutgoingEmail[] = []
     const testApp = withSender(sent)
-    const cookie = await setupAdmin(testApp)
+    const authorization = await setupAdmin(testApp)
     configureEmail(testApp)
 
     const res = await testApp.app.request(
       `${ACK_PATH}/test`,
-      authed('POST', { subject: '{{#if}}' }, cookie),
+      authed('POST', { subject: '{{#if}}' }, authorization),
     )
 
     expect(res.status).toBe(400)

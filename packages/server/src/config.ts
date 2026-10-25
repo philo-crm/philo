@@ -13,6 +13,25 @@ export interface Config {
    * caller. See `resolveClientAddress` for exactly how far the trust extends.
    */
   trustProxy: boolean
+  /**
+   * Where the PWA is served. The first-party client's redirect URI and every
+   * link an email or a push notification carries are built from it. Defaults to
+   * the public base URL, which is the single-container deployment.
+   */
+  appUrl: string
+  /** Where the MCP app is served — a resource tokens may be issued for. */
+  mcpUrl: string
+  /** Set when an external IdP replaces the built-in one — ADR-0006. */
+  externalIdp: ExternalIdpConfig | undefined
+}
+
+export interface ExternalIdpConfig {
+  /** The issuer, exactly as its tokens' `iss` claim states it. */
+  issuer: string
+  /** Required `aud` on access tokens, when the IdP sets one. */
+  audience: string | undefined
+  /** The PWA's client id at that IdP: tokens it holds carry operator authority. */
+  clientId: string
 }
 
 const DEFAULT_PORT = 3000
@@ -29,18 +48,45 @@ function parsePort(raw: string | undefined): number {
   return port
 }
 
-function parsePublicBaseUrl(raw: string | undefined, port: number): string {
-  if (raw === undefined || raw === '') return `http://localhost:${port}`
+function parseUrl(name: string, raw: string): string {
   let url: URL
   try {
     url = new URL(raw)
   } catch {
-    throw new ConfigError(`PHILO_PUBLIC_BASE_URL must be an absolute URL, got ${JSON.stringify(raw)}`)
+    throw new ConfigError(`${name} must be an absolute URL, got ${JSON.stringify(raw)}`)
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new ConfigError(`PHILO_PUBLIC_BASE_URL must be http or https, got ${JSON.stringify(raw)}`)
+    throw new ConfigError(`${name} must be http or https, got ${JSON.stringify(raw)}`)
   }
   return url.origin + url.pathname.replace(/\/$/, '')
+}
+
+function parsePublicBaseUrl(raw: string | undefined, port: number): string {
+  if (raw === undefined || raw === '') return `http://localhost:${port}`
+  return parseUrl('PHILO_PUBLIC_BASE_URL', raw)
+}
+
+function parseOptionalUrl(name: string, raw: string | undefined, fallback: string): string {
+  return raw === undefined || raw === '' ? fallback : parseUrl(name, raw)
+}
+
+/**
+ * All or nothing: an issuer without the PWA's client id would accept tokens
+ * and then give nobody operator authority, which looks like a working setup
+ * until the first attempt to open Settings.
+ */
+function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined {
+  const issuer = env['PHILO_OIDC_ISSUER']
+  if (issuer === undefined || issuer === '') return undefined
+  const clientId = env['PHILO_OIDC_CLIENT_ID']
+  if (clientId === undefined || clientId === '') {
+    throw new ConfigError('PHILO_OIDC_CLIENT_ID is required when PHILO_OIDC_ISSUER is set')
+  }
+  // The issuer is compared to `iss` byte for byte, so it is kept as written
+  // apart from the validation.
+  parseUrl('PHILO_OIDC_ISSUER', issuer)
+  const audience = env['PHILO_OIDC_AUDIENCE']
+  return { issuer, clientId, audience: audience === undefined || audience === '' ? undefined : audience }
 }
 
 /**
@@ -61,10 +107,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // An empty value counts as unset — `-e PHILO_DATA_DIR=` or an unexpanded
   // compose variable must not silently park state in the working directory.
   const dataDir = env['PHILO_DATA_DIR'] || DEFAULT_DATA_DIR
+  const publicBaseUrl = parsePublicBaseUrl(env['PHILO_PUBLIC_BASE_URL'], port)
   return {
     port,
     dataDir: resolve(dataDir),
-    publicBaseUrl: parsePublicBaseUrl(env['PHILO_PUBLIC_BASE_URL'], port),
+    publicBaseUrl,
     trustProxy: parseTrustProxy(env['PHILO_TRUSTED_PROXY']),
+    appUrl: parseOptionalUrl('PHILO_APP_URL', env['PHILO_APP_URL'], publicBaseUrl),
+    mcpUrl: parseOptionalUrl('PHILO_MCP_URL', env['PHILO_MCP_URL'], `${publicBaseUrl}/mcp`),
+    externalIdp: parseExternalIdp(env),
   }
 }

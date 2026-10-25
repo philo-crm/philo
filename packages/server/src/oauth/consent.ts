@@ -1,5 +1,6 @@
 import { html, raw } from 'hono/html'
 import type { HtmlEscapedString } from 'hono/utils/html'
+import { MIN_PASSWORD_LENGTH } from '../auth/password.ts'
 
 /** What `html` yields — synchronous unless an interpolated value is a promise. */
 type Html = HtmlEscapedString | Promise<HtmlEscapedString>
@@ -16,9 +17,18 @@ export interface ConsentRequest {
   codeChallenge: string
   state: string | undefined
   resource: string | undefined
+  /** As requested; what is granted is decided on the POST, from the client. */
+  scope: string | undefined
+  nonce: string | undefined
 }
 
 export interface ConsentPage extends ConsentRequest {
+  /**
+   * `consent` asks the operator to let a third-party client in; `signin` is the
+   * PWA's own sign-in, where there is nobody else to approve; `setup` is
+   * first-boot, creating the account the other two sign in to.
+   */
+  mode: 'consent' | 'signin' | 'setup'
   /** What the client called itself at registration. Untrusted display text. */
   clientName: string | null
   /** Shown so the operator can see where approval would send the code. */
@@ -60,7 +70,7 @@ function hidden(name: string, value: string | undefined): Html | string {
 }
 
 /**
- * The single login-and-consent page — DESIGN.md (Auth and access). One POST
+ * The IdP's one dialog — DESIGN.md (Auth and access), ADR-0006. One POST
  * both authenticates the operator and records their approval, which is what
  * lets a single-tenant CRM skip a session-backed consent step entirely: the
  * password in the form is the proof, so a cross-site forgery has nothing to
@@ -78,46 +88,79 @@ function hidden(name: string, value: string | undefined): Html | string {
  */
 export function renderConsentPage(page: ConsentPage): Html {
   const name = page.clientName ?? 'An application'
+  const heading =
+    page.mode === 'setup'
+      ? 'Set up Philo'
+      : page.mode === 'signin'
+        ? 'Sign in to Philo'
+        : html`Connect ${name} to Philo`
+  const lede =
+    page.mode === 'setup'
+      ? 'Create the account that runs this instance. You will use it to sign in from now on.'
+      : page.mode === 'signin'
+        ? ''
+        : 'Sign in to approve this connection.'
   return html`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
-    <title>Connect to Philo</title>
+    <title>${page.mode === 'consent' ? 'Connect to Philo' : heading}</title>
     <style>
       ${raw(STYLES)}
     </style>
   </head>
   <body>
     <main>
-      <h1>Connect ${name} to Philo</h1>
-      <p class="muted">Sign in to approve this connection.</p>
-      <div class="grant">
-        <strong>${name}</strong> is asking for access to this Philo instance.
-        ${page.clientUri === null ? '' : html`<div class="muted"><code>${page.clientUri}</code></div>`}
-        <ul>
-          <li>Read and write every lead, note, and stage</li>
-          <li>Read and edit the email templates the business sends</li>
-        </ul>
-        <p class="muted" style="margin: 0.5rem 0 0">
-          Approving sends it back to <code>${page.redirectUri}</code>. If you did not start this, close
-          this page.
-        </p>
-      </div>
+      <h1>${heading}</h1>
+      ${lede === '' ? '' : html`<p class="muted">${lede}</p>`}
+      ${page.mode === 'consent'
+        ? html`<div class="grant">
+            <strong>${name}</strong> is asking for access to this Philo instance.
+            ${page.clientUri === null ? '' : html`<div class="muted"><code>${page.clientUri}</code></div>`}
+            <ul>
+              <li>Read and write every lead, note, and stage</li>
+              <li>Read and edit the email templates the business sends</li>
+            </ul>
+            <p class="muted" style="margin: 0.5rem 0 0">
+              Approving sends it back to <code>${page.redirectUri}</code>. If you did not start this, close
+              this page.
+            </p>
+          </div>`
+        : ''}
       ${page.error === undefined ? '' : html`<p class="error">${page.error}</p>`}
       <form method="post" action="/oauth/authorize">
         ${hidden('client_id', page.clientId)} ${hidden('redirect_uri', page.redirectUri)}
         ${hidden('response_type', 'code')} ${hidden('code_challenge', page.codeChallenge)}
         ${hidden('code_challenge_method', 'S256')} ${hidden('state', page.state)}
-        ${hidden('resource', page.resource)}
+        ${hidden('resource', page.resource)} ${hidden('scope', page.scope)} ${hidden('nonce', page.nonce)}
+        ${page.mode === 'setup'
+          ? html`${hidden('setup', '1')}
+              <label for="name">Your name <span class="muted">(optional)</span></label>
+              <input id="name" name="name" type="text" autocomplete="name" />`
+          : ''}
         <label for="email">Email</label>
         <input id="email" name="email" type="email" autocomplete="username" required value="${page.email ?? ''}" />
         <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autocomplete="${page.mode === 'setup' ? 'new-password' : 'current-password'}"
+          ${raw(page.mode === 'setup' ? `minlength="${MIN_PASSWORD_LENGTH}"` : '')}
+          required
+        />
+        ${page.mode === 'setup'
+          ? html`<p class="muted">At least ${MIN_PASSWORD_LENGTH} characters.</p>`
+          : ''}
         <div class="actions">
-          <button type="submit" name="approve" value="1">Approve</button>
-          <button type="submit" name="deny" value="1" formnovalidate>Cancel</button>
+          <button type="submit" name="approve" value="1">
+            ${page.mode === 'setup' ? 'Create account' : page.mode === 'signin' ? 'Sign in' : 'Approve'}
+          </button>
+          ${page.mode === 'consent'
+            ? html`<button type="submit" name="deny" value="1" formnovalidate>Cancel</button>`
+            : ''}
         </div>
       </form>
     </main>

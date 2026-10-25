@@ -9,8 +9,7 @@ import {
   verifyPassword,
 } from '../src/auth/password.ts'
 import { ConcurrencyGate, FailureThrottle } from '../src/auth/rate-limit.ts'
-import { SESSION_KEY_FILENAME, loadOrCreateSessionKey } from '../src/auth/session-key.ts'
-import { generateSessionToken, hashSessionToken } from '../src/auth/session.ts'
+import { SIGNING_KEY_FILENAME, loadOrCreateSigningKey } from '../src/oauth/signing-key.ts'
 
 const dirs: string[] = []
 
@@ -52,47 +51,36 @@ describe('password hashing', () => {
   })
 })
 
-describe('session tokens', () => {
-  it('generates distinct, URL-safe tokens', () => {
-    const tokens = new Set(Array.from({ length: 50 }, generateSessionToken))
-    expect(tokens.size).toBe(50)
-    for (const token of tokens) expect(token).toMatch(/^[A-Za-z0-9_-]+$/)
-  })
-
-  it('hashes deterministically and irreversibly', () => {
-    const token = generateSessionToken()
-    expect(hashSessionToken(token)).toBe(hashSessionToken(token))
-    expect(hashSessionToken(token)).toMatch(/^[0-9a-f]{64}$/)
-    expect(hashSessionToken(token)).not.toContain(token)
-  })
-})
-
-describe('session signing key', () => {
+describe('id_token signing key', () => {
   it('generates a key on first call and reuses it after', () => {
     const dir = tempDir()
-    const first = loadOrCreateSessionKey(dir)
-    expect(first).toMatch(/^[0-9a-f]{64}$/)
-    expect(loadOrCreateSessionKey(dir)).toBe(first)
+    const first = loadOrCreateSigningKey(dir)
+    expect(first.publicJwk).toMatchObject({ kty: 'EC', crv: 'P-256', alg: 'ES256', use: 'sig' })
+    expect(loadOrCreateSigningKey(dir).kid).toBe(first.kid)
   })
 
   it('writes the key owner-readable only', () => {
     const dir = tempDir()
-    loadOrCreateSessionKey(dir)
-    const mode = statSync(join(dir, SESSION_KEY_FILENAME)).mode & 0o777
+    loadOrCreateSigningKey(dir)
+    const mode = statSync(join(dir, SIGNING_KEY_FILENAME)).mode & 0o777
     expect(mode).toBe(0o600)
   })
 
-  it('replaces an empty key file left behind by an interrupted write', () => {
+  it('replaces a key file left half-written by an interrupted write', () => {
     const dir = tempDir()
-    const path = join(dir, SESSION_KEY_FILENAME)
-    writeFileSync(path, '   \n')
-    const key = loadOrCreateSessionKey(dir)
-    expect(key).toMatch(/^[0-9a-f]{64}$/)
-    expect(readFileSync(path, 'utf8').trim()).toBe(key)
+    const path = join(dir, SIGNING_KEY_FILENAME)
+    writeFileSync(path, '{"kty":')
+    const key = loadOrCreateSigningKey(dir)
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ kty: 'EC', crv: 'P-256' })
+    expect(loadOrCreateSigningKey(dir).kid).toBe(key.kid)
+  })
+
+  it('never puts the private half in what it publishes', () => {
+    expect(loadOrCreateSigningKey(tempDir()).publicJwk).not.toHaveProperty('d')
   })
 
   it('gives different data dirs different keys', () => {
-    expect(loadOrCreateSessionKey(tempDir())).not.toBe(loadOrCreateSessionKey(tempDir()))
+    expect(loadOrCreateSigningKey(tempDir()).kid).not.toBe(loadOrCreateSigningKey(tempDir()).kid)
   })
 })
 

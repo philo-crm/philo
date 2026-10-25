@@ -25,7 +25,7 @@ export interface TemplateContext {
  */
 export function buildContext(
   lead: Pick<LeadRecord, 'id' | 'name' | 'email' | 'phone' | 'source' | 'fields'>,
-  options: { businessName: string; fromName: string; publicBaseUrl: string },
+  options: { businessName: string; fromName: string; appUrl: string },
 ): TemplateContext {
   return {
     lead: {
@@ -36,7 +36,7 @@ export function buildContext(
       fields: lead.fields,
     },
     business: { name: options.businessName || options.fromName },
-    lead_url: `${options.publicBaseUrl.replace(/\/+$/, '')}/leads/${lead.id}`,
+    lead_url: `${options.appUrl.replace(/\/+$/, '')}/leads/${lead.id}`,
   }
 }
 
