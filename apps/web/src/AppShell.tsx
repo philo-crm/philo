@@ -11,7 +11,7 @@ import { Settings } from './Settings.tsx'
 export interface AppShellProps {
   user: User
   onSignOut: () => void
-  /** A 401 from any screen: the session ended, so hand back to the login screen. */
+  /** A 401 from any screen: the session ended, so hand back to the sign-in screen. */
   onSessionExpired: () => void
 }
 

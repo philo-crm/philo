@@ -1,3 +1,4 @@
+import { pkceChallenge } from '@philo/sdk'
 import { vi } from 'vitest'
 import type {
   ApiKeyRecord,
@@ -7,7 +8,8 @@ import type {
   LeadEventRecord,
   StageRecord,
 } from '../../src/api.ts'
-import type { User } from '../../src/auth.ts'
+import { REFRESH_TOKEN_KEY, type User } from '../../src/auth.ts'
+import { setAccessTokenSource } from '../../src/client.ts'
 
 /**
  * An in-memory stand-in for the REST surface, close enough that a screen test
@@ -17,6 +19,14 @@ import type { User } from '../../src/auth.ts'
  */
 export interface FakeApi {
   user: User | undefined
+  /** The one access token the API accepts right now; undefined when signed out. */
+  accessToken: string | undefined
+  /** The refresh token the IdP would honour, rotated on every use as the real one is. */
+  refreshToken: string | undefined
+  /** Codes the authorize page handed out and not yet spent, with what the exchange must match. */
+  authorizations: Map<string, { challenge: string; redirectUri: string; nonce: string }>
+  /** Every token sent to the revocation endpoint. */
+  revoked: string[]
   stages: StageRecord[]
   leads: LeadDetail[]
   /** Flip to make every authenticated call answer 401, as an expired session does. */
@@ -56,6 +66,7 @@ export interface FakeApi {
     query: URLSearchParams
     body: unknown
     contentType: string | undefined
+    authorization: string | undefined
   }[]
 }
 
@@ -515,25 +526,141 @@ function handlePush(api: FakeApi, method: string, path: string, body: unknown): 
   return undefined
 }
 
-function handle(api: FakeApi, method: string, path: string, query: URLSearchParams, body: unknown): Response {
-  if (method === 'GET' && path === '/api/v1/auth/status') {
-    return jsonResponse(200, { needsSetup: false, authenticated: api.user !== undefined })
+export const TEST_ISSUER = 'http://localhost:3000'
+export const TEST_CLIENT_ID = 'philo-web'
+
+let nextToken = 1
+
+function issueTokens(api: FakeApi): { accessToken: string; refreshToken: string } {
+  nextToken += 1
+  api.accessToken = `access-${nextToken}`
+  api.refreshToken = `refresh-${nextToken}`
+  return { accessToken: api.accessToken, refreshToken: api.refreshToken }
+}
+
+function jwtPart(value: unknown): string {
+  return btoa(JSON.stringify(value)).replaceAll('=', '')
+}
+
+/** An unsigned id_token — the client reads its nonce and verifies nothing else (sdk/src/oidc.ts). */
+function idToken(nonce: string): string {
+  return `${jwtPart({ alg: 'none' })}.${jwtPart({ nonce, sub: String(TEST_USER.id) })}.`
+}
+
+function tokenAnswer(api: FakeApi, nonce?: string): Response {
+  const { accessToken, refreshToken } = issueTokens(api)
+  return jsonResponse(200, {
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    token_type: 'Bearer',
+    expires_in: 3600,
+    scope: 'openid operator',
+    ...(nonce === undefined ? {} : { id_token: idToken(nonce) }),
+  })
+}
+
+/**
+ * The token endpoint, holding the client to what the server does: the code is
+ * single-use, PKCE is checked, and a refresh token is spent by using it.
+ */
+async function handleToken(api: FakeApi, params: URLSearchParams): Promise<Response> {
+  if (params.get('client_id') !== TEST_CLIENT_ID) return jsonResponse(401, { error: 'invalid_client' })
+  const grant = params.get('grant_type')
+
+  if (grant === 'refresh_token') {
+    if (api.refreshToken === undefined || params.get('refresh_token') !== api.refreshToken) {
+      return jsonResponse(400, { error: 'invalid_grant' })
+    }
+    return tokenAnswer(api)
+  }
+  if (grant !== 'authorization_code') return jsonResponse(400, { error: 'unsupported_grant_type' })
+
+  const code = params.get('code') ?? ''
+  const issued = api.authorizations.get(code)
+  api.authorizations.delete(code)
+  if (issued === undefined || params.get('redirect_uri') !== issued.redirectUri) {
+    return jsonResponse(400, { error: 'invalid_grant' })
+  }
+  if ((await pkceChallenge(params.get('code_verifier') ?? '')) !== issued.challenge) {
+    return jsonResponse(400, { error: 'invalid_grant', error_description: 'PKCE verification failed.' })
+  }
+  return tokenAnswer(api, issued.nonce)
+}
+
+/** The public surface: auth config, discovery, and the IdP's token and revocation endpoints. */
+function handleIdp(api: FakeApi, method: string, path: string, body: unknown): Response | Promise<Response> | undefined {
+  if (method === 'GET' && path === '/api/v1/auth/config') {
+    return jsonResponse(200, { issuer: TEST_ISSUER, clientId: TEST_CLIENT_ID, scope: 'openid operator' })
+  }
+  if (method === 'GET' && path === '/.well-known/openid-configuration') {
+    return jsonResponse(200, {
+      issuer: TEST_ISSUER,
+      authorization_endpoint: `${TEST_ISSUER}/oauth/authorize`,
+      token_endpoint: `${TEST_ISSUER}/oauth/token`,
+      revocation_endpoint: `${TEST_ISSUER}/oauth/revoke`,
+    })
+  }
+  const params = body instanceof URLSearchParams ? body : new URLSearchParams()
+  if (method === 'POST' && path === '/oauth/token') return handleToken(api, params)
+  if (method === 'POST' && path === '/oauth/revoke') {
+    const token = params.get('token') ?? ''
+    api.revoked.push(token)
+    if (token === api.refreshToken) {
+      api.refreshToken = undefined
+      api.accessToken = undefined
+    }
+    return jsonResponse(200, {})
+  }
+  return undefined
+}
+
+/**
+ * What the IdP's authorize page does once the person signs in: checks the
+ * request, remembers the PKCE challenge against a fresh code, and answers with
+ * the URL it would redirect the browser back to.
+ */
+export function authorize(api: FakeApi, authorizeUrl: string): string {
+  const request = new URL(authorizeUrl)
+  const params = request.searchParams
+  if (request.pathname !== '/oauth/authorize') throw new Error(`not the authorize endpoint: ${authorizeUrl}`)
+  if (params.get('client_id') !== TEST_CLIENT_ID || params.get('response_type') !== 'code') {
+    throw new Error(`unexpected authorization request: ${authorizeUrl}`)
+  }
+  if (params.get('code_challenge_method') !== 'S256') throw new Error('PKCE S256 is required')
+  const redirectUri = params.get('redirect_uri') ?? ''
+  const code = `code-${api.authorizations.size + 1}-${Date.now()}`
+  api.authorizations.set(code, {
+    challenge: params.get('code_challenge') ?? '',
+    redirectUri,
+    nonce: params.get('nonce') ?? '',
+  })
+  const callback = new URL(redirectUri)
+  callback.searchParams.set('code', code)
+  callback.searchParams.set('state', params.get('state') ?? '')
+  return callback.toString()
+}
+
+function handle(
+  api: FakeApi,
+  method: string,
+  path: string,
+  query: URLSearchParams,
+  body: unknown,
+  authorization: string | undefined,
+): Response | Promise<Response> {
+  const idpAnswer = handleIdp(api, method, path, body)
+  if (idpAnswer !== undefined) return idpAnswer
+
+  // Bearer-only, as the server is: no token, a stale one, or an expired
+  // session all answer the same 401.
+  const bearer = /^Bearer (.+)$/.exec(authorization ?? '')?.[1]
+  if (api.expired || bearer === undefined || bearer !== api.accessToken) {
+    return jsonResponse(401, { error: 'unauthorized' })
   }
   if (method === 'GET' && path === '/api/v1/auth/session') {
-    if (api.user === undefined || api.expired) return jsonResponse(401, { error: 'unauthorized' })
+    if (api.user === undefined) return jsonResponse(401, { error: 'unauthorized' })
     return jsonResponse(200, { user: api.user })
   }
-  if (method === 'POST' && path === '/api/v1/auth/login') {
-    api.user = TEST_USER
-    api.expired = false
-    return jsonResponse(200, { user: TEST_USER })
-  }
-  if (method === 'POST' && path === '/api/v1/auth/logout') {
-    api.user = undefined
-    return jsonResponse(204, undefined)
-  }
-
-  if (api.expired) return jsonResponse(401, { error: 'unauthorized' })
 
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
   const pushAnswer = handlePush(api, method, path, body)
@@ -596,9 +723,25 @@ function headerOf(init: RequestInit | undefined, name: string): string | undefin
   return entries.find(([key]) => key.toLowerCase() === name)?.[1]
 }
 
-export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
+/**
+ * Signed in by default, as most screens are tested: the client already holds a
+ * valid token, and a refresh token waits in storage for an `<App />` that boots
+ * from scratch. `signedIn: false` starts from a browser that has never signed in.
+ */
+/** The IdP's endpoints take a form, the API takes JSON. */
+function parseBody(body: unknown, contentType: string | undefined): unknown {
+  if (typeof body !== 'string') return undefined
+  return contentType === 'application/x-www-form-urlencoded' ? new URLSearchParams(body) : JSON.parse(body)
+}
+
+export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolean } = {}): FakeApi {
+  const { signedIn = true, ...rest } = overrides
   const api: FakeApi = {
     user: TEST_USER,
+    accessToken: undefined,
+    refreshToken: undefined,
+    authorizations: new Map(),
+    revoked: [],
     stages: TEST_STAGES,
     leads: [],
     expired: false,
@@ -614,7 +757,7 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
     vapidPublicKey: TEST_VAPID_PUBLIC_KEY,
     pushSubscriptions: [],
     calls: [],
-    ...overrides,
+    ...rest,
   }
   // Owned outright: the funnel, settings and template handlers mutate in place,
   // and each default is one object shared by every test in the run.
@@ -623,20 +766,32 @@ export function installFakeApi(overrides: Partial<FakeApi> = {}): FakeApi {
   api.emailTemplates = structuredClone(api.emailTemplates)
   api.apiKeys = structuredClone(api.apiKeys)
 
+  const tokens = signedIn ? issueTokens(api) : undefined
+  setAccessTokenSource(tokens === undefined ? undefined : () => api.accessToken)
+  try {
+    if (tokens === undefined) window.localStorage.removeItem(REFRESH_TOKEN_KEY)
+    else window.localStorage.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken)
+    window.sessionStorage.clear()
+  } catch {
+    // A test that made storage throw gets a browser that remembers nothing.
+  }
+
   vi.stubGlobal('fetch', async (input: unknown, init?: RequestInit) => {
-    const url = new URL(String(input), 'http://philo.example.com')
+    const url = new URL(String(input), TEST_ISSUER)
     const method = init?.method ?? 'GET'
-    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
+    const contentType = headerOf(init, 'content-type')
     api.calls.push({
       method,
       path: url.pathname,
       query: url.searchParams,
-      body,
-      contentType: headerOf(init, 'content-type'),
+      body: parseBody(init?.body, contentType),
+      contentType,
+      authorization: headerOf(init, 'authorization'),
     })
     if (api.offline?.test(url.pathname) === true) throw new TypeError('Failed to fetch')
     if (api.hold !== undefined) await api.hold
-    return handle(api, method, url.pathname, url.searchParams, body)
+    const call = api.calls.at(-1)
+    return handle(api, method, url.pathname, url.searchParams, call?.body, call?.authorization)
   })
 
   return api

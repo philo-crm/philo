@@ -64,7 +64,7 @@ function PushNotifications({ onSessionExpired }: SettingsProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(undefined)
 
-  // A 401 here means the session ended, and the only useful answer is the login
+  // A 401 here means the session ended, and the only useful answer is the sign-in
   // screen — the same handling every other authenticated screen has.
   useSessionGuard(error, onSessionExpired)
 

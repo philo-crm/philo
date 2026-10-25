@@ -1,6 +1,7 @@
 # 0005 — OAuth 2.1 server built on the MCP SDK's primitives, served by Hono
 
-- **Status:** Accepted
+- **Status:** Accepted; the "one scope" and "a token reaches `/mcp` only"
+  decisions are superseded by [0006](0006-headless-server-sdk-clients.md)
 - **Date:** 2026-08-15
 
 ## Context

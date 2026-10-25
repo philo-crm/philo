@@ -64,7 +64,7 @@ export function useResource<T>(load: (signal: AbortSignal) => Promise<T>): Resou
 
 /**
  * A 401 anywhere behind the shell means the ~30-day session ended, and the only
- * useful answer is the login screen — an authenticated screen showing "your
+ * useful answer is the sign-in screen — an authenticated screen showing "your
  * session expired" next to stale data is a dead end a person cannot act on.
  */
 export function useSessionGuard(error: unknown, onExpired: () => void): void {

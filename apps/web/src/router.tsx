@@ -3,7 +3,7 @@ import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from
 /**
  * Three screens do not need a routing library. History API plus one subscriber
  * set is the whole thing, and the server already answers an unknown path with
- * the app shell (server/src/app.ts), so a deep link survives a cold load.
+ * the app shell (apps/standalone/src/app.ts), so a deep link survives a cold load.
  */
 const listeners = new Set<() => void>()
 

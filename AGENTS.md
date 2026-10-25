@@ -91,15 +91,30 @@ instead of building it.
 
 ## Build and test
 
-Node 24 or newer. Everything runs from the repo root; the two workspaces are
-`server` and `web`.
+Node 24 or newer. Everything runs from the repo root. The layout is
+[ADR-0006](docs/adr/0006-headless-server-sdk-clients.md): a headless server, an
+SDK that tracks it, and two clients of the SDK.
+
+| Workspace | Package | What it is |
+|---|---|---|
+| `packages/server` | `@philo/server` | Headless: `/api/v1`, form intake, the OIDC IdP and its dialogs |
+| `packages/sdk` | `@philo/sdk` | Typed API client and OIDC helpers. Every client reaches the API through it |
+| `apps/web` | `@philo/web` | The PWA — the human UI |
+| `apps/mcp` | `@philo/mcp` | The MCP server — the agent UI |
+| `apps/standalone` | `@philo/standalone` | Hosts all three on one origin: the container image |
+
+**A change to an API response shape changes the SDK in the same PR.** The SDK's
+copied bounds are checked against the server's by
+`packages/server/test/sdk-limits.test.ts`. Workspaces consume each other from
+source in dev and tests (the `source` export condition, aliased in the Vitest
+configs) and from `dist` in builds.
 
 ```bash
-npm install          # both workspaces
-npm test             # vitest, both workspaces
-npm run typecheck    # tsc, both workspaces
+npm install          # every workspace
+npm test             # vitest, every workspace
+npm run typecheck    # tsc, every workspace
 npm run lint         # oxlint --deny-warnings
-npm run build        # web -> server/public, then server -> server/dist
+npm run build        # sdk, server, mcp, web, standalone — in dependency order
 ```
 
 **Run test, typecheck, lint and build before calling anything done**, and run
@@ -110,19 +125,19 @@ answer `GET /version`.
 Narrow the loop while iterating:
 
 ```bash
-npm test --workspace server -- leads      # one file, by name substring
-npm run dev                               # server in watch mode on :3000
-npm run dev --workspace web               # Vite with HMR, proxying /api to :3000
+npm test --workspace packages/server -- leads   # one file, by name substring
+npm run dev                                     # standalone (API + MCP) in watch mode on :3000
+npm run dev --workspace apps/web                # Vite with HMR, proxying the API and IdP to :3000
 ```
 
-Local state lands in `server/data` (gitignored) — `npm run dev` runs in the
-`server` workspace, so the default relative data dir resolves against it, not
-the repo root. Deleting that directory is how you get a fresh first-boot
-instance: setup screen, seeded stages and all.
+Local state lands in `apps/standalone/data` (gitignored) — `npm run dev` runs in
+that workspace, so the default relative data dir resolves against it, not the
+repo root. Deleting that directory is how you get a fresh first-boot instance:
+the IdP's setup dialog, seeded stages and all.
 
 Schema changes go through drizzle-kit and have rules of their own, including one
 about the FTS triggers that will silently break search if ignored — see
-[CONTRIBUTING.md](CONTRIBUTING.md) before touching `server/src/db/schema.ts`.
+[CONTRIBUTING.md](CONTRIBUTING.md) before touching `packages/server/src/db/schema.ts`.
 
 ## Shippability Bar
 
@@ -170,8 +185,8 @@ version.
 - **`0.0.0` means nothing has been released yet.** The scaffold set that
   baseline rather than claiming a number it hadn't earned; the first
   `/cut-release` minor bump lands on `0.1.0` and tags `v0.1.0`.
-- **`server/package.json` and `web/package.json` carry no `version` field**,
-  deliberately. They are private workspace packages; giving them a version
+- **Workspace `package.json` files carry no `version` field**, deliberately.
+  They are private workspace packages; giving them a version
   creates a second number that drifts from the first. Leave them alone.
 
 Increment rules — applied by `/cut-release`, not by the PR that motivates them:

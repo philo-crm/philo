@@ -161,16 +161,6 @@ main {
   margin: 0;
 }
 
-.auth-form label {
-  display: grid;
-  gap: 0.25rem;
-}
-
-.auth-form label span {
-  font-weight: normal;
-  color: var(--muted);
-}
-
 .auth-form button {
   justify-self: start;
 }

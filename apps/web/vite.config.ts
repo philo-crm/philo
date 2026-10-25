@@ -81,19 +81,22 @@ export function serviceWorker(
   }
 }
 
-// The PWA is served statically by the Hono server, so it builds straight into
-// the server's public directory.
+// Builds to dist/, which apps/standalone serves — or any static host, with
+// VITE_PHILO_API_URL pointing at the server.
 export default defineConfig({
   plugins: [react(), serviceWorker()],
   resolve: { alias: { '@philo/sdk': SDK_SOURCE } },
   build: {
-    outDir: '../../packages/server/public',
+    outDir: 'dist',
     emptyOutDir: true,
   },
   server: {
     proxy: {
       '/api': 'http://localhost:3000',
       '/version': 'http://localhost:3000',
+      // The built-in IdP's discovery, dialogs and token endpoints.
+      '/oauth': 'http://localhost:3000',
+      '/.well-known': 'http://localhost:3000',
     },
   },
 })

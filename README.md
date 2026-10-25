@@ -23,18 +23,19 @@ docker run -d --name philo --restart unless-stopped \
   ghcr.io/philo-crm/philo:latest
 ```
 
-Point a reverse proxy with TLS at `127.0.0.1:3000`, open your base URL, and the
-first screen creates the admin account. Then `docker logs philo` — the boot log
+Point a reverse proxy with TLS at `127.0.0.1:3000`, open your base URL, and sign
+in — the first time, the sign-in dialog creates the operator account instead. Then `docker logs philo` — the boot log
 prints the intake URL your website's form should POST to.
 
-Do the setup screen **promptly**. It is reachable without credentials and closes
+Do that first sign-in **promptly**. It is reachable without credentials and closes
 for good at the first success, so between the instance becoming publicly
 reachable and you filling that form in, whoever gets there first becomes the
 admin. On an instance with no data in it the fix is cheap — delete the volume
 and start over — but it is easier not to need it.
 
 Serve it over **https**. Browsers refuse push notifications outside a secure
-context, and the session cookie is only marked `Secure` when the base URL is.
+context, and every request carries a bearer token that should not cross a
+network in the clear.
 
 > **Tags:** `:latest` tracks the newest release, and each one also publishes
 > `:X.Y.Z`, `:X.Y`, and `:X` — pin to whichever you want to hold still.
@@ -88,14 +89,14 @@ Two ways to authenticate, both bearer tokens:
 
 - **An API key** from Settings, for Claude Code, a script, or a cron job.
 - **OAuth 2.1**, for connector clients that will not hold a static key. Philo is
-  its own authorization server: dynamic client registration, PKCE, refresh
-  tokens, one login-and-consent page.
+  its own OIDC identity provider — dynamic client registration, PKCE, refresh
+  tokens, one sign-in-and-consent page — or defers to one you already run.
 
 There is also a hand-written `GET /llms.txt` — a tour of every machine-facing
 surface, written for an agent that has just arrived and has no credential yet.
 
-The same service layer sits behind a conventional REST API at `/api/v1`, for
-anything that would rather not speak MCP.
+Underneath both the app and MCP is a conventional REST API at `/api/v1`, and
+`@philo/sdk`, the typed client they both use, is there for anything else.
 
 ## What it will not do
 
@@ -107,9 +108,11 @@ anything that would rather not speak MCP.
 
 ## How it is built
 
-One Node process, one SQLite file, no other moving parts. TypeScript and Hono on
-the server; a Vite/React PWA served by that same server; Drizzle for the schema;
-SQLite FTS5 for search. All state — the database and the secrets Philo generates
+A headless API server that also hosts the identity provider; a TypeScript SDK
+that tracks it; and two clients of that SDK — the Vite/React PWA for people and
+the MCP server for agents. The container runs all of them in one Node process on
+one origin, over one SQLite file. TypeScript and Hono throughout, Drizzle for the
+schema, SQLite FTS5 for search. All state — the database and the secrets Philo generates
 for itself — lives in one directory, so **backup is copying that directory**.
 
 The reasoning is written down: [docs/DESIGN.md](docs/DESIGN.md) for the

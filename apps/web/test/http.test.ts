@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { ApiError, firstFailure, isUnauthorized, sendJson } from '../src/http.ts'
+import { describe, expect, it } from 'vitest'
+import { ApiError, firstFailure, isUnauthorized } from '../src/http.ts'
 
 describe('firstFailure', () => {
   it('picks a 401 over an earlier failure of any other kind', () => {
@@ -24,24 +24,5 @@ describe('isUnauthorized', () => {
     expect(isUnauthorized(new ApiError(401, 'unauthorized'))).toBe(true)
     expect(isUnauthorized(new ApiError(403, 'forbidden'))).toBe(false)
     expect(isUnauthorized(new TypeError('Failed to fetch'))).toBe(false)
-  })
-})
-
-describe('sendJson', () => {
-  it('declares JSON on every state change, which the server’s CSRF layer requires', async () => {
-    let seenPath: unknown
-    let seen: RequestInit | undefined
-    vi.stubGlobal('fetch', async (input: unknown, init?: RequestInit) => {
-      seenPath = input
-      seen = init
-      return { ok: true, status: 204, json: async () => undefined } as Response
-    })
-
-    await sendJson('POST', '/api/v1/leads/1/notes', { note: 'hi' })
-
-    expect(seenPath).toBe('/api/v1/leads/1/notes')
-    expect((seen?.headers as Record<string, string> | undefined)?.['content-type']).toBe('application/json')
-    expect(seen?.body).toBe('{"note":"hi"}')
-    vi.unstubAllGlobals()
   })
 })

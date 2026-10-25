@@ -4,6 +4,7 @@ import { App } from '../src/App.tsx'
 import { InstallHelper } from '../src/InstallHelper.tsx'
 import { isIosSafari, isStandalone, shouldOfferInstall } from '../src/install.ts'
 import { installFakeApi, makeLead } from './support/fake-api.ts'
+import { signInThroughIdp } from './support/sign-in.tsx'
 
 const IPHONE_SAFARI =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1'
@@ -97,8 +98,10 @@ describe('detection', () => {
         throw new Error('denied')
       },
     })
-    installFakeApi({ leads: [] })
-    render(<App />)
+    const api = installFakeApi({ leads: [] })
+    // Nowhere to keep a refresh token, so this load starts signed out and
+    // signs in for itself — the session lives in memory until it ends.
+    await signInThroughIdp(api)
     await screen.findByRole('heading', { name: 'Leads' })
 
     // The nudge still appears, and dismissing it still hides it for this load.

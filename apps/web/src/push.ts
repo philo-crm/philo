@@ -103,7 +103,7 @@ export async function enablePush(): Promise<PushState> {
     //
     // An expired session is the exception: the subscription is perfectly good
     // and `syncPushSubscription` registers it on the next sign-in, so throwing
-    // it away would cost a working device over a cookie.
+    // it away would cost a working device over an expired token.
     if (!isUnauthorized(error)) await subscription.unsubscribe().catch(() => undefined)
     throw error
   }
