@@ -4,6 +4,13 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 
+/**
+ * The SDK is consumed from source, so a change to it shows up here without a
+ * build step in between — the `source` export condition, spelled as an alias
+ * because Vite's condition list is all-or-nothing.
+ */
+export const SDK_SOURCE = fileURLToPath(new URL('../../packages/sdk/src/index.ts', import.meta.url))
+
 const SERVICE_WORKER_SOURCE = fileURLToPath(new URL('./src/sw.js', import.meta.url))
 const INDEX_HTML = fileURLToPath(new URL('./index.html', import.meta.url))
 
@@ -78,6 +85,7 @@ export function serviceWorker(
 // the server's public directory.
 export default defineConfig({
   plugins: [react(), serviceWorker()],
+  resolve: { alias: { '@philo/sdk': SDK_SOURCE } },
   build: {
     outDir: '../../packages/server/public',
     emptyOutDir: true,

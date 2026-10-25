@@ -1,49 +1,38 @@
-import { ApiError, getJson, sendJson } from './http.ts'
+import {
+  ApiError,
+  MAX_API_KEY_NAME_LENGTH,
+  MAX_SETTINGS_NAME_LENGTH,
+  MAX_STAGE_NAME_LENGTH,
+  MAX_TEMPLATE_BODY_LENGTH,
+  MAX_TEMPLATE_SUBJECT_LENGTH,
+  type ApiKeyRecord,
+  type EmailSettings,
+  type EmailSettingsPatch,
+  type EmailTemplate,
+  type EmailTemplateDraft,
+  type EmailTemplatePreview,
+  type LeadDetail,
+  type LeadPage,
+  type LeadRecord,
+  type StageRecord,
+} from '@philo/sdk'
+import { philo } from './client.ts'
 
-/** Mirrors server/src/leads/service.ts — the REST shapes are the contract. */
-export interface LeadRecord {
-  id: number
-  name: string | null
-  email: string | null
-  phone: string | null
-  source: string | null
-  formId: number | null
-  stageId: number
-  stageName: string
-  isSpam: boolean
-  /** The intake payload's non-reserved keys, as submitted — see ADR-0003. */
-  fields: Record<string, unknown>
-  createdAt: string
-  updatedAt: string
-}
+export type {
+  ApiKeyRecord,
+  EmailSettings,
+  EmailSettingsPatch,
+  EmailTemplate,
+  EmailTemplateDraft,
+  EmailTemplatePreview,
+  LeadDetail,
+  LeadEventRecord,
+  LeadPage,
+  LeadRecord,
+  StageRecord,
+} from '@philo/sdk'
 
-export interface LeadEventRecord {
-  id: number
-  type: string
-  payload: Record<string, unknown>
-  actor: string
-  createdAt: string
-}
-
-export interface LeadDetail extends LeadRecord {
-  events: LeadEventRecord[]
-}
-
-export interface LeadPage {
-  leads: LeadRecord[]
-  total: number
-  limit: number
-  offset: number
-}
-
-export interface StageRecord {
-  id: number
-  name: string
-  position: number
-  isTerminal: boolean
-  leadCount: number
-}
-
+/** The screens always say which view they want and page explicitly. */
 export interface LeadQuery {
   stageId?: number | undefined
   search?: string | undefined
@@ -62,24 +51,15 @@ export const PAGE_SIZE = 50
  */
 export const BOARD_COLUMN_SIZE = 25
 
-/** Mirrors MAX_NOTE_LENGTH in server/src/leads/service.ts, so the box can stop first. */
-export const MAX_NOTE_LENGTH = 5_000
+export {
+  MAX_API_KEY_NAME_LENGTH,
+  MAX_NOTE_LENGTH,
+  MAX_SETTINGS_NAME_LENGTH,
+  MAX_STAGE_NAME_LENGTH,
+  MAX_TEMPLATE_BODY_LENGTH,
+  MAX_TEMPLATE_SUBJECT_LENGTH,
+} from '@philo/sdk'
 
-/** Mirrors MAX_STAGE_NAME_LENGTH in server/src/stages/service.ts, same reason. */
-export const MAX_STAGE_NAME_LENGTH = 80
-
-/** Mirrors MAX_NAME_LENGTH in server/src/email/settings.ts. */
-export const MAX_SETTINGS_NAME_LENGTH = 200
-
-/** Mirrors the caps in server/src/email/templates.ts, so a box can stop first. */
-export const MAX_TEMPLATE_SUBJECT_LENGTH = 500
-export const MAX_TEMPLATE_BODY_LENGTH = 20_000
-
-const LEADS_BASE = '/api/v1/leads'
-
-const STAGES_BASE = '/api/v1/stages'
-
-const EMAIL_SETTINGS_BASE = '/api/v1/settings/email'
 
 const MESSAGES: Record<string, string> = {
   not_found: 'That lead no longer exists.',
@@ -127,38 +107,30 @@ export function stageErrorMessage(error: unknown): string {
   return apiErrorMessage(error)
 }
 
-export async function fetchStages(signal?: AbortSignal): Promise<StageRecord[]> {
-  const body = await getJson<{ stages: StageRecord[] }>(STAGES_BASE, signal)
-  return body.stages
+export function fetchStages(signal?: AbortSignal): Promise<StageRecord[]> {
+  return philo.stages.list(signal)
 }
 
 /** Appended to the end of the funnel — the server decides the position. */
-export async function createStage(name: string, isTerminal: boolean): Promise<StageRecord> {
-  const body = await sendJson<{ stage: StageRecord }>('POST', STAGES_BASE, { name, isTerminal })
-  return body.stage
+export function createStage(name: string, isTerminal: boolean): Promise<StageRecord> {
+  return philo.stages.create(name, isTerminal)
 }
 
-export async function updateStage(
-  id: number,
-  patch: { name?: string; isTerminal?: boolean },
-): Promise<StageRecord> {
-  const body = await sendJson<{ stage: StageRecord }>('PATCH', `${STAGES_BASE}/${id}`, patch)
-  return body.stage
+export function updateStage(id: number, patch: { name?: string; isTerminal?: boolean }): Promise<StageRecord> {
+  return philo.stages.update(id, patch)
 }
 
 /**
  * Takes the complete funnel in its new order; the server refuses a partial one,
  * because a half-applied order leaves two stages claiming the same position.
  */
-export async function reorderStages(stageIds: number[]): Promise<StageRecord[]> {
-  const body = await sendJson<{ stages: StageRecord[] }>('POST', `${STAGES_BASE}/reorder`, { stageIds })
-  return body.stages
+export function reorderStages(stageIds: number[]): Promise<StageRecord[]> {
+  return philo.stages.reorder(stageIds)
 }
 
 /** Answers with the remaining funnel, so the board never has to refetch it. */
-export async function deleteStage(id: number): Promise<StageRecord[]> {
-  const body = await sendJson<{ stages: StageRecord[] }>('DELETE', `${STAGES_BASE}/${id}`)
-  return body.stages
+export function deleteStage(id: number): Promise<StageRecord[]> {
+  return philo.stages.delete(id)
 }
 
 export interface BoardColumn {
@@ -179,6 +151,12 @@ export interface BoardColumn {
  * across — the alternative is a board-shaped endpoint the REST surface does
  * not have, and this stays inside the contract #7 shipped.
  */
+/**
+ * The whole board in one call: the funnel, then a page of cards per stage.
+ * N+1 requests, where N is the number of stages a person is willing to read
+ * across — the alternative is a board-shaped endpoint the REST surface does
+ * not have.
+ */
 export async function fetchBoard(signal?: AbortSignal): Promise<BoardColumn[]> {
   const stages = await fetchStages(signal)
   return Promise.all(
@@ -193,64 +171,25 @@ export async function fetchBoard(signal?: AbortSignal): Promise<BoardColumn[]> {
 }
 
 export function fetchLeads(query: LeadQuery, signal?: AbortSignal): Promise<LeadPage> {
-  const params = new URLSearchParams({
-    spam: String(query.isSpam),
-    limit: String(query.limit),
-    offset: String(query.offset),
-  })
-  if (query.stageId !== undefined) params.set('stage', String(query.stageId))
-  // An empty search is no search: the server reads a blank string as "no
-  // filter", but leaving the key off entirely says the same thing in one place.
-  const search = query.search?.trim() ?? ''
-  if (search !== '') params.set('search', search)
-  return getJson<LeadPage>(`${LEADS_BASE}?${params.toString()}`, signal)
+  return philo.leads.list(query, signal)
 }
 
-export async function fetchLead(id: number, signal?: AbortSignal): Promise<LeadDetail> {
-  const body = await getJson<{ lead: LeadDetail }>(`${LEADS_BASE}/${id}`, signal)
-  return body.lead
-}
-
-/** Every mutation answers with the whole lead, so a screen never has to refetch. */
-async function mutateLead(path: string, body: unknown = {}): Promise<LeadDetail> {
-  const answer = await sendJson<{ lead: LeadDetail }>('POST', path, body)
-  return answer.lead
+export function fetchLead(id: number, signal?: AbortSignal): Promise<LeadDetail> {
+  return philo.leads.get(id, signal)
 }
 
 export function moveLeadStage(id: number, stageId: number): Promise<LeadDetail> {
-  return mutateLead(`${LEADS_BASE}/${id}/stage`, { stageId })
+  return philo.leads.moveStage(id, stageId)
 }
 
 export function addLeadNote(id: number, note: string): Promise<LeadDetail> {
-  return mutateLead(`${LEADS_BASE}/${id}/notes`, { note })
+  return philo.leads.addNote(id, note)
 }
 
 /** The spam view's "not spam": clears the flag and fires the held-back pipeline. */
 export function promoteLead(id: number): Promise<LeadDetail> {
-  return mutateLead(`${LEADS_BASE}/${id}/not-spam`)
+  return philo.leads.markNotSpam(id)
 }
-
-/**
- * Mirrors the response shape in server/src/settings/routes.ts. There is no
- * `smtpPassword` and there is not meant to be one: the credential is
- * write-only, and `smtpPasswordSet` is everything a form needs to know.
- */
-export interface EmailSettings {
-  smtpHost: string
-  smtpPort: number
-  smtpSecure: boolean
-  smtpUsername: string
-  smtpPasswordSet: boolean
-  fromName: string
-  fromAddress: string
-  replyTo: string
-  businessName: string
-}
-
-/** Patch semantics: a key left out keeps its stored value. */
-export type EmailSettingsPatch = Partial<
-  Omit<EmailSettings, 'smtpPasswordSet'> & { smtpPassword: string }
->
 
 const SETTINGS_MESSAGES: Record<string, string> = {
   invalid_smtp_host: 'Enter the SMTP host your provider gave you.',
@@ -295,62 +234,34 @@ export function settingsErrorMessage(error: unknown): string {
   return apiErrorMessage(error)
 }
 
-export async function fetchEmailSettings(signal?: AbortSignal): Promise<EmailSettings> {
-  const body = await getJson<{ settings: EmailSettings }>(EMAIL_SETTINGS_BASE, signal)
-  return body.settings
+export function fetchEmailSettings(signal?: AbortSignal): Promise<EmailSettings> {
+  return philo.emailSettings.get(signal)
 }
 
-export async function updateEmailSettings(patch: EmailSettingsPatch): Promise<EmailSettings> {
-  const body = await sendJson<{ settings: EmailSettings }>('PATCH', EMAIL_SETTINGS_BASE, patch)
-  return body.settings
+export function updateEmailSettings(patch: EmailSettingsPatch): Promise<EmailSettings> {
+  return philo.emailSettings.update(patch)
 }
 
 /**
  * Sends with the settings as stored, so the screen saves first — a green test
  * against unsaved values would say nothing about the next real lead.
  */
-export async function sendTestEmail(to: string): Promise<void> {
-  await sendJson<{ ok: true }>('POST', `${EMAIL_SETTINGS_BASE}/test`, { to })
+export function sendTestEmail(to: string): Promise<void> {
+  return philo.emailSettings.sendTest(to)
 }
 
-const PUSH_BASE = '/api/v1/push'
-
-/**
- * The VAPID public key this instance signs with, generated at its first boot.
- * Public by construction — it is what a push service checks the signature
- * against — and the browser needs it as `applicationServerKey`.
- */
-export async function fetchVapidPublicKey(signal?: AbortSignal): Promise<string> {
-  const body = await getJson<{ publicKey: string }>(`${PUSH_BASE}/key`, signal)
-  return body.publicKey
+export function fetchVapidPublicKey(signal?: AbortSignal): Promise<string> {
+  return philo.push.publicKey(signal)
 }
 
 /** Takes the serialized `PushSubscription` as the browser hands it over. */
-export async function storePushSubscription(subscription: unknown): Promise<void> {
-  await sendJson<{ ok: true }>('POST', `${PUSH_BASE}/subscriptions`, subscription)
+export function storePushSubscription(subscription: unknown): Promise<void> {
+  return philo.push.subscribe(subscription)
 }
 
-export async function forgetPushSubscription(endpoint: string): Promise<void> {
-  await sendJson<{ ok: true }>('DELETE', `${PUSH_BASE}/subscriptions`, { endpoint })
+export function forgetPushSubscription(endpoint: string): Promise<void> {
+  return philo.push.unsubscribe(endpoint)
 }
-
-/** Mirrors MAX_API_KEY_NAME_LENGTH in server/src/auth/api-keys.ts. */
-export const MAX_API_KEY_NAME_LENGTH = 80
-
-/**
- * Mirrors the response shape in server/src/auth/api-key-routes.ts. There is no
- * secret on it and there is not meant to be one: the key is handed back exactly
- * once, by `createApiKey`, and `keyPrefix` is all a list can ever show.
- */
-export interface ApiKeyRecord {
-  id: number
-  name: string
-  keyPrefix: string
-  createdAt: string
-  lastUsedAt: string | null
-}
-
-const API_KEYS_BASE = '/api/v1/api-keys'
 
 /**
  * The same codes again, read as a key rather than a lead or a stage —
@@ -370,91 +281,39 @@ export function apiKeyErrorMessage(error: unknown): string {
   return apiErrorMessage(error)
 }
 
-export async function fetchApiKeys(signal?: AbortSignal): Promise<ApiKeyRecord[]> {
-  const body = await getJson<{ keys: ApiKeyRecord[] }>(API_KEYS_BASE, signal)
-  return body.keys
+export function fetchApiKeys(signal?: AbortSignal): Promise<ApiKeyRecord[]> {
+  return philo.apiKeys.list(signal)
 }
 
 /**
  * The one call that ever sees a secret. Nothing stores it — the screen shows it
  * until the next render that clears it, and after that it is unrecoverable.
  */
-export async function createApiKey(name: string): Promise<{ key: ApiKeyRecord; secret: string }> {
-  return sendJson<{ key: ApiKeyRecord; secret: string }>('POST', API_KEYS_BASE, { name })
+export function createApiKey(name: string): Promise<{ key: ApiKeyRecord; secret: string }> {
+  return philo.apiKeys.create(name)
 }
 
-export async function revokeApiKey(id: number): Promise<void> {
-  await sendJson<{ ok: true }>('DELETE', `${API_KEYS_BASE}/${id}`)
+export function revokeApiKey(id: number): Promise<void> {
+  return philo.apiKeys.revoke(id)
 }
 
-/** Mirrors the row shape in server/src/email/templates.ts. */
-export interface EmailTemplate {
-  trigger: string
-  subject: string
-  body: string
-  enabled: boolean
-  updatedAt: string
-}
-
-/**
- * The boxes as they are typed. Preview and test-send both take one, so neither
- * needs a save first — which is what makes edit → preview a loop rather than a
- * commit. `leadId` left out renders against the server's sample lead.
- */
-export interface EmailTemplateDraft {
-  subject?: string
-  body?: string
-  leadId?: number
-}
-
-export interface EmailTemplatePreview {
-  subject: string
-  body: string
-  /** Null when the built-in sample lead was used. */
-  leadId: number | null
-}
-
-const TEMPLATES_BASE = `${EMAIL_SETTINGS_BASE}/templates`
-
-export async function fetchEmailTemplates(signal?: AbortSignal): Promise<EmailTemplate[]> {
-  const body = await getJson<{ templates: EmailTemplate[] }>(TEMPLATES_BASE, signal)
-  return body.templates
+export function fetchEmailTemplates(signal?: AbortSignal): Promise<EmailTemplate[]> {
+  return philo.emailTemplates.list(signal)
 }
 
 /** Refused outright if the source does not render, so nothing saves silently. */
-export async function updateEmailTemplate(
+export function updateEmailTemplate(
   trigger: string,
   patch: { subject?: string; body?: string; enabled?: boolean },
 ): Promise<EmailTemplate> {
-  const body = await sendJson<{ template: EmailTemplate }>(
-    'PATCH',
-    `${TEMPLATES_BASE}/${trigger}`,
-    patch,
-  )
-  return body.template
+  return philo.emailTemplates.update(trigger, patch)
 }
 
-export async function previewEmailTemplate(
-  trigger: string,
-  draft: EmailTemplateDraft,
-): Promise<EmailTemplatePreview> {
-  const body = await sendJson<{ preview: EmailTemplatePreview }>(
-    'POST',
-    `${TEMPLATES_BASE}/${trigger}/preview`,
-    draft,
-  )
-  return body.preview
+export function previewEmailTemplate(trigger: string, draft: EmailTemplateDraft): Promise<EmailTemplatePreview> {
+  return philo.emailTemplates.preview(trigger, draft)
 }
 
 /** Goes to the signed-in operator's own address — the server decides, not the screen. */
-export async function sendTemplateTestEmail(
-  trigger: string,
-  draft: EmailTemplateDraft,
-): Promise<string> {
-  const body = await sendJson<{ ok: true; to: string }>(
-    'POST',
-    `${TEMPLATES_BASE}/${trigger}/test`,
-    draft,
-  )
-  return body.to
+export function sendTemplateTestEmail(trigger: string, draft: EmailTemplateDraft): Promise<string> {
+  return philo.emailTemplates.sendTest(trigger, draft)
 }

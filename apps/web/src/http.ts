@@ -1,30 +1,6 @@
-/**
- * One fetch wrapper for every authenticated call. The API answers errors as
- * `{ error: "<code>" }`, so a caller only ever has to look at `status` and
- * `code` — the human sentence is the calling module's business, because the
- * same code reads differently on a login screen and on a lead.
- */
-export class ApiError extends Error {
-  readonly status: number
-  readonly code: string
-  /** Only the login and intake throttles send this. */
-  readonly retryAfterSeconds: number | undefined
-  /**
-   * A sentence from something the server was talking to, when the code alone
-   * cannot say what went wrong — today only the SMTP test-send, where "535
-   * authentication failed" is the entire value of the answer.
-   */
-  readonly detail: string | undefined
+import { ApiError, isUnauthorized } from '@philo/sdk'
 
-  constructor(status: number, code: string, retryAfterSeconds?: number, detail?: string) {
-    super(`HTTP ${status}${code === '' ? '' : ` (${code})`}`)
-    this.name = 'ApiError'
-    this.status = status
-    this.code = code
-    this.retryAfterSeconds = retryAfterSeconds
-    this.detail = detail
-  }
-}
+export { ApiError, isUnauthorized }
 
 interface ErrorBody {
   error?: unknown
@@ -67,11 +43,6 @@ export function sendJson<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, b
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
-}
-
-/** True for the one failure every authenticated screen has to handle itself. */
-export function isUnauthorized(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 401
 }
 
 /**
