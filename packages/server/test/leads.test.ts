@@ -313,9 +313,9 @@ describe('POST /api/v1/leads', () => {
       jsonRequest('POST', { name: 'Pat Applicant', phone: '555-0100', source: 'Phone screen', fields: { cdl: 'A' } }, authorization),
     )
     expect(res.status).toBe(201)
-    const { lead } = (await res.json()) as LeadResponse
+    const { lead } = (await res.json()) as { lead: LeadResponse }
     expect(lead).toMatchObject({ name: 'Pat Applicant', phone: '555-0100', source: 'Phone screen', stageId: stageIds(testApp)[0] })
-    expect(lead.events.map((event) => event.actor)).toEqual(['user:1'])
+    expect(lead.events?.map((event) => event.actor)).toEqual(['user:1'])
     // DESIGN.md (Email): a lead entered by hand is not a submission, so the
     // pipeline that acknowledges one is not fired.
     expect(created).toEqual([])

@@ -13,6 +13,7 @@ import type {
   LeadPage,
   LeadQuery,
   NewLead,
+  Principal,
   StageRecord,
   User,
   VersionInfo,
@@ -69,6 +70,10 @@ export class PhiloClient {
     /** Public: where to sign in. Called before there is any token. */
     config: (signal?: AbortSignal): Promise<AuthConfig> =>
       this.#http.request('GET', `${API}/auth/config`, undefined, signal),
+
+    /** What the current token is — any credential may ask. */
+    principal: (signal?: AbortSignal): Promise<Principal> =>
+      this.#http.request('GET', `${API}/auth/principal`, undefined, signal),
 
     /** The operator the current token belongs to. */
     session: async (signal?: AbortSignal): Promise<User> => {

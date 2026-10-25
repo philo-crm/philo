@@ -2,7 +2,6 @@
   "name": "@philo/server",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "db:generate": "drizzle-kit generate",
@@ -32,5 +31,12 @@
     "drizzle-kit": "^0.31.10",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/boot.ts",
+      "types": "./dist/boot.d.ts",
+      "default": "./dist/boot.js"
+    }
   }
 }

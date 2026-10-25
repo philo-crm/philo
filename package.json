@@ -13,11 +13,11 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run build --workspace apps/web && npm run build --workspace packages/server",
+    "build": "npm run build --workspace packages/sdk && npm run build --workspace packages/server && npm run build --workspace apps/mcp && npm run build --workspace apps/web && npm run build --workspace apps/standalone",
     "db:generate": "npm run db:generate --workspace packages/server --",
-    "dev": "npm run dev --workspace packages/server",
+    "dev": "npm run dev --workspace apps/standalone",
     "lint": "oxlint --deny-warnings",
-    "start": "node packages/server/dist/index.js",
+    "start": "node apps/standalone/dist/index.js",
     "test": "npm run test --workspaces",
     "typecheck": "npm run typecheck --workspaces"
   },

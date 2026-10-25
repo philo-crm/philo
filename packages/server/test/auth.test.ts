@@ -108,6 +108,28 @@ describe('GET /api/v1/auth/session', () => {
   })
 })
 
+describe('GET /api/v1/auth/principal', () => {
+  it('names an operator and an agent alike', async () => {
+    const testApp = createTestApp()
+    const operator = await setupAdmin(testApp)
+    const { authorization, clientId } = await agentAuth(testApp, 1)
+
+    expect(await (await testApp.app.request('/api/v1/auth/principal', as(operator))).json()).toEqual({
+      kind: 'operator',
+      actor: 'user:1',
+    })
+    expect(await (await testApp.app.request('/api/v1/auth/principal', as(authorization))).json()).toEqual({
+      kind: 'agent',
+      actor: `oauth:${clientId}`,
+    })
+  })
+
+  it('is refused without a credential', async () => {
+    const testApp = createTestApp()
+    expect((await testApp.app.request('/api/v1/auth/principal')).status).toBe(401)
+  })
+})
+
 describe('cross-origin access', () => {
   it('answers a preflight from any origin, allowing the bearer header', async () => {
     const testApp = createTestApp()

@@ -30,7 +30,7 @@ export function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401
 }
 
-export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
+export type FetchLike = (input: string, init?: RequestInit) => Response | Promise<Response>
 
 /** Where a bearer token comes from. Undefined means "send the request without one". */
 export type AccessTokenSource = () => string | undefined | Promise<string | undefined>
