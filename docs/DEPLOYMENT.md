@@ -63,10 +63,10 @@ volumes:
 | Tag | What it is |
 |---|---|
 | `edge` | Built from every push to `main`. Runs ahead of the releases. |
-| `0.1.0`, `0.1`, `0` | Published for each tagged release, from most to least specific. |
+| `0.2.0`, `0.2`, `0` | Published for each tagged release, from most to least specific. |
 | `latest` | The newest tagged release. |
 
-Pin `0.1` or `0.1.0` in production; `latest` moves under you, and `edge` moves
+Pin `0.2` or `0.2.0` in production; `latest` moves under you, and `edge` moves
 faster than that.
 
 ## Configuration

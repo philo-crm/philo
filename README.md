@@ -132,9 +132,10 @@ architecture, [docs/adr/](docs/adr/) for the contested calls.
 
 ## Status
 
-Every MVP feature is built and shipped in `v0.1.0`: intake, leads and funnel,
-the PWA, push, email, API keys, MCP, and the OAuth server. That is the first
-tagged release — run it unless you want `main`, which `:edge` tracks.
+Every MVP feature shipped in `v0.1.0`: intake, leads and funnel, the PWA,
+push, email, API keys, MCP, and the OAuth server. `v0.2.0` makes the server
+headless, with `@philo/sdk` as the client the PWA and MCP use. Run the latest
+release unless you want `main`, which `:edge` tracks.
 
 ## Naming
 
