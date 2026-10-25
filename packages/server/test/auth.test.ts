@@ -72,17 +72,25 @@ describe('bearer guard', () => {
     expect(event?.actor).toBe('user:1')
   })
 
-  it('withholds operator-only routes from an agent token', async () => {
+  it('gives a connector token everything its user has — ADR-0007', async () => {
     const testApp = createTestApp()
     await setupAdmin(testApp)
     const { authorization } = await agentAuth(testApp, 1)
 
-    expect((await testApp.app.request('/api/v1/leads', as(authorization))).status).toBe(200)
-    for (const path of ['/api/v1/auth/session', '/api/v1/api-keys', '/api/v1/settings/email']) {
-      const res = await testApp.app.request(path, as(authorization))
-      expect(res.status, path).toBe(403)
-      expect(await res.json()).toEqual({ error: 'session_required' })
+    for (const path of ['/api/v1/leads', '/api/v1/auth/session', '/api/v1/api-keys', '/api/v1/settings/email']) {
+      expect((await testApp.app.request(path, as(authorization))).status, path).toBe(200)
     }
+    const session = await testApp.app.request('/api/v1/auth/session', as(authorization))
+    expect(await session.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin' } })
+  })
+
+  it('refuses a token whose user is gone', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    const { authorization } = await agentAuth(testApp, 1)
+    testApp.db.delete(users).run()
+
+    expect((await testApp.app.request('/api/v1/leads', as(authorization))).status).toBe(401)
   })
 })
 
@@ -110,17 +118,18 @@ describe('GET /api/v1/auth/session', () => {
 })
 
 describe('GET /api/v1/auth/principal', () => {
-  it('names an operator and an agent alike', async () => {
+  it('names the same user for the person and their agent, and tells the credentials apart', async () => {
     const testApp = createTestApp()
-    const operator = await setupAdmin(testApp)
+    const person = await setupAdmin(testApp)
     const { authorization, clientId } = await agentAuth(testApp, 1)
+    const user = { id: 1, email: ADMIN_EMAIL, name: 'Admin' }
 
-    expect(await (await testApp.app.request('/api/v1/auth/principal', as(operator))).json()).toEqual({
-      kind: 'operator',
+    expect(await (await testApp.app.request('/api/v1/auth/principal', as(person))).json()).toEqual({
+      user,
       actor: 'user:1',
     })
     expect(await (await testApp.app.request('/api/v1/auth/principal', as(authorization))).json()).toEqual({
-      kind: 'agent',
+      user,
       actor: `oauth:${clientId}`,
     })
   })
@@ -255,12 +264,14 @@ describe('external IdP', () => {
     expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${jwt}`))).status).toBe(401)
   })
 
-  it('treats a token held by a listed agent client as an agent', async () => {
+  it('lets a listed agent client act as the user its token names', async () => {
     const testApp = createTestApp({ externalIdp: idp })
-    const jwt = await token({ azp: 'some-connector', email: 'owner@example.com' })
+    await testApp.app.request('/api/v1/auth/session', as(`Bearer ${await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })}`))
+    // Same subject as the operator's own token: the IdP issued it to the connector on their behalf.
+    const jwt = await token({ azp: 'some-connector' })
 
     expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${jwt}`))).status).toBe(200)
-    expect((await testApp.app.request('/api/v1/api-keys', as(`Bearer ${jwt}`))).status).toBe(403)
+    expect((await testApp.app.request('/api/v1/api-keys', as(`Bearer ${jwt}`))).status).toBe(200)
     const created = await testApp.app.request('/api/v1/leads', as(`Bearer ${jwt}`, jsonPost({ phone: '555-0100' })))
     expect(created.status).toBe(201)
     const [event] = testApp.db.select().from(leadEvents).where(eq(leadEvents.type, 'created')).all()

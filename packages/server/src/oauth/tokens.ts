@@ -5,12 +5,13 @@ import { accessTokens, authorizationCodes, refreshTokens } from '../db/schema.ts
 import { FIRST_PARTY_CLIENT_ID } from './first-party.ts'
 
 /**
- * Agent authority: everything an API key reaches. Granted to every dynamically
- * registered client, whatever it asked for — ADR-0006.
+ * Granted to every dynamically registered client. Since ADR-0007 neither this
+ * nor `operator` grants or withholds anything — every grant acts with its
+ * user's full authority — they only say which kind of client holds it.
  */
 export const MCP_SCOPE = 'mcp'
 
-/** Operator authority. Granted only to the first-party client, the PWA. */
+/** Granted only to the first-party client, the PWA. */
 export const OPERATOR_SCOPE = 'operator'
 
 /** OIDC: an id_token comes back with the tokens. Honoured when asked for. */
@@ -18,9 +19,8 @@ export const OPENID_SCOPE = 'openid'
 
 /**
  * What a client is granted, which RFC 6749 §5.1 lets differ from what it asked
- * for. Authority comes from the client, never the request: a connector that
- * asks for `operator` gets `mcp`, so registering oneself buys nothing more than
- * an API key would.
+ * for. Decided by the client, never the request, so the label stays honest: a
+ * connector that asks for `operator` is still told it holds `mcp`.
  */
 export function grantedScope(clientId: string, requested: string | undefined): string {
   const asked = new Set((requested ?? '').split(' ').filter((scope) => scope !== ''))

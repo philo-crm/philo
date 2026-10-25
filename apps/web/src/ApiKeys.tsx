@@ -91,10 +91,10 @@ export function ApiKeys({ onSessionExpired }: ApiKeysProps) {
 
       <p className="hint">
         For scripts, cron jobs and AI agents. Send one as{' '}
-        <code>Authorization: Bearer philo_…</code>. A key can read and change leads, the funnel, and
-        your email templates — so it can write what Philo sends out under your business&rsquo;s name.
-        It cannot sign in, manage keys, or see your mail server settings. Give one only to something
-        you would trust with the leads themselves.
+        <code>Authorization: Bearer philo_…</code>. A key acts as you, with everything you can do
+        here — leads, the funnel, email templates, mail server settings, and other keys. Its actions
+        are recorded under the key&rsquo;s name. Give one only to something you would trust with your
+        account.
       </p>
 
       {error !== undefined && (

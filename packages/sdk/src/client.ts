@@ -47,9 +47,9 @@ function leadQueryString(query: LeadQuery): string {
  * The one way a client reaches Philo's API. Every method is a single request;
  * failures throw `ApiError` with the server's code.
  *
- * Operator-only methods — API keys, push subscriptions, SMTP settings, the
- * test-sends and `auth.session` — answer 403 `session_required` to an agent
- * credential. See ADR-0006.
+ * Every credential — the PWA's token, an API key, a connector's grant — acts
+ * with its user's authority, so every method is open to every client. See
+ * ADR-0007.
  */
 export class PhiloClient {
   readonly #http: Transport

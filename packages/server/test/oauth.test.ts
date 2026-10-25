@@ -844,18 +844,16 @@ describe('oauth refresh', () => {
 })
 
 describe('a connector token at the API', () => {
-  it('reaches the API with agent authority', async () => {
+  it('reaches the API with the authority of the person who approved it', async () => {
     const testApp = createTestApp()
     const { tokens } = await connect(testApp)
 
-    expect((await testApp.app.request('/api/v1/leads', apiGet(tokens.access_token))).status).toBe(200)
-    // Agent, not operator: the routes an API key cannot reach, a connector cannot either.
-    const keys = await testApp.app.request('/api/v1/api-keys', apiGet(tokens.access_token))
-    expect(keys.status).toBe(403)
-    expect(await keys.json()).toEqual({ error: 'session_required' })
+    for (const path of ['/api/v1/leads', '/api/v1/api-keys', '/api/v1/settings/email']) {
+      expect((await testApp.app.request(path, apiGet(tokens.access_token))).status, path).toBe(200)
+    }
   })
 
-  it('is granted mcp even when it asks for operator', async () => {
+  it('is labelled mcp even when it asks for operator', async () => {
     const testApp = createTestApp()
     await setupAdmin(testApp)
     const client = await register(testApp)
@@ -866,8 +864,9 @@ describe('a connector token at the API', () => {
       tokenPost(client, { grant_type: 'authorization_code', code, code_verifier: verifier }),
     )
     const tokens = (await res.json()) as TokenResponse
+    // The label stays honest — this is a connector's grant — though since
+    // ADR-0007 it acts with its user's full authority either way.
     expect(tokens.scope).toBe('openid mcp')
-    expect((await testApp.app.request('/api/v1/api-keys', apiGet(tokens.access_token))).status).toBe(403)
   })
 
   it('records the client on the timeline, not the operator', async () => {

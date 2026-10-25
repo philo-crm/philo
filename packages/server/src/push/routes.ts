@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { currentUser, requireUser, type AuthEnv } from '../auth/middleware.ts'
+import { currentUser, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { readJsonBody } from '../json-body.ts'
 import { deleteSubscription, saveSubscription, validateSubscription } from './subscriptions.ts'
@@ -16,12 +16,12 @@ export interface PushRoutesDeps {
 export function createPushRoutes(deps: PushRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
-  // Session-only, all of it. A push subscription belongs to a browser and to
-  // the person signed into it; an API key has neither.
-  routes.use('/*', requireUser)
+  // A subscription is stored against the user the credential acts for —
+  // ADR-0007 — so an agent can register one, though without a browser to
+  // receive pushes it has little reason to.
 
   /**
-   * What the settings toggle subscribes with. Behind the session like everything
+   * What the settings toggle subscribes with. Behind a credential like everything
    * else under the API prefix — not because the key is a secret, but because
    * nothing on this instance is readable without signing in.
    */

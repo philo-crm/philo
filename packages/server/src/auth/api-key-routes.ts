@@ -8,7 +8,7 @@ import {
   validateApiKeyName,
   type ApiKeyRecord,
 } from './api-keys.ts'
-import { requireUser, type AuthEnv } from './middleware.ts'
+import { currentUser, type AuthEnv } from './middleware.ts'
 
 export interface ApiKeyRoutesDeps {
   db: Db
@@ -35,11 +35,9 @@ function toResponse(record: ApiKeyRecord): ApiKeyResponse {
 export function createApiKeyRoutes(deps: ApiKeyRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
-  // Session-only, all of it. A key that could mint or revoke keys would be able
-  // to outlive its own revocation — see requireUser.
-  routes.use('/*', requireUser)
-
-  routes.get('/', (c) => c.json({ keys: listApiKeys(deps.db).map(toResponse) }))
+  // Open to any credential acting for the user, agents included — ADR-0007.
+  // Every key is the user's own: listed, minted and revoked for them alone.
+  routes.get('/', (c) => c.json({ keys: listApiKeys(deps.db, currentUser(c).id).map(toResponse) }))
 
   /**
    * The one response that carries the secret. It is not stored anywhere it
@@ -53,7 +51,7 @@ export function createApiKeyRoutes(deps: ApiKeyRoutesDeps): Hono<AuthEnv> {
     const name = validateApiKeyName(body['name'])
     if (name === undefined) return c.json({ error: 'invalid_name' }, 400)
 
-    const created = createApiKey(deps.db, name)
+    const created = createApiKey(deps.db, currentUser(c).id, name)
     return c.json({ key: toResponse(created.record), secret: created.key }, 201)
   })
 
@@ -68,7 +66,7 @@ export function createApiKeyRoutes(deps: ApiKeyRoutesDeps): Hono<AuthEnv> {
     const id = Number(raw)
     if (!Number.isSafeInteger(id) || id <= 0) return c.json({ error: 'invalid_request' }, 400)
 
-    if (!revokeApiKey(deps.db, id)) return c.json({ error: 'not_found' }, 404)
+    if (!revokeApiKey(deps.db, currentUser(c).id, id)) return c.json({ error: 'not_found' }, 404)
     return c.json({ ok: true })
   })
 

@@ -5,7 +5,7 @@ import { asc, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApiKey, revokeApiKey } from '../../../packages/server/src/auth/api-keys.ts'
-import { leadEvents, leads, stages } from '../../../packages/server/src/db/schema.ts'
+import { leadEvents, leads, stages, users } from '../../../packages/server/src/db/schema.ts'
 import { sweepUnsentEmails } from '../../../packages/server/src/email/service.ts'
 import { getEmailTemplate } from '../../../packages/server/src/email/templates.ts'
 import { HONEYPOT_FIELD, MAX_FIELD_DEPTH } from '../../../packages/server/src/intake/payload.ts'
@@ -110,6 +110,19 @@ async function withMcpClient<T>(
   })
 }
 
+/**
+ * An API key for the instance's account, created if there is none yet. A key
+ * acts with its user's authority (ADR-0007), so every key needs one.
+ */
+function agentKey(testApp: TestApp): ReturnType<typeof createApiKey> {
+  const [existing] = testApp.db.select({ id: users.id }).from(users).limit(1).all()
+  const userId =
+    existing?.id ??
+    testApp.db.insert(users).values({ email: 'owner@example.com', passwordHash: 'unused', name: null }).returning({ id: users.id }).all()[0]?.id
+  if (userId === undefined) throw new Error('no user to own the key')
+  return createApiKey(testApp.db, userId, 'Agent')
+}
+
 function firstStageId(testApp: TestApp): number {
   const [stage] = testApp.db
     .select({ id: stages.id })
@@ -168,11 +181,11 @@ describe('mcp transport', () => {
 
   it('stops accepting a key the moment it is revoked', async () => {
     const testApp = createTestApp()
-    const { key, record } = createApiKey(testApp.db, 'Agent')
+    const { key, record } = agentKey(testApp)
     const authorized = { authorization: `Bearer ${key}` }
 
     expect((await testApp.app.request('/mcp', jsonRpcPost(INITIALIZE, authorized))).status).toBe(200)
-    revokeApiKey(testApp.db, record.id)
+    revokeApiKey(testApp.db, 1, record.id)
 
     // Revocation is a row delete and this surface holds nothing between
     // requests, so there is no cached session for a key to outlive itself in.
@@ -215,7 +228,7 @@ describe('mcp transport', () => {
 
   it('answers GET with 405 rather than holding a stream open', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     const res = await testApp.app.request('/mcp', {
       headers: { authorization: `Bearer ${key}`, accept: 'text/event-stream' },
     })
@@ -226,7 +239,7 @@ describe('mcp transport', () => {
 
   it('bounds the request body', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     const oversized = {
       ...INITIALIZE,
       params: { ...INITIALIZE.params, padding: 'x'.repeat(MAX_MCP_BODY_BYTES) },
@@ -248,7 +261,7 @@ describe('mcp transport', () => {
 
   it('serves every MVP tool', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
 
     const names = await withMcpClient(testApp, key, async (_call, client) => {
       const { tools } = await client.listTools()
@@ -262,7 +275,7 @@ describe('mcp transport', () => {
 describe('mcp lead tools', () => {
   it('searches, reads and advances a lead end to end', async () => {
     const testApp = createTestApp()
-    const { key, record } = createApiKey(testApp.db, 'Agent')
+    const { key, record } = agentKey(testApp)
     await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com', endorsements: 'Hazmat' })
     await submit(testApp, { name: 'Sam Cole', email: 'sam@example.com' })
 
@@ -296,7 +309,7 @@ describe('mcp lead tools', () => {
 
   it('reads the spam quarantine only when asked, and refuses a date it cannot parse', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com' })
     await submit(testApp, { name: 'Bot', email: 'bot@example.com', [HONEYPOT_FIELD]: 'filled' })
 
@@ -316,7 +329,7 @@ describe('mcp lead tools', () => {
 
   it('refuses answers nested deeper than the search index can walk', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     let deep: Record<string, unknown> = { bottom: true }
     for (let level = 0; level < MAX_FIELD_DEPTH; level += 1) deep = { nested: deep }
 
@@ -331,7 +344,7 @@ describe('mcp lead tools', () => {
 
   it('reports a refused call as an error result rather than a protocol failure', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com' })
 
     await withMcpClient(testApp, key, async (call) => {
@@ -348,7 +361,7 @@ describe('mcp lead tools', () => {
     const testApp = createTestApp({ onLeadCreated })
     await setupAdmin(testApp)
     configureEmail(testApp)
-    const { key, record } = createApiKey(testApp.db, 'Agent')
+    const { key, record } = agentKey(testApp)
 
     await withMcpClient(testApp, key, async (call) => {
       const created = await call('create_lead', {
@@ -406,7 +419,7 @@ describe('mcp lead tools', () => {
 
   it('refuses a lead nobody could answer', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
 
     await withMcpClient(testApp, key, async (call) => {
       const answer = await call('create_lead', { name: 'Dana Reed' })
@@ -419,7 +432,7 @@ describe('mcp lead tools', () => {
 
   it('files a lead under a named stage and refuses one that does not exist', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
 
     await withMcpClient(testApp, key, async (call) => {
       const stageList = await call('list_stages')
@@ -436,7 +449,7 @@ describe('mcp lead tools', () => {
 
   it('patches contact details, clearing only what is sent as null', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com', phone: '555-0100' })
 
     await withMcpClient(testApp, key, async (call) => {
@@ -457,7 +470,7 @@ describe('mcp lead tools', () => {
 
   it('does not let a note through that the timeline could not hold', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com' })
 
     await withMcpClient(testApp, key, async (call) => {
@@ -475,7 +488,7 @@ describe('mcp lead tools', () => {
 describe('mcp email template tools', () => {
   it('edits a template and previews it without saving', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
 
     await withMcpClient(testApp, key, async (call) => {
       const listed = await call('list_email_templates')
@@ -505,7 +518,7 @@ describe('mcp email template tools', () => {
 
   it('refuses source that does not compile, and says what is wrong with it', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     const before = getEmailTemplate(testApp.db, 'new_lead_notify')?.body
 
     await withMcpClient(testApp, key, async (call) => {
@@ -524,7 +537,7 @@ describe('mcp email template tools', () => {
 
   it('previews against a real lead when one is named', async () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Agent')
+    const { key } = agentKey(testApp)
     await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com' })
 
     await withMcpClient(testApp, key, async (call) => {

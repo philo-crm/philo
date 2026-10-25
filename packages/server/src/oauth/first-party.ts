@@ -4,8 +4,8 @@ import { oauthClients } from '../db/schema.ts'
 
 /**
  * The PWA's client id at the built-in IdP. Fixed rather than registered: the
- * PWA ships knowing it, and it is the one client granted operator authority —
- * ADR-0006. Not a UUID, so it can never collide with a dynamic registration.
+ * PWA ships knowing it, and its grants are the person themself on the
+ * timeline (`user:<id>`) rather than an agent acting for them — ADR-0007. Not a UUID, so it can never collide with a dynamic registration.
  */
 export const FIRST_PARTY_CLIENT_ID = 'philo-web'
 

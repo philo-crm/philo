@@ -191,3 +191,22 @@ describe('re-running migrations', () => {
     expect(journal.entries.length).toBeGreaterThan(1)
   })
 })
+
+describe('API key ownership (ADR-0007)', () => {
+  it('gives a key minted before the change to the instance\'s account', () => {
+    const dataDir = tempDir('philo-keys-')
+    const before = journal.entries.findIndex((entry) => entry.tag.endsWith('_api_key_owner'))
+    const sqlite = new Database(join(dataDir, DB_FILENAME))
+    sqlite.pragma('foreign_keys = ON')
+    migrate(drizzle(sqlite), { migrationsFolder: partialMigrationsDir(before) })
+    sqlite.prepare("INSERT INTO users (email, password_hash, created_at, updated_at) VALUES ('owner@example.com', 'x', 0, 0)").run()
+    sqlite
+      .prepare("INSERT INTO api_keys (name, key_hash, key_prefix, created_at) VALUES ('Cron job', 'hash', 'philo_abcd', 0)")
+      .run()
+    sqlite.close()
+
+    const db = openTracked(dataDir)
+    const rows = db.$client.prepare('SELECT user_id AS userId FROM api_keys').all()
+    expect(rows).toEqual([{ userId: 1 }])
+  })
+})

@@ -173,6 +173,12 @@ export const apiKeys = sqliteTable('api_keys', {
   keyHash: text('key_hash').notNull().unique(),
   /** Leading `philo_…` characters, so the UI can label a key it can never show again. */
   keyPrefix: text('key_prefix').notNull(),
+  /**
+   * Whose key it is: the key acts with this user's authority — ADR-0007.
+   * Nullable only because SQLite cannot add a NOT NULL column to existing
+   * rows; the migration backfills it, and a key without one resolves to nobody.
+   */
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
   createdAt: createdAt(),
   lastUsedAt: timestamp('last_used_at'),
 })

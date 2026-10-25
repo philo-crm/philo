@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { actorOf, currentUser, requireUser, type AuthEnv } from './middleware.ts'
+import { actorOf, currentUser, type AuthEnv } from './middleware.ts'
 import { ConcurrencyGate, FailureThrottle, type ThrottleOptions } from './rate-limit.ts'
 import type { SessionUser } from './session.ts'
 
@@ -78,12 +78,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono<AuthEnv> {
   // Public: a client asks this before it has any token at all.
   routes.get('/config', (c) => c.json(deps.signIn))
 
-  routes.get('/session', requireUser, (c) => c.json({ user: toUserResponse(currentUser(c)) }))
+  routes.get('/session', (c) => c.json({ user: toUserResponse(currentUser(c)) }))
 
-  // Any credential: what it is and how the timeline will name it. The cheapest
-  // way for a client — the MCP app among them — to check a token before
-  // relying on it.
-  routes.get('/principal', (c) => c.json({ kind: c.get('principal')?.kind, actor: actorOf(c) }))
+  // Any credential: whose it is and how the timeline will name it. The
+  // cheapest way for a client — the MCP app among them — to check a token
+  // before relying on it.
+  routes.get('/principal', (c) => c.json({ user: toUserResponse(currentUser(c)), actor: actorOf(c) }))
 
   return routes
 }

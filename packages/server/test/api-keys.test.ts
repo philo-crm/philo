@@ -14,7 +14,7 @@ import {
   MAX_API_KEY_NAME_LENGTH,
 } from '../src/auth/api-keys.ts'
 import { bearerToken } from '../src/auth/middleware.ts'
-import { apiKeys, leads } from '../src/db/schema.ts'
+import { apiKeys, leads, users } from '../src/db/schema.ts'
 import { readEmailSettings } from '../src/email/settings.ts'
 import {
   cleanupTestApps,
@@ -108,10 +108,21 @@ describe('api key values', () => {
   })
 })
 
+/** The account a key belongs to — every key has one now (ADR-0007). */
+function owner(testApp: TestApp, email = 'owner@example.com'): number {
+  const [row] = testApp.db
+    .insert(users)
+    .values({ email, passwordHash: 'unused', name: null })
+    .returning({ id: users.id })
+    .all()
+  if (row === undefined) throw new Error('no user inserted')
+  return row.id
+}
+
 describe('api key storage', () => {
   it('stores a hash and a prefix, never the secret', () => {
     const testApp = createTestApp()
-    const { key } = createApiKey(testApp.db, 'Cron job')
+    const { key } = createApiKey(testApp.db, owner(testApp), 'Cron job')
 
     const [row] = testApp.db.select().from(apiKeys).all()
     expect(row?.keyHash).toBe(hashApiKey(key))
@@ -120,9 +131,10 @@ describe('api key storage', () => {
 
   it('resolves a live key and refuses anything else', () => {
     const testApp = createTestApp()
-    const { key, record } = createApiKey(testApp.db, 'Cron job')
+    const userId = owner(testApp)
+    const { key, record } = createApiKey(testApp.db, userId, 'Cron job')
 
-    expect(resolveApiKey(testApp.db, key)).toEqual({ id: record.id, name: 'Cron job' })
+    expect(resolveApiKey(testApp.db, key)).toEqual({ id: record.id, name: 'Cron job', userId })
     expect(resolveApiKey(testApp.db, generateApiKey())).toBeUndefined()
     // No prefix: rejected before it can even be looked up.
     expect(resolveApiKey(testApp.db, 'not-a-philo-key')).toBeUndefined()
@@ -131,40 +143,73 @@ describe('api key storage', () => {
 
   it('stamps last use, then leaves it alone until the resolution has passed', () => {
     const testApp = createTestApp()
-    const { key, record } = createApiKey(testApp.db, 'Cron job')
+    const userId = owner(testApp)
+    const { key, record } = createApiKey(testApp.db, userId, 'Cron job')
     const start = new Date('2026-08-01T10:00:00.000Z')
 
-    expect(listApiKeys(testApp.db)[0]?.lastUsedAt).toBeNull()
+    expect(listApiKeys(testApp.db, userId)[0]?.lastUsedAt).toBeNull()
 
     resolveApiKey(testApp.db, key, start)
-    expect(listApiKeys(testApp.db)[0]?.lastUsedAt).toEqual(start)
+    expect(listApiKeys(testApp.db, userId)[0]?.lastUsedAt).toEqual(start)
 
     const soon = new Date(start.getTime() + API_KEY_LAST_USED_RESOLUTION_MS - 1)
     resolveApiKey(testApp.db, key, soon)
-    expect(listApiKeys(testApp.db)[0]?.lastUsedAt).toEqual(start)
+    expect(listApiKeys(testApp.db, userId)[0]?.lastUsedAt).toEqual(start)
 
     const later = new Date(start.getTime() + API_KEY_LAST_USED_RESOLUTION_MS)
     resolveApiKey(testApp.db, key, later)
-    expect(listApiKeys(testApp.db)[0]?.lastUsedAt).toEqual(later)
+    expect(listApiKeys(testApp.db, userId)[0]?.lastUsedAt).toEqual(later)
 
     expect(record.lastUsedAt).toBeNull()
   })
 
   it('revokes once, and says so when there is nothing left to revoke', () => {
     const testApp = createTestApp()
-    const { key, record } = createApiKey(testApp.db, 'Cron job')
+    const userId = owner(testApp)
+    const { key, record } = createApiKey(testApp.db, userId, 'Cron job')
 
-    expect(revokeApiKey(testApp.db, record.id)).toBe(true)
-    expect(revokeApiKey(testApp.db, record.id)).toBe(false)
+    expect(revokeApiKey(testApp.db, userId, record.id)).toBe(true)
+    expect(revokeApiKey(testApp.db, userId, record.id)).toBe(false)
     expect(resolveApiKey(testApp.db, key)).toBeUndefined()
   })
 
   it('lists newest first', () => {
     const testApp = createTestApp()
-    createApiKey(testApp.db, 'First')
-    createApiKey(testApp.db, 'Second')
+    const userId = owner(testApp)
+    createApiKey(testApp.db, userId, 'First')
+    createApiKey(testApp.db, userId, 'Second')
 
-    expect(listApiKeys(testApp.db).map((row) => row.name)).toEqual(['Second', 'First'])
+    expect(listApiKeys(testApp.db, userId).map((row) => row.name)).toEqual(['Second', 'First'])
+  })
+
+  it('keeps each user to their own keys', () => {
+    const testApp = createTestApp()
+    const mine = owner(testApp)
+    const theirs = owner(testApp, 'someone@example.com')
+    const { record } = createApiKey(testApp.db, theirs, 'Theirs')
+
+    expect(listApiKeys(testApp.db, mine)).toEqual([])
+    expect(revokeApiKey(testApp.db, mine, record.id)).toBe(false)
+    expect(listApiKeys(testApp.db, theirs)).toHaveLength(1)
+  })
+
+  it('resolves a key nobody owns to nobody', () => {
+    const testApp = createTestApp()
+    const userId = owner(testApp)
+    const { key, record } = createApiKey(testApp.db, userId, 'Orphan')
+    testApp.db.update(apiKeys).set({ userId: null }).where(eq(apiKeys.id, record.id)).run()
+
+    expect(resolveApiKey(testApp.db, key)).toBeUndefined()
+  })
+
+  it('goes with its user', () => {
+    const testApp = createTestApp()
+    const userId = owner(testApp)
+    const { key } = createApiKey(testApp.db, userId, 'Cron job')
+    testApp.db.delete(users).where(eq(users.id, userId)).run()
+
+    expect(resolveApiKey(testApp.db, key)).toBeUndefined()
+    expect(testApp.db.select().from(apiKeys).all()).toHaveLength(0)
   })
 })
 
@@ -307,45 +352,54 @@ describe('bearer authentication', () => {
     expect(body.keys[0]?.lastUsedAt).not.toBeNull()
   })
 
-  it('keeps a key out of everything that needs a person behind it', async () => {
-    const testApp = createTestApp()
-    const authorization = await setupAdmin(testApp)
-    const { secret } = await mintKey(testApp, authorization)
-
-    const sessionOnly: [string, RequestInit][] = [
-      ['/api/v1/auth/session', {}],
-      [KEYS_BASE, {}],
-      [KEYS_BASE, jsonPost({ name: 'Another key' })],
-      ['/api/v1/push/key', {}],
-      ['/api/v1/push/subscriptions', jsonPost({ endpoint: 'https://push.example.com/x' })],
-      ['/api/v1/settings/email/templates/new_lead_ack/test', jsonPost({})],
-      // The instance's own mail credentials, and a send to any address the
-      // caller names. Between them they are enough to repoint every outgoing
-      // notification and to send from the business's identity.
-      ['/api/v1/settings/email', {}],
-      ['/api/v1/settings/email', { ...jsonPost({ smtpHost: 'evil.example.com' }), method: 'PATCH' }],
-      ['/api/v1/settings/email/test', jsonPost({ to: 'attacker@example.com' })],
-    ]
-
-    for (const [path, init] of sessionOnly) {
-      const res = await testApp.app.request(path, bearer(secret, init))
-      expect([path, res.status]).toEqual([path, 403])
-      expect(await res.json()).toEqual({ error: 'session_required' })
-    }
-  })
-
-  it('leaves a key no way to repoint the mail server', async () => {
+  it('reaches everything its user can — ADR-0007', async () => {
     const testApp = createTestApp()
     const authorization = await setupAdmin(testApp)
     const { secret } = await mintKey(testApp, authorization)
     configureEmail(testApp)
 
-    await testApp.app.request(
-      '/api/v1/settings/email',
-      bearer(secret, { ...jsonPost({ smtpHost: 'evil.example.com' }), method: 'PATCH' }),
-    )
+    const everything: [string, RequestInit, number][] = [
+      ['/api/v1/auth/session', {}, 200],
+      [KEYS_BASE, {}, 200],
+      [KEYS_BASE, jsonPost({ name: 'Another key' }), 201],
+      ['/api/v1/push/key', {}, 200],
+      ['/api/v1/settings/email', {}, 200],
+    ]
+    for (const [path, init, status] of everything) {
+      const res = await testApp.app.request(path, bearer(secret, init))
+      expect([path, res.status]).toEqual([path, status])
+    }
+  })
 
-    expect(readEmailSettings(testApp.db).smtpHost).toBe('smtp.example.com')
+  it('changes the mail server as its user can, and still cannot read the password back', async () => {
+    const testApp = createTestApp()
+    const authorization = await setupAdmin(testApp)
+    const { secret } = await mintKey(testApp, authorization)
+    configureEmail(testApp)
+
+    const res = await testApp.app.request(
+      '/api/v1/settings/email',
+      bearer(secret, { ...jsonPost({ smtpHost: 'smtp2.example.com' }), method: 'PATCH' }),
+    )
+    expect(res.status).toBe(200)
+    expect(readEmailSettings(testApp.db).smtpHost).toBe('smtp2.example.com')
+    expect(JSON.stringify(await res.json())).not.toContain('secret-token')
+  })
+
+  it('mints a key for the same user, and names itself on the timeline, not the person', async () => {
+    const testApp = createTestApp()
+    const authorization = await setupAdmin(testApp)
+    const { id, secret } = await mintKey(testApp, authorization)
+
+    const minted = await testApp.app.request(KEYS_BASE, bearer(secret, jsonPost({ name: 'Made by an agent' })))
+    const { secret: second } = (await minted.json()) as { secret: string }
+    const principal = await testApp.app.request('/api/v1/auth/principal', bearer(second))
+    expect(await principal.json()).toMatchObject({ user: { id: 1 } })
+
+    const leadId = await submitLead(testApp)
+    const noted = await testApp.app.request(`/api/v1/leads/${leadId}/notes`, bearer(secret, jsonPost({ note: 'Screened.' })))
+    const body = (await noted.json()) as { lead: { events: { type: string; actor: string }[] } }
+    expect(body.lead.events.findLast((event) => event.type === 'note_added')?.actor).toBe(`api_key:${id}`)
   })
 
   it('leaves leads, the funnel and the email templates open to a key', async () => {

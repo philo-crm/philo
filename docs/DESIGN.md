@@ -235,9 +235,11 @@ Full rationale: [ADR-0004](adr/0004-push-best-effort-email-guaranteed.md).
 ## Auth and access
 
 Every credential is a bearer token on `/api/v1` — there is no cookie, and so
-no CSRF surface. Two levels of authority: the **operator** (the person) and
-**agents** (everything else). Details in
-[ADR-0006](adr/0006-headless-server-sdk-clients.md).
+no CSRF surface. Every credential acts for a user with exactly that user's
+authority — the PWA's token, an API key, a connector's grant alike — and the
+timeline records which credential acted. Details in
+[ADR-0006](adr/0006-headless-server-sdk-clients.md) and
+[ADR-0007](adr/0007-agents-act-as-their-user.md).
 
 1. **UI: OIDC sign-in.** The PWA is a public OIDC client of the built-in IdP:
    authorization code + PKCE, an operator-scoped access token in memory and a

@@ -30,7 +30,7 @@ export interface ExternalIdpConfig {
   issuer: string
   /** Required `aud` on access tokens, when the IdP sets one. */
   audience: string | undefined
-  /** The PWA's client id at that IdP: tokens it holds carry operator authority. */
+  /** The PWA's client id at that IdP: tokens it holds are the person themself. */
   clientId: string
   /**
    * Other clients at that IdP allowed in as agents. Empty by default: an IdP
@@ -77,9 +77,9 @@ function parseOptionalUrl(name: string, raw: string | undefined, fallback: strin
 }
 
 /**
- * All or nothing: an issuer without the PWA's client id would accept tokens
- * and then give nobody operator authority, which looks like a working setup
- * until the first attempt to open Settings.
+ * All or nothing: an issuer without the PWA's client id would leave the app
+ * itself with no client it accepts tokens from, which looks like a working
+ * setup until the first sign-in.
  */
 function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined {
   const issuer = env['PHILO_OIDC_ISSUER']

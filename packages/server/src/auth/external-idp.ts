@@ -44,9 +44,11 @@ export function createExternalIdp(config: ExternalIdpConfig): ExternalIdp {
   }
 }
 
-export type ExternalPrincipal =
-  | { kind: 'operator'; user: SessionUser }
-  | { kind: 'agent'; clientId: string }
+/** The user an external token acts for, and the client that holds it. */
+export interface ExternalPrincipal {
+  user: SessionUser
+  clientId: string
+}
 
 /** A compact JWS has three dot-separated parts; anything else is not ours to check. */
 function looksLikeJwt(token: string): boolean {
@@ -89,16 +91,16 @@ export async function verifyExternalToken(
   // Fail closed on the client. An IdP issues tokens to every application
   // registered with it, and a valid signature says only that one of them was
   // issued this — so a token that names no client, or a client nobody listed,
-  // is refused rather than let in at the lowest level of authority.
+  // is refused rather than let in to act for anyone.
   const clientId = clientOf(claims)
   if (clientId === undefined) return undefined
-  if (clientId !== idp.clientId) {
-    return idp.agentClientIds.includes(clientId) ? { kind: 'agent', clientId } : undefined
-  }
+  if (clientId !== idp.clientId && !idp.agentClientIds.includes(clientId)) return undefined
 
+  // The PWA and a listed agent alike act for the user the token names —
+  // ADR-0007 — so both are resolved the same way, by the bound subject.
   if (typeof claims.sub !== 'string' || claims.sub === '') return undefined
-  const user = await findOrProvisionOperator(db, `${idp.issuer} ${claims.sub}`, claims)
-  return user === undefined ? undefined : { kind: 'operator', user }
+  const user = await findOrProvisionUser(db, `${idp.issuer} ${claims.sub}`, claims)
+  return user === undefined ? undefined : { user, clientId }
 }
 
 const USER_COLUMNS = { id: users.id, email: users.email, name: users.name }
@@ -110,22 +112,22 @@ function verifiedEmail(claims: JWTPayload): string | undefined {
 }
 
 /**
- * The operator an external token names. Bound to the IdP's stable subject —
+ * The user an external token names. Bound to the IdP's stable subject —
  * an email address can be changed at the IdP, `iss`+`sub` cannot — and the
  * email is consulted only to make that binding, never to match afterwards:
  *
  * - **Known subject:** that account.
- * - **No account yet:** the first operator token with a verified email creates
- *   one — the external equivalent of first-boot setup, bounded the same way:
- *   only someone the operator's IdP issues a token to, for the operator's own
- *   client, gets here.
+ * - **No account yet:** the first token with a verified email creates one —
+ *   the external equivalent of first-boot setup, bounded the same way: only
+ *   someone the operator's IdP issues a token to, for one of the clients
+ *   configured here, gets here.
  * - **An account never bound** (an instance that used the built-in IdP until
  *   now): a verified email matching it binds it, once.
  *
  * Anything else — a second person, an address already bound to another
  * subject — is refused.
  */
-async function findOrProvisionOperator(
+async function findOrProvisionUser(
   db: Db,
   subject: string,
   claims: JWTPayload,

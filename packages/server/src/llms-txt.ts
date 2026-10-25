@@ -115,10 +115,12 @@ unauthenticated caller with 401. Bodies are JSON.
 - GET /settings/email/templates, GET and PATCH /settings/email/templates/{trigger},
   POST /settings/email/templates/{trigger}/preview — the two templates.
 
-An agent credential deliberately does not reach a few routes that the operator
-does: creating or revoking API keys, push subscriptions, the mail server
-settings, and the test-send. Those answer 403 \`session_required\` — the
-credential is fine, the route is not for it, so do not re-authenticate.
+Your credential acts for the person who created the key or approved your
+connector, with exactly their authority: everything they can do in the app, you
+can do here, including the mail server settings and API keys. What you do is
+recorded on each lead's timeline as your credential, not as them.
+
+- GET /auth/principal — whose credential this is, and how the timeline names it.
 
 ## Things that will trip you up
 

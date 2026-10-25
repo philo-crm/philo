@@ -84,7 +84,7 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_APP_URL` | `PHILO_PUBLIC_BASE_URL` | Where the PWA is served. The sign-in redirect goes here, and so do the links in emails and notifications. Set it only when the PWA is hosted apart. |
 | `PHILO_MCP_URL` | `<public base url>/mcp` | Where the MCP endpoint is reachable. Set it only when the MCP app runs apart. |
 | `PHILO_OIDC_ISSUER` | unset | An external OIDC provider to use instead of the built-in IdP. See [External identity provider](#external-identity-provider). |
-| `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens carry operator authority. |
+| `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens are recorded as the person rather than as an agent. |
 | `PHILO_OIDC_AUDIENCE` | unset | The `aud` the provider's access tokens must carry. Set it whenever the provider issues one. |
 | `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. |
 

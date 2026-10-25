@@ -148,7 +148,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   )
 
   // The built-in IdP, switched off entirely when an external one issues the
-  // tokens: two sources of operator authority would be one too many.
+  // tokens: two sources of identity would be one too many.
   if (options.externalIdp === undefined) {
     ensureFirstPartyClient(options.db, options.appUrl)
     const authGuards = createAuthGuards(options.authTuning ?? {})

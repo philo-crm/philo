@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import { currentUser, requireUser, type AuthEnv } from '../auth/middleware.ts'
+import { currentUser, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { ackReplyTo, sendTestEmail, type TestEmailError } from '../email/service.ts'
 import {
@@ -73,25 +73,17 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
   /**
-   * Session-only, this route and the two below it: the mail server's host,
-   * username and password are the instance's own credentials, and the test-send
-   * is a bare "send to this address" primitive. Nothing in the MCP tool set
-   * (DESIGN.md, MCP surface) needs either, so an API key does not reach them.
-   *
-   * What that does *not* buy, and deliberately: a key still edits the templates
-   * below, so it can author what goes out under the business's name and reach a
-   * recipient of its choosing through a lead. That capability is the approved
-   * design — `update_email_template` is in the MVP tool set precisely so an
-   * agent can design the emails — and the settings screen says as much where a
-   * key is created. Narrowing it is an ADR, not a patch.
+   * The mail server settings and the test-send are open to any credential
+   * acting for the user — ADR-0007: an agent does what its user can. The stored
+   * password is still write-only; no credential reads it back.
    */
-  routes.get('/email', requireUser, (c) => c.json({ settings: toResponse(readEmailSettings(deps.db)) }))
+  routes.get('/email', (c) => c.json({ settings: toResponse(readEmailSettings(deps.db)) }))
 
   /**
    * PATCH rather than PUT: a key the body leaves out keeps its stored value,
    * which is what lets the password stay write-only. Sending `""` clears it.
    */
-  routes.patch('/email', requireUser, async (c) => {
+  routes.patch('/email', async (c) => {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
@@ -109,7 +101,7 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
    * it tests, and a green result is a statement about the configuration the next
    * lead will actually be sent with.
    */
-  routes.post('/email/test', requireUser, async (c) => {
+  routes.post('/email/test', async (c) => {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
@@ -161,13 +153,12 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
   })
 
   /**
-   * The same rendering, put through SMTP to the address of whoever is signed in.
-   * Deliberately not an arbitrary recipient: the question a template test answers
-   * is "does this read right in my mail client", and the operator's own inbox is
-   * the only one that can answer it. Which is also why it is session-only — an
-   * API key has no inbox for the answer to land in.
+   * The same rendering, put through SMTP to the address of the user the
+   * credential acts for — an agent's test lands in its user's inbox. Deliberately
+   * not an arbitrary recipient: the question a template test answers is "does
+   * this read right in my mail client", and only that inbox can answer it.
    */
-  routes.post('/email/templates/:trigger/test', requireUser, async (c) => {
+  routes.post('/email/templates/:trigger/test', async (c) => {
     const trigger = c.req.param('trigger')
     if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
     const body = await readJsonBody(c)

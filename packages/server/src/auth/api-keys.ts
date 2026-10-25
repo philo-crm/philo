@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { desc, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { apiKeys } from '../db/schema.ts'
 
@@ -37,6 +37,8 @@ export interface ApiKeyRecord {
 export interface ApiKeyPrincipal {
   id: number
   name: string
+  /** Whose key it is. The key acts with this user's authority — ADR-0007. */
+  userId: number
 }
 
 export function generateApiKey(): string {
@@ -80,11 +82,12 @@ export interface CreatedApiKey {
   key: string
 }
 
-export function createApiKey(db: Db, name: string, now = new Date()): CreatedApiKey {
+export function createApiKey(db: Db, userId: number, name: string, now = new Date()): CreatedApiKey {
   const key = generateApiKey()
   const [row] = db
     .insert(apiKeys)
     .values({
+      userId,
       name,
       keyHash: hashApiKey(key),
       keyPrefix: apiKeyDisplayPrefix(key),
@@ -102,8 +105,8 @@ export function createApiKey(db: Db, name: string, now = new Date()): CreatedApi
   return { record: row, key }
 }
 
-/** Newest first: the one just created is the one being looked for. */
-export function listApiKeys(db: Db): ApiKeyRecord[] {
+/** One user's keys, newest first: the one just created is the one being looked for. */
+export function listApiKeys(db: Db, userId: number): ApiKeyRecord[] {
   return db
     .select({
       id: apiKeys.id,
@@ -113,13 +116,23 @@ export function listApiKeys(db: Db): ApiKeyRecord[] {
       lastUsedAt: apiKeys.lastUsedAt,
     })
     .from(apiKeys)
+    .where(eq(apiKeys.userId, userId))
     .orderBy(desc(apiKeys.id))
     .all()
 }
 
-/** True when a row was actually removed, so a repeat revoke can answer 404. */
-export function revokeApiKey(db: Db, id: number): boolean {
-  return db.delete(apiKeys).where(eq(apiKeys.id, id)).returning({ id: apiKeys.id }).all().length > 0
+/**
+ * True when a row was actually removed, so a repeat revoke can answer 404.
+ * Scoped to the user, so another user's key reads as not found.
+ */
+export function revokeApiKey(db: Db, userId: number, id: number): boolean {
+  return (
+    db
+      .delete(apiKeys)
+      .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
+      .returning({ id: apiKeys.id })
+      .all().length > 0
+  )
 }
 
 /**
@@ -133,17 +146,18 @@ export function resolveApiKey(db: Db, key: string, now = new Date()): ApiKeyPrin
   if (!key.startsWith(API_KEY_PREFIX)) return undefined
 
   const [row] = db
-    .select({ id: apiKeys.id, name: apiKeys.name, lastUsedAt: apiKeys.lastUsedAt })
+    .select({ id: apiKeys.id, name: apiKeys.name, userId: apiKeys.userId, lastUsedAt: apiKeys.lastUsedAt })
     .from(apiKeys)
     .where(eq(apiKeys.keyHash, hashApiKey(key)))
     .limit(1)
     .all()
-  if (row === undefined) return undefined
+  // A key nobody owns acts for nobody — see the column's note in schema.ts.
+  if (row === undefined || row.userId === null) return undefined
 
   const stale =
     row.lastUsedAt === null ||
     now.getTime() - row.lastUsedAt.getTime() >= API_KEY_LAST_USED_RESOLUTION_MS
   if (stale) db.update(apiKeys).set({ lastUsedAt: now }).where(eq(apiKeys.id, row.id)).run()
 
-  return { id: row.id, name: row.name }
+  return { id: row.id, name: row.name, userId: row.userId }
 }

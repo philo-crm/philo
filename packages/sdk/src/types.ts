@@ -159,9 +159,10 @@ export interface AuthConfig {
   scope: string
 }
 
-/** Who a token belongs to — `GET /api/v1/auth/principal`. */
+/** Whose a token is — `GET /api/v1/auth/principal`. */
 export interface Principal {
-  kind: 'operator' | 'agent'
+  /** The user the credential acts for, with exactly their authority. */
+  user: User
   /** How the timeline names this credential: `user:<id>`, `api_key:<id>` or `oauth:<client>`. */
   actor: string
 }
