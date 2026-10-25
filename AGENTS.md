@@ -137,6 +137,24 @@ if worth mentioning, then discarded. They do **not** become GitHub issues
 unless the user explicitly files one. The backlog is not a landfill for robot
 homework.
 
+### Merge bar
+
+A PR is mergeable only when, **on its current tip commit**:
+
+1. CI (typecheck, lint, test, build) is green, and
+2. Bugbot (`.github/workflows/bugbot.yml`) has posted **APPROVE** as
+   `ergofobe-bot`, with no unresolved Blocking findings.
+
+Bugbot reviews every non-draft PR from a branch in this repo and re-reviews on
+each push; a pass applies only to the SHA it names. `REQUEST_CHANGES` means fix
+the Blocking items and push. A Blocking finding you believe is wrong gets a
+reply on its thread with the concrete reason; escalate to the user rather than
+merging over it. Non-blocking findings follow the Triage Rules below. Fork PRs
+get no Bugbot run and need a human review.
+
+Bugbot runs from `main` (`pull_request_target`), so a change to its workflow
+or prompt takes effect only after it merges.
+
 ## Triage Rules
 
 Every review finding (self-review or subagent review) is classified:
@@ -152,7 +170,7 @@ and escalate to the user. Looping further is a sign the change needs human eyes.
 
 Trunk-based. Three skills cover the workflow:
 
-- **`/work-issue <N>`** — default unit of work. One issue → branch off main → PR back to main → self-merge if Shippability Bar is met.
+- **`/work-issue <N>`** — default unit of work. One issue → branch off main → PR back to main → self-merge once the merge bar is met.
 - **`/sprint-plan`** — exception, for cross-cutting work that must land atomically. Plans + executes on a feature branch, one PR to main.
 - **`/cut-release`** — when main has accumulated enough work to ship. Bumps version, tags, generates release notes. No release branch involved.
 
