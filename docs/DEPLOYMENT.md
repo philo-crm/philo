@@ -79,7 +79,7 @@ stages, email templates) lives in the database and is edited in the app.
 |---|---|---|
 | `PHILO_PORT` | `3000` | Port to listen on. Must be 1–65535, or the process refuses to start. |
 | `PHILO_DATA_DIR` | `/data` in the container, `./data` otherwise | Every byte of persistent state. |
-| `PHILO_PUBLIC_BASE_URL` | `http://localhost:<port>` | The externally reachable origin. |
+| `PHILO_PUBLIC_BASE_URL` | `http://localhost:<port>` | The externally reachable origin. Its host is also the name Philo greets an SMTP server with (EHLO). |
 | `PHILO_TRUSTED_PROXY` | `false` | Whether to believe `X-Forwarded-For`. Strictly `true`/`1` or `false`/`0` — a typo is a startup error, not a silent "no". |
 | `PHILO_APP_URL` | `PHILO_PUBLIC_BASE_URL` | Where the PWA is served. The sign-in redirect goes here, and so do the links in emails and notifications. Set it only when the PWA is hosted apart. |
 | `PHILO_MCP_URL` | `<public base url>/mcp` | Where the MCP endpoint is reachable. Set it only when the MCP app runs apart. |

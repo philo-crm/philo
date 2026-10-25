@@ -69,6 +69,10 @@ Two rules of thumb:
 - **Do not use a personal Gmail or Outlook account.** Consumer mail providers
   throttle and eventually block automated sending, and the failure shows up as
   leads you never heard about.
+- **An IP-allowlisted relay** (no username or password) checks the name Philo
+  greets it with. Philo uses the host from `PHILO_PUBLIC_BASE_URL`, so set that
+  to the instance's real public name — with the `localhost` default, a strict
+  relay turns the connection away at EHLO.
 
 ### Deliverability
 
@@ -153,6 +157,7 @@ carefully — it can author what goes out under your business's name.
 |---|---|
 | Boot log warns SMTP is not configured | Host or From address is empty. Both are required before anything is attempted. |
 | Test send fails with a 502 | The SMTP server refused. The error detail is the provider's own message — usually a wrong password or an unverified sender domain. |
+| Test send fails with `421 ... (EHLO)` | The relay refused Philo's greeting name. Set `PHILO_PUBLIC_BASE_URL` to the instance's public hostname — Philo greets with its host. |
 | Test send fails with a 409 | Nothing is configured to send *with* yet. Save the settings first. |
 | Mail sends but lands in spam | SPF/DKIM incomplete, or the From address is not on the verified domain. |
 | The business email arrives, the acknowledgment does not | The lead had no email address — only a phone number. Nothing to acknowledge to. |
