@@ -215,9 +215,10 @@ jobs:
             echo "::error::The review came back without these passes: $missing. Nothing posted."
             exit 1
           fi
-          # Claude's environment held tokens, so a review carrying one is never published. The match
+          # Claude's environment held tokens, so a review with one in any string (body, inline comment or
+          # path, which the fallback below copies into the body) is never published. The match
           # is not echoed: the job log is public too.
-          if jq -e 'any((.body, .comments[].body); test("sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|philo_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+"))' <<<"$REVIEW" >/dev/null; then
+          if jq -e '[.. | strings] | any(test("sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|philo_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+"))' <<<"$REVIEW" >/dev/null; then
             echo "::error::The review contains what looks like a credential. Nothing posted."
             exit 1
           fi
