@@ -125,14 +125,46 @@ describe('PATCH /api/v1/settings/email', () => {
 
     const res = await testApp.app.request(
       EMAIL_PATH,
-      authed('PATCH', { smtpHost: 'smtp2.example.com' }, authorization),
+      // Resending unchanged connection fields, as the settings form does, is not a change.
+      authed('PATCH', { fromName: 'Renamed Co', smtpHost: 'smtp.example.com' }, authorization),
     )
 
     expect(res.status).toBe(200)
     const stored = readEmailSettings(testApp.db)
-    expect(stored.smtpHost).toBe('smtp2.example.com')
+    expect(stored.fromName).toBe('Renamed Co')
     expect(stored.smtpPassword).toBe('secret-token')
-    expect(stored.fromAddress).toBe('no-reply@example.com')
+  })
+
+  it.each([
+    ['host', { smtpHost: 'smtp2.example.com' }],
+    ['port', { smtpPort: 2525 }],
+    ['TLS mode', { smtpSecure: true }],
+    ['username', { smtpUsername: 'someone-else' }],
+  ])('drops the stored password when the %s changes without a new one', async (_label, patch) => {
+    // Otherwise the next send would hand a write-only secret to a server
+    // nobody entered it for — a read-back by another route.
+    const testApp = createTestApp()
+    const authorization = await setupAdmin(testApp)
+    configureEmail(testApp)
+
+    const res = await testApp.app.request(EMAIL_PATH, authed('PATCH', patch, authorization))
+
+    expect(res.status).toBe(200)
+    expect(readEmailSettings(testApp.db).smtpPassword).toBe('')
+    expect(((await res.json()) as { settings: { smtpPasswordSet: boolean } }).settings.smtpPasswordSet).toBe(false)
+  })
+
+  it('takes a new server and its password together', async () => {
+    const testApp = createTestApp()
+    const authorization = await setupAdmin(testApp)
+    configureEmail(testApp)
+
+    await testApp.app.request(
+      EMAIL_PATH,
+      authed('PATCH', { smtpHost: 'smtp2.example.com', smtpPassword: 'new-secret' }, authorization),
+    )
+
+    expect(readEmailSettings(testApp.db)).toMatchObject({ smtpHost: 'smtp2.example.com', smtpPassword: 'new-secret' })
   })
 
   it('clears the password when the patch sends an empty one', async () => {

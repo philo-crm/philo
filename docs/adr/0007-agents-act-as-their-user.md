@@ -46,7 +46,10 @@ level of access, and it belongs to the person.
   list. That is the price of "no less"; a per-credential scope is the upgrade
   if it ever becomes a problem.
 - An agent can read and change the SMTP settings. The stored password is still
-  write-only: no credential can read it back.
+  write-only: no credential can read it back, and changing the host, port, TLS
+  mode or username drops it unless the same request supplies a new one. That
+  stops anyone — person or agent — from repointing the server to collect the
+  stored secret on the next send.
 - An agent can register a push subscription for its user. That is harmless,
   and useless without a browser to receive it.
 - If Philo ever has a second user with less authority than the first, it

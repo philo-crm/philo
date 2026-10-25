@@ -158,7 +158,8 @@ function optionalAddress(raw: unknown): string | undefined {
 /**
  * Patch semantics: a key the caller left out keeps its stored value. That is
  * what lets the password stay write-only — the settings screen never receives
- * it, so it cannot send it back, and an empty string is the explicit clear.
+ * it, so it cannot send it back, and an empty string is the explicit clear. A
+ * change to where the password would be sent clears it too; see below.
  */
 export function validateEmailSettings(
   current: EmailSettings,
@@ -216,6 +217,18 @@ export function validateEmailSettings(
     if (name === undefined) return err('invalid_business_name')
     next.businessName = name
   }
+
+  // The stored password was entered for one server, reached one way, as one
+  // user. Pointing any of that somewhere else without supplying the password
+  // again would hand the stored secret to a server nobody entered it for — a
+  // way to read back a credential that is otherwise write-only, open to any
+  // credential that can save settings (ADR-0007). So the old one is dropped.
+  const destinationChanged =
+    next.smtpHost !== current.smtpHost ||
+    next.smtpPort !== current.smtpPort ||
+    next.smtpSecure !== current.smtpSecure ||
+    next.smtpUsername !== current.smtpUsername
+  if (destinationChanged && !('smtpPassword' in patch)) next.smtpPassword = ''
 
   return ok(next)
 }
