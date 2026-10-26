@@ -150,7 +150,12 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
             <select
               value={String(record.stageId)}
               disabled={busy}
-              onChange={(event) => void run(() => moveLeadStage(leadId, Number(event.target.value)))}
+              onChange={(event) => {
+                const stageId = Number(event.target.value)
+                // An option that is not a stage yet, picked before the funnel loaded.
+                if (!Number.isSafeInteger(stageId) || stageId <= 0) return
+                void run(() => moveLeadStage(leadId, stageId))
+              }}
             >
               {/* Until the funnel loads, the only option is where the lead already is. */}
               {stages.data === undefined ? (
