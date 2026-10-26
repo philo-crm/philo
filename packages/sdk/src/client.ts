@@ -115,7 +115,10 @@ export class PhiloClient {
       return body.stage
     },
 
-    update: async (id: number, patch: { name?: string; isTerminal?: boolean }): Promise<StageRecord> => {
+    update: async (
+      id: number,
+      patch: { name?: string | undefined; isTerminal?: boolean | undefined },
+    ): Promise<StageRecord> => {
       const body = await this.#http.request<{ stage: StageRecord }>('PATCH', `${API}/stages/${id}`, patch)
       return body.stage
     },

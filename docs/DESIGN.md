@@ -276,7 +276,9 @@ MVP tool set:
 - **Leads:** `list_leads` (filters: stage, form, spam, date; FTS5 `search`),
   `get_lead` (record + timeline), `create_lead`, `update_lead`,
   `move_lead_stage`, `add_lead_note`
-- **Funnel:** `list_stages`
+- **Funnel:** `list_stages`, `create_stage`, `update_stage` (rename,
+  terminal flag), `reorder_stages` (whole funnel), `delete_stage` (empty,
+  non-last stages only)
 - **Email templates:** `list_email_templates`, `get_email_template`,
   `update_email_template`, `preview_email_template` (renders against a
   sample or real lead) — so an agent can design the emails

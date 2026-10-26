@@ -86,7 +86,8 @@ Call \`tools/list\` for the schemas. In outline:
 - Leads: \`list_leads\` (stage, form, spam, date filters and a full-text
   \`search\`), \`get_lead\` (record plus whole timeline), \`create_lead\`,
   \`update_lead\`, \`move_lead_stage\`, \`add_lead_note\`
-- Funnel: \`list_stages\`
+- Funnel: \`list_stages\`, \`create_stage\`, \`update_stage\`,
+  \`reorder_stages\`, \`delete_stage\`
 - Email: \`list_email_templates\`, \`get_email_template\`,
   \`update_email_template\`, \`preview_email_template\`
 
