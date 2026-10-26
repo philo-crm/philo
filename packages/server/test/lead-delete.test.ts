@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3'
 import { desc, eq } from 'drizzle-orm'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -5,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DB_FILENAME } from '../src/db/index.ts'
 import { leadAttachmentBlobs, leadAttachments, leadEvents, leads, pushSubscriptions } from '../src/db/schema.ts'
 import { sendNewLeadEmails, type EmailDeps } from '../src/email/service.ts'
+import { WAL_RETRY_MS } from '../src/leads/service.ts'
 import type { OutgoingEmail } from '../src/email/transport.ts'
 import { createLiveLeadHook, LiveFeed } from '../src/push/live.ts'
 import { sendNewLeadPush, type SendPush } from '../src/push/service.ts'
@@ -145,6 +147,32 @@ describe('DELETE /api/v1/leads/:id', () => {
     expect((await remove(testApp, authorization, id)).status).toBe(204)
 
     expect(readableMarkers(testApp)).toEqual([])
+  })
+
+  // An online backup holds a read transaction; the checkpoint must neither block
+  // on it nor give up for good.
+  it('retries the WAL checkpoint until a reader holding it lets go', async () => {
+    const testApp = createTestApp()
+    const authorization = await setupAdmin(testApp)
+    const id = await fullLead(testApp, authorization)
+    const reader = new Database(join(testApp.dataDir, DB_FILENAME))
+    reader.prepare('BEGIN').run()
+    reader.prepare('SELECT count(*) FROM leads').get()
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const started = Date.now()
+      expect((await remove(testApp, authorization, id)).status).toBe(204)
+      expect(Date.now() - started).toBeLessThan(1_000)
+      expect(readableMarkers(testApp)).not.toEqual([])
+
+      reader.prepare('COMMIT').run()
+      vi.advanceTimersByTime(WAL_RETRY_MS)
+
+      expect(readableMarkers(testApp)).toEqual([])
+    } finally {
+      vi.useRealTimers()
+      reader.close()
+    }
   })
 
   it('answers 404 for an unknown lead, and for one already deleted', async () => {

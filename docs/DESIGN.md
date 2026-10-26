@@ -175,18 +175,21 @@ the file with `grep`):
   deletes by appending a marker, so the cancelled tokens survive in older
   index segments that are never freed for `secure_delete` to zero.
 - **`PRAGMA wal_checkpoint(TRUNCATE)`** after the delete. The old page images
-  stay in the WAL until a checkpoint writes the zeroed pages over the file;
-  a busy reader (a backup in progress) can hold it back, and the next one
-  finishes.
+  stay in the WAL until a checkpoint writes the zeroed pages over the file and
+  empties it; SQLite's automatic checkpoints never empty it. A reader holding
+  the WAL (an online backup) makes it return busy without waiting, and it is
+  retried every 30 seconds until it completes, and again at every boot.
 
 Cost, measured on 5,000 leads with a 256 KB file on every tenth: deleting a
 lead went from 0.16 ms to 0.75 ms; updating a lead (which rewrites its search
 row) from about 0.05 ms to 0.24 ms; inserts unchanged. Negligible at a
 single business's scale, so it is always on rather than an option.
 
-Backups taken before a deletion still hold the lead — DEPLOYMENT.md (Backup).
-Data that earlier versions freed without zeroing is not scrubbed retroactively;
-the migration merges the search index once, and `VACUUM` rewrites the rest.
+A database written before this was on has free space that was never zeroed,
+holding values earlier edits overwrote. The boot that applies migration 0009
+merges the search index and then runs a one-time `VACUUM`, which rebuilds the
+file without it. Backups taken before a deletion still hold the lead —
+DEPLOYMENT.md (Backup).
 
 ## Intake endpoint
 

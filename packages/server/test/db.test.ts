@@ -2,10 +2,10 @@ import Database from 'better-sqlite3'
 import { asc, eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from '../src/db/index.ts'
 import { DB_FILENAME, MIGRATIONS_DIR, openDatabase } from '../src/db/index.ts'
 import * as schema from '../src/db/schema.ts'
@@ -260,6 +260,41 @@ describe('full-text search', () => {
       .all()
       .map((row) => row.name)
     expect(triggers).toEqual(['leads_fts_delete', 'leads_fts_insert', 'leads_fts_update'])
+  })
+
+  // DESIGN.md (Erasure): an older database freed space without zeroing it, and
+  // the boot that upgrades it has to scrub that, or deleting a lead after the
+  // upgrade still leaves what an earlier edit overwrote.
+  it('scrubs free space once when upgrading a database written before secure_delete', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const dataDir = tempDataDir()
+    const olderMigrations = join(tempDataDir(), 'drizzle')
+    cpSync(MIGRATIONS_DIR, olderMigrations, { recursive: true })
+    rmSync(join(olderMigrations, '0009_leads_fts_secure_delete.sql'))
+    const journalPath = join(olderMigrations, 'meta', '_journal.json')
+    const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as { entries: { tag: string }[] }
+    journal.entries = journal.entries.filter((entry) => entry.tag !== '0009_leads_fts_secure_delete')
+    writeFileSync(journalPath, JSON.stringify(journal))
+
+    const sqlite = new Database(join(dataDir, DB_FILENAME))
+    sqlite.pragma('journal_mode = WAL')
+    const older = drizzle(sqlite, { schema })
+    migrate(older, { migrationsFolder: olderMigrations })
+    seed(older)
+    const [lead] = older
+      .insert(leads)
+      .values({ email: 'oldsecret-a-much-longer-address@example.com', currentStageId: firstStageId(older), fields: '{}' })
+      .returning({ id: leads.id })
+      .all()
+    older.update(leads).set({ email: 'nv@example.com' }).where(eq(leads.id, lead!.id)).run()
+    sqlite.pragma('wal_checkpoint(TRUNCATE)')
+    sqlite.close()
+    expect(readFileSync(join(dataDir, DB_FILENAME)).includes('oldsecret')).toBe(true)
+
+    openTracked(dataDir)
+
+    expect(readFileSync(join(dataDir, DB_FILENAME)).includes('oldsecret')).toBe(false)
+    vi.restoreAllMocks()
   })
 
   // DESIGN.md (Erasure): both are needed for a deleted lead to leave no bytes.
