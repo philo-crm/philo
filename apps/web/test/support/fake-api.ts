@@ -709,7 +709,12 @@ let nextWebhookId = 1
 function handleWebhooks(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
   if (path === '/api/v1/webhooks' && method === 'GET') return jsonResponse(200, { webhooks: api.webhooks })
   if (path === '/api/v1/webhooks' && method === 'POST') {
-    const input = (body ?? {}) as { url?: unknown; funnelId?: number | null; events?: WebhookRecord['events'] }
+    const input = (body ?? {}) as {
+      url?: unknown
+      funnelId?: number | null
+      events?: WebhookRecord['events']
+      authHeader?: { name: string } | null
+    }
     if (typeof input.url !== 'string' || !/^https?:\/\//.test(input.url)) {
       return jsonResponse(400, { error: 'invalid_url' })
     }
@@ -719,6 +724,7 @@ function handleWebhooks(api: FakeApi, method: string, path: string, body: unknow
       url: input.url,
       funnelId: input.funnelId ?? null,
       events: input.events ?? [],
+      authHeaderName: input.authHeader?.name ?? null,
       actor: `user:${TEST_USER.id}`,
       createdAt: new Date().toISOString(),
       lastDelivery: null,

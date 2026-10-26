@@ -29,3 +29,4 @@ named `NNNN-short-kebab-title.md`.
 - [0008 — Operator-entered lead details and attachments, PII included](0008-lead-details-and-attachments.md)
 - [0009 — Multiple funnels per instance, with funnel-scoped settings](0009-multiple-funnels.md)
 - [0010 — One change feed for the live app and for webhooks](0010-change-feed-and-webhooks.md)
+- [0011 — An optional auth header on webhook deliveries, beside the signature](0011-webhook-auth-header.md)

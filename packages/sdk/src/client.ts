@@ -25,6 +25,7 @@ import type {
   User,
   VersionInfo,
   WebhookDelivery,
+  WebhookPatch,
   WebhookRecord,
 } from './types.ts'
 
@@ -360,6 +361,12 @@ export class PhiloClient {
 
     /** The one call that ever sees the signing secret. */
     create: (webhook: NewWebhook): Promise<NewWebhookResult> => this.#http.request('POST', `${API}/webhooks`, webhook),
+
+    /** Sets or removes the auth header; nothing else about a webhook changes. */
+    update: async (id: number, patch: WebhookPatch): Promise<WebhookRecord> => {
+      const body = await this.#http.request<{ webhook: WebhookRecord }>('PATCH', `${API}/webhooks/${id}`, patch)
+      return body.webhook
+    },
 
     delete: async (id: number): Promise<void> => {
       await this.#http.request('DELETE', `${API}/webhooks/${id}`)

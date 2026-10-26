@@ -4,7 +4,14 @@ import { actorOf, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { readJsonBody } from '../json-body.ts'
 import { sendTestDelivery, type DeliveryTuning } from './deliver.ts'
-import { createWebhook, deleteWebhook, findWebhookTarget, listWebhooks, type WebhookError } from './service.ts'
+import {
+  createWebhook,
+  deleteWebhook,
+  findWebhookTarget,
+  listWebhooks,
+  updateWebhook,
+  type WebhookError,
+} from './service.ts'
 
 export interface WebhookRoutesDeps {
   db: Db
@@ -15,6 +22,7 @@ const WEBHOOK_STATUS: Record<WebhookError, ContentfulStatusCode> = {
   not_found: 404,
   invalid_url: 400,
   invalid_events: 400,
+  invalid_auth_header: 400,
   invalid_funnel: 422,
   too_many_webhooks: 409,
 }
@@ -41,6 +49,16 @@ export function createWebhookRoutes(deps: WebhookRoutesDeps): Hono<AuthEnv> {
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = createWebhook(deps.db, body, actorOf(c))
     return result.ok ? c.json(result.value, 201) : fail(c, result.error)
+  })
+
+  /** Only the auth header changes; a new URL or scope is a new registration. */
+  routes.patch('/:id', async (c) => {
+    const id = parseId(c.req.param('id'))
+    if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
+    const body = await readJsonBody(c)
+    if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
+    const result = updateWebhook(deps.db, id, body)
+    return result.ok ? c.json({ webhook: result.value }) : fail(c, result.error)
   })
 
   routes.delete('/:id', (c) => {

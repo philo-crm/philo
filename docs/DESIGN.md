@@ -144,7 +144,9 @@ Full rationale for the generality decision:
   `new_lead_ack`; enum grows to `stage_changed:<stage>` post-MVP),
   `subject`, `body`, `enabled`, `updated_at`. One per trigger per funnel.
 - **`webhooks`** — `id`, `url`, `pipeline_id` (null: every funnel), `events`
-  (JSON list of change types; empty: all), `secret`, `actor`, `created_at`,
+  (JSON list of change types; empty: all), `secret`, `auth_header_name` and
+  `auth_header_value` (both null: none —
+  [ADR-0011](adr/0011-webhook-auth-header.md)), `actor`, `created_at`,
   and the last delivery's `last_attempt_at`, `last_status`, `last_error`
   ([ADR-0010](adr/0010-change-feed-and-webhooks.md)).
 - **`push_subscriptions`**, **`users`**, **`api_keys`**, **`oauth_clients`**,
@@ -290,10 +292,14 @@ Full rationale: [ADR-0010](adr/0010-change-feed-and-webhooks.md).
 - **Webhooks** carry the same events to a URL, scoped to one funnel or all of
   them and to chosen types. Each POST is signed — `X-Philo-Signature:
   sha256=HMAC(secret, "<timestamp>.<body>")` — with a secret shown once at
-  creation. A failure is retried twice (10 s, 60 s), each retry carrying the
-  lead as it then stands — and none at all once the lead or the registration is
-  gone. Delivery is best-effort and in memory, so a receiver that must not miss
-  a change reconciles against the API.
+  creation. A receiver that authenticates by a fixed key instead can also be
+  sent one header of the registration's choosing, such as
+  `Authorization: Bearer …` — set at creation or later, listed by name only
+  ([ADR-0011](adr/0011-webhook-auth-header.md)). A failure is retried twice
+  (10 s, 60 s), each retry carrying the lead as it then stands — and none at
+  all once the lead or the registration is gone. Delivery is best-effort and
+  in memory, so a receiver that must not miss a change reconciles against the
+  API.
 - These are an integration surface, not a third notification channel: email
   stays the guaranteed path for a new lead (ADR-0004).
 
@@ -382,8 +388,8 @@ MVP tool set:
   attachments get add, fetch and remove tools — `get_lead` lists them (ADR-0008)
 - **Funnels:** `list_funnels`, `create_funnel`, `update_funnel` (name and
   sender overrides), `delete_funnel` (empty, non-last funnels only)
-- **Webhooks:** `list_webhooks`, `create_webhook`, `test_webhook`,
-  `delete_webhook` (ADR-0010)
+- **Webhooks:** `list_webhooks`, `create_webhook`, `update_webhook` (the auth
+  header only), `test_webhook`, `delete_webhook` (ADR-0010, ADR-0011)
 - **Stages:** `list_stages`, `create_stage`, `update_stage` (rename,
   terminal flag), `reorder_stages` (whole funnel), `delete_stage` (empty,
   non-last stages only) — scoped by an optional `funnelId`

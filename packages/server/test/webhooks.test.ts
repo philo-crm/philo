@@ -128,6 +128,74 @@ describe('/api/v1/webhooks', () => {
     expect((await register(h, { url: 'https://hooks.example.com/', funnelId: 'one' })).status).toBe(422)
   })
 
+  it('keeps an auth header, and lists it by name only', async () => {
+    const h = await harness()
+    const created = await register(h, {
+      url: 'https://hooks.example.com/',
+      authHeader: { name: 'Authorization', value: 'Bearer tok_listed-never' },
+    })
+    expect(created.status).toBe(201)
+    expect(created.body.webhook).toMatchObject({ authHeaderName: 'Authorization' })
+    expect(JSON.stringify(created.body)).not.toContain('tok_listed-never')
+
+    const listed = await (await h.api('/webhooks')).text()
+    expect(listed).toContain('"authHeaderName":"Authorization"')
+    expect(listed).not.toContain('tok_listed-never')
+
+    const plain = await register(h, { url: 'https://hooks.example.com/', authHeader: null })
+    expect(plain.body.webhook).toMatchObject({ authHeaderName: null })
+  })
+
+  it.each([
+    ['a reserved name', { name: 'Content-Type', value: 'text/plain' }],
+    ['a name Philo signs with', { name: 'X-Philo-Signature', value: 'sha256=forged' }],
+    ['a reserved name in lower case', { name: 'host', value: 'evil.example.com' }],
+    ['a Philo name in lower case', { name: 'x-philo-event', value: 'lead.deleted' }],
+    ['a name too long', { name: 'X-'.padEnd(101, 'a'), value: 'x' }],
+    ['a name that is not a token', { name: 'Bad Header', value: 'x' }],
+    ['an empty name', { name: '', value: 'x' }],
+    ['an empty value', { name: 'Authorization', value: '   ' }],
+    ['a value with a line break', { name: 'Authorization', value: 'Bearer a\r\nX-Injected: 1' }],
+    ['a value past ASCII', { name: 'Authorization', value: 'Bearer café' }],
+    ['a value too long', { name: 'Authorization', value: 'a'.repeat(4_001) }],
+    ['a string', 'Bearer x'],
+    ['a value that is not a string', { name: 'Authorization', value: 42 }],
+  ])('refuses an auth header with %s', async (_, authHeader) => {
+    const h = await harness()
+    const created = await register(h, { url: 'https://hooks.example.com/', authHeader })
+    expect(created.status).toBe(400)
+    expect(created.body.error).toBe('invalid_auth_header')
+  })
+
+  it('sets and clears the auth header, and nothing else', async () => {
+    const h = await harness()
+    const { body } = await register(h, { url: 'https://hooks.example.com/', events: ['lead.created'] })
+    const patch = (payload: unknown) =>
+      h.api(`/webhooks/${body.webhook.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+    const set = await patch({ authHeader: { name: 'X-Api-Key', value: 'key_1' }, url: 'https://other.example.com/' })
+    expect(set.status).toBe(200)
+    expect(await set.json()).toMatchObject({
+      webhook: { url: 'https://hooks.example.com/', events: ['lead.created'], authHeaderName: 'X-Api-Key' },
+    })
+
+    const cleared = await patch({ authHeader: null })
+    expect(await cleared.json()).toMatchObject({ webhook: { authHeaderName: null } })
+
+    expect((await patch({})).status).toBe(400)
+    expect((await patch({ authHeader: { name: 'Host', value: 'x' } })).status).toBe(400)
+    const missing = await h.api('/webhooks/999', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authHeader: null }),
+    })
+    expect(missing.status).toBe(404)
+  })
+
   it(`stops at ${MAX_WEBHOOKS}`, async () => {
     const h = await harness()
     for (let i = 0; i < MAX_WEBHOOKS; i += 1) await register(h, { url: `https://hooks.example.com/${i}` })
@@ -188,6 +256,33 @@ describe('delivery', () => {
     const payload = JSON.parse(request!.body) as { id: string; type: string; data: { lead: { email: string } } }
     expect(request!.headers.get('x-philo-delivery')).toBe(payload.id)
     expect(payload.data.lead.email).toBe('dana@example.com')
+  })
+
+  it('sends the auth header beside the signature, and stops once it is cleared', async () => {
+    const { received, at } = await receiver()
+    const h = await harness()
+    const { body } = await register(h, {
+      url: at(),
+      events: ['lead.created'],
+      authHeader: { name: 'Authorization', value: 'Bearer tok_123' },
+    })
+
+    await submit(h.testApp, 'dana@example.com')
+    await settle(() => received.length > 0)
+    const [request] = received
+    expect(request!.headers.get('authorization')).toBe('Bearer tok_123')
+    const timestamp = request!.headers.get('x-philo-timestamp')!
+    expect(request!.headers.get('x-philo-signature')).toBe(signPayload(body.secret, timestamp, request!.body))
+
+    await h.api(`/webhooks/${body.webhook.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authHeader: null }),
+    })
+    await h.api(`/webhooks/${body.webhook.id}/test`, { method: 'POST' })
+    expect(received).toHaveLength(2)
+    expect(received[1]!.headers.get('authorization')).toBeNull()
+    expect(received[1]!.headers.get('x-philo-signature')).not.toBeNull()
   })
 
   it('sends only the types asked for, and only for the funnel asked for', async () => {

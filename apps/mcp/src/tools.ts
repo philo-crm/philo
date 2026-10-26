@@ -5,6 +5,8 @@ import {
   CHANGE_TYPES,
   DEFAULT_PAGE_SIZE,
   MAX_ATTACHMENT_BYTES,
+  MAX_AUTH_HEADER_NAME_LENGTH,
+  MAX_AUTH_HEADER_VALUE_LENGTH,
   MAX_ATTACHMENT_FILENAME_LENGTH,
   MAX_CONTACT_FIELD_LENGTH,
   MAX_DETAIL_KEY_LENGTH,
@@ -627,7 +629,19 @@ function registerFunnelTools(server: McpServer, philo: PhiloClient): void {
   )
 }
 
-/** Webhooks — ADR-0010: changes posted to a URL as they happen, signed with a secret. */
+const AUTH_HEADER = z
+  .object({
+    name: z.string().trim().min(1).max(MAX_AUTH_HEADER_NAME_LENGTH).describe('e.g. Authorization or X-Api-Key.'),
+    value: z.string().trim().min(1).max(MAX_AUTH_HEADER_VALUE_LENGTH).describe('e.g. "Bearer <token>". Never listed back.'),
+  })
+  .describe(
+    'A header sent on every delivery beside the signature, for a receiver that authenticates by a static key.',
+  )
+
+/**
+ * Webhooks — ADR-0010: changes posted to a URL as they happen, signed with a
+ * secret; ADR-0011: optionally with a header the receiver authenticates by.
+ */
 function registerWebhookTools(server: McpServer, philo: PhiloClient): void {
   server.registerTool(
     'list_webhooks',
@@ -635,7 +649,8 @@ function registerWebhookTools(server: McpServer, philo: PhiloClient): void {
       title: 'List webhooks',
       description:
         'Every registered webhook: its URL, the funnel it is scoped to (null for every funnel), the ' +
-        'event types it receives (empty for all) and how its last delivery went. Secrets are never listed.',
+        'event types it receives (empty for all), the name of the auth header it sends (null for none) ' +
+        'and how its last delivery went. Secrets and auth header values are never listed.',
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
@@ -650,17 +665,34 @@ function registerWebhookTools(server: McpServer, philo: PhiloClient): void {
         'Posts each change to `url` as JSON while Philo runs: lead.created, lead.updated, ' +
         'lead.stage_changed, lead.deleted (id only), funnel.changed. Each POST carries ' +
         'X-Philo-Signature: sha256=HMAC-SHA256(secret, "<X-Philo-Timestamp>.<body>"). ' +
-        'The secret is in this answer and nowhere else — hand it to the receiver now. ' +
-        'Failures are retried twice; deliveries are best-effort, so reconcile with list_leads if ' +
+        'The secret is in this answer and nowhere else — hand it to the receiver now. For a ' +
+        'receiver that only accepts a static key, set authHeader as well. Failures are retried twice; deliveries are best-effort, so reconcile with list_leads if ' +
         'missing one matters.',
       inputSchema: {
         url: z.string().min(1).max(MAX_WEBHOOK_URL_LENGTH).describe('An http or https URL.'),
         funnelId: FUNNEL_ID.optional().describe('Only changes in this funnel. Left out: every funnel.'),
         events: z.array(z.enum(CHANGE_TYPES)).optional().describe('Only these types. Left out: every type.'),
+        authHeader: AUTH_HEADER.optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     (args) => call(null, () => philo.webhooks.create(args)),
+  )
+
+  server.registerTool(
+    'update_webhook',
+    {
+      title: 'Update a webhook',
+      description:
+        'Sets or, with null, removes the auth header a webhook sends. Its URL, scope, types and signing ' +
+        'secret stay as they are; to change those, delete it and register it again.',
+      inputSchema: {
+        webhookId: z.number().int().positive().describe('The webhook id, from list_webhooks.'),
+        authHeader: AUTH_HEADER.nullable(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    },
+    ({ webhookId, authHeader }) => call('webhook', () => philo.webhooks.update(webhookId, { authHeader })),
   )
 
   server.registerTool(
