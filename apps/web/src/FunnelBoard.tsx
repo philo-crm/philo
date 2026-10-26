@@ -13,6 +13,7 @@ import {
 import { FunnelPicker, useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
 import { firstFailure } from './http.ts'
 import { useLiveChanges } from './live.ts'
+import { Link } from './router.tsx'
 import { StageColumn } from './StageColumn.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
@@ -122,6 +123,9 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
       <header className="screen-head">
         <h1>Funnel</h1>
         <FunnelPicker funnels={funnels.data ?? []} selected={funnelId} onChange={selectFunnel} disabled={busy} />
+        <Link to="/leads/new" className="button-link">
+          New lead
+        </Link>
         <p className="count" aria-live="polite">
           {board.loading && board.data === undefined ? 'Loading…' : `${stages.length} stages`}
         </p>

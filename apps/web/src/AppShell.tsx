@@ -5,6 +5,7 @@ import { dismissInstallPrompt, isInstallPromptDismissed, shouldOfferInstall } fr
 import { InstallHelper } from './InstallHelper.tsx'
 import { LeadDetail } from './LeadDetail.tsx'
 import { LeadList } from './LeadList.tsx'
+import { NewLead } from './NewLead.tsx'
 import { isInAppNotificationsOn, onInAppNotificationsChange, runInAppNotifications } from './push.ts'
 import { Link, usePath } from './router.tsx'
 import { Settings } from './Settings.tsx'
@@ -41,6 +42,9 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   }
   if (path === '/settings') {
     return <Settings onSessionExpired={onSessionExpired} />
+  }
+  if (path === '/leads/new') {
+    return <NewLead onSessionExpired={onSessionExpired} />
   }
   if (path === '/install') {
     return <InstallHelper />

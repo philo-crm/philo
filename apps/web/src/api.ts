@@ -21,6 +21,7 @@ import {
   type LeadPage,
   type LeadRecord,
   type LiveNotification,
+  type NewLead,
   type StageRecord,
 } from '@philo/sdk'
 import { philo } from './client.ts'
@@ -74,6 +75,8 @@ export const BOARD_COLUMN_SIZE = 25
 export {
   MAX_API_KEY_NAME_LENGTH,
   MAX_ATTACHMENT_BYTES,
+  MAX_CONTACT_FIELD_LENGTH,
+  MAX_EMAIL_LENGTH,
   MAX_DETAIL_KEY_LENGTH,
   MAX_FUNNEL_NAME_LENGTH,
   MAX_NOTE_LENGTH,
@@ -196,6 +199,11 @@ export async function fetchBoard(signal?: AbortSignal, funnelId?: number): Promi
 
 export function fetchLeads(query: LeadQuery, signal?: AbortSignal): Promise<LeadPage> {
   return philo.leads.list(query, signal)
+}
+
+/** Entered by hand: sends no email. */
+export function createLead(lead: NewLead): Promise<LeadDetail> {
+  return philo.leads.create(lead)
 }
 
 export function fetchLead(id: number, signal?: AbortSignal): Promise<LeadDetail> {

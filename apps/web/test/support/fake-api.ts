@@ -698,6 +698,36 @@ function liveResponse(api: FakeApi, signal: AbortSignal | undefined): Response {
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
 
+let nextLeadId = 1_000
+
+/** `POST /api/v1/leads`, as the server files one: the named stage, or the funnel's first. */
+function createLead(api: FakeApi, body: unknown): Response {
+  const input = (body ?? {}) as Record<string, unknown>
+  const email = typeof input['email'] === 'string' ? input['email'].toLowerCase() : null
+  const phone = typeof input['phone'] === 'string' ? input['phone'] : null
+  if (email === null && phone === null) return jsonResponse(422, { error: 'email_or_phone_required' })
+  const funnelId = typeof input['funnelId'] === 'number' ? input['funnelId'] : 1
+  const inFunnel = api.stages.filter((stage) => funnelOfStage(stage) === funnelId).toSorted((a, b) => a.position - b.position)
+  const stage = typeof input['stageId'] === 'number' ? inFunnel.find((row) => row.id === input['stageId']) : inFunnel[0]
+  if (stage === undefined) return jsonResponse(422, { error: 'invalid_stage' })
+  nextLeadId += 1
+  const lead = makeLead({
+    id: nextLeadId,
+    name: typeof input['name'] === 'string' ? input['name'] : null,
+    email,
+    phone,
+    source: typeof input['source'] === 'string' ? input['source'] : null,
+    formId: null,
+    funnelId,
+    stageId: stage.id,
+    stageName: stage.name,
+    events: [],
+  })
+  pushEvent(lead, { type: 'created', payload: { via: 'api' }, actor: `user:${TEST_USER.id}` })
+  api.leads.push(lead)
+  return jsonResponse(201, { lead })
+}
+
 function changeResponse(api: FakeApi, query: URLSearchParams, signal: AbortSignal | undefined): Response {
   const encoder = new TextEncoder()
   const funnel = query.get('funnel')
@@ -881,6 +911,7 @@ function handle(
   }
 
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
+  if (method === 'POST' && path === '/api/v1/leads') return createLead(api, body)
   if (method === 'GET' && path === '/api/v1/events') return changeResponse(api, query, signal)
   const pushAnswer = handlePush(api, method, path, body, signal)
   if (pushAnswer !== undefined) return pushAnswer

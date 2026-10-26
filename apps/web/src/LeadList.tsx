@@ -129,6 +129,11 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
     <section className="screen">
       <header className="screen-head">
         <h1>{isSpam ? 'Spam' : 'Leads'}</h1>
+        {!isSpam && (
+          <Link to="/leads/new" className="button-link">
+            New lead
+          </Link>
+        )}
         <p className="count" aria-live="polite">
           {page.loading && page.data === undefined
             ? 'Loading…'
