@@ -32,6 +32,12 @@ Business — and none of it is an environment variable.
 | Sender | Reply-to | Where replies land. Set this to a **real inbox someone reads** — Philo does not receive email. |
 | Business | Business name | Fills `{{business.name}}` in templates. |
 
+Each **funnel** (Settings → Funnels) can override three of these for its own
+mail: the From name, the Reply-to, and who gets the new-lead notification —
+everyone who can sign in unless the funnel lists its own addresses. Leave an
+override blank to use the values above. The mail server, From address and
+business name are always the instance's.
+
 Save, then use **Test** at the bottom of the page to send yourself a message. It
 sends with the settings as *stored*, not as typed, so a green result is a
 statement about what the next real lead will be sent with.
@@ -122,8 +128,8 @@ after the first lead arrived" work.
 
 ## Templates
 
-**Settings → Email templates** edits both. They are Handlebars, stored in the
-database. The body is HTML and a variable in it is escaped, so whatever a
+**Settings → Email templates** edits both, for the funnel chosen at the top —
+each funnel has its own pair. They are Handlebars, stored in the database. The body is HTML and a variable in it is escaped, so whatever a
 stranger typed into your form cannot inject markup; the subject is plain text
 and is not escaped, because escaping it would put `&amp;` in your inbox.
 
@@ -135,6 +141,7 @@ Available variables:
 | `{{lead.source}}` | The intake form's name, or whatever an entered lead was given. |
 | `{{lead.fields.*}}` | Anything else the form submitted — `{{lead.fields.years_experience}}` and so on. Field names come from your form. |
 | `{{business.name}}` | From Settings → Business. |
+| `{{funnel.name}}` | The name of the lead's funnel. |
 | `{{lead_url}}` | A link straight to the lead in the app, built from `PHILO_APP_URL` (which defaults to `PHILO_PUBLIC_BASE_URL`). |
 
 The editor previews without saving, so you can iterate freely, and there is a

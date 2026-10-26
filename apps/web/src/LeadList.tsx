@@ -7,6 +7,7 @@ import {
   PAGE_SIZE,
 } from './api.ts'
 import { formatDateTime, leadContact, leadTitle } from './format.ts'
+import { useFunnels } from './FunnelPicker.tsx'
 import { firstFailure } from './http.ts'
 import { Link } from './router.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
@@ -21,10 +22,12 @@ export interface LeadListProps {
 const SEARCH_DEBOUNCE_MS = 250
 
 const ALL_STAGES = 'all'
+const ALL_FUNNELS = 'all'
 
 export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
+  const [funnelId, setFunnelId] = useState<number | undefined>(undefined)
   const [stageId, setStageId] = useState<number | undefined>(undefined)
   const [offset, setOffset] = useState(0)
   const [actionError, setActionError] = useState<unknown>(undefined)
@@ -52,23 +55,31 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
 
   const loadLeads = useCallback(
     (signal: AbortSignal) =>
-      fetchLeads({ isSpam, stageId, search, limit: PAGE_SIZE, offset }, signal),
-    [isSpam, stageId, search, offset],
+      fetchLeads({ isSpam, funnelId, stageId, search, limit: PAGE_SIZE, offset }, signal),
+    [isSpam, funnelId, stageId, search, offset],
   )
   const page = useResource(loadLeads)
+
+  const funnels = useFunnels()
+  const multiFunnel = (funnels.data?.length ?? 0) > 1
+  // Stages belong to a funnel (ADR-0009), so the stage filter offers one
+  // funnel's: the one chosen, or the only one there is. Across several funnels
+  // it is hidden rather than a list of same-named stages nobody can tell apart.
+  const showStageFilter = !isSpam && (!multiFunnel || funnelId !== undefined)
 
   // Not fetched in the spam view, which shows no stage filter — a request whose
   // answer nothing renders is one more thing that can fail for no reason.
   const loadStages = useCallback(
-    (signal: AbortSignal) => (isSpam ? Promise.resolve([]) : fetchStages(signal)),
-    [isSpam],
+    (signal: AbortSignal) => (showStageFilter ? fetchStages(signal, funnelId) : Promise.resolve([])),
+    [showStageFilter, funnelId],
   )
   const stages = useResource(loadStages)
+  const funnelNames = new Map((funnels.data ?? []).map((funnel) => [funnel.id, funnel.name]))
 
   // One error for the screen. A failed funnel load counts: it leaves the stage
   // filter with nothing in it, and a filter that silently cannot filter is
   // worse than one that says why.
-  const error = firstFailure(page.error, stages.error, actionError)
+  const error = firstFailure(page.error, funnels.error, stages.error, actionError)
   useSessionGuard(error, onSessionExpired)
 
   // Promoting the last lead on a page leaves the caller looking at nothing;
@@ -126,7 +137,30 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
           />
         </label>
 
-        {!isSpam && (
+        {!isSpam && multiFunnel && (
+          <label className="field">
+            <span className="field-label">Funnel</span>
+            <select
+              value={funnelId === undefined ? ALL_FUNNELS : String(funnelId)}
+              onChange={(event) => {
+                const value = event.target.value
+                setFunnelId(value === ALL_FUNNELS ? undefined : Number(value))
+                // Another funnel's stage is not a filter this one can apply.
+                setStageId(undefined)
+                setOffset(0)
+              }}
+            >
+              <option value={ALL_FUNNELS}>All funnels</option>
+              {(funnels.data ?? []).map((funnel) => (
+                <option key={funnel.id} value={String(funnel.id)}>
+                  {funnel.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        {showStageFilter && (
           <label className="field">
             <span className="field-label">Stage</span>
             <select
@@ -158,7 +192,7 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
         <p className="empty">
           {isSpam
             ? 'Nothing is quarantined.'
-            : search !== '' || stageId !== undefined
+            : search !== '' || stageId !== undefined || funnelId !== undefined
               ? 'No leads match those filters.'
               : 'No leads yet. They appear here as the intake form is submitted.'}
         </p>
@@ -185,7 +219,11 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
                   <td className="muted">{leadContact(lead)}</td>
                   {!isSpam && (
                     <td>
-                      <span className="tag">{lead.stageName}</span>
+                      <span className="tag">
+                        {multiFunnel && funnelId === undefined
+                          ? `${funnelNames.get(lead.funnelId) ?? 'Funnel'} · ${lead.stageName}`
+                          : lead.stageName}
+                      </span>
                     </td>
                   )}
                   <td className="muted">{lead.source ?? '—'}</td>

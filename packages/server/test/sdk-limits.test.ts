@@ -3,6 +3,7 @@ import * as apiKeys from '../src/auth/api-keys.ts'
 import * as password from '../src/auth/password.ts'
 import * as emailSettings from '../src/email/settings.ts'
 import * as templates from '../src/email/templates.ts'
+import * as funnels from '../src/funnels/service.ts'
 import * as attachments from '../src/leads/attachments.ts'
 import * as leads from '../src/leads/service.ts'
 import * as stages from '../src/stages/service.ts'
@@ -24,6 +25,8 @@ describe('limits mirror the server', () => {
       MAX_ATTACHMENT_BYTES: sdk.MAX_ATTACHMENT_BYTES,
       MAX_ATTACHMENT_FILENAME_LENGTH: sdk.MAX_ATTACHMENT_FILENAME_LENGTH,
       MAX_STAGE_NAME_LENGTH: sdk.MAX_STAGE_NAME_LENGTH,
+      MAX_FUNNEL_NAME_LENGTH: sdk.MAX_FUNNEL_NAME_LENGTH,
+      MAX_NOTIFY_RECIPIENTS: sdk.MAX_NOTIFY_RECIPIENTS,
       MAX_SETTINGS_NAME_LENGTH: sdk.MAX_SETTINGS_NAME_LENGTH,
       MAX_TEMPLATE_SUBJECT_LENGTH: sdk.MAX_TEMPLATE_SUBJECT_LENGTH,
       MAX_TEMPLATE_BODY_LENGTH: sdk.MAX_TEMPLATE_BODY_LENGTH,
@@ -42,6 +45,8 @@ describe('limits mirror the server', () => {
       MAX_ATTACHMENT_BYTES: attachments.MAX_ATTACHMENT_BYTES,
       MAX_ATTACHMENT_FILENAME_LENGTH: attachments.MAX_ATTACHMENT_FILENAME_LENGTH,
       MAX_STAGE_NAME_LENGTH: stages.MAX_STAGE_NAME_LENGTH,
+      MAX_FUNNEL_NAME_LENGTH: funnels.MAX_FUNNEL_NAME_LENGTH,
+      MAX_NOTIFY_RECIPIENTS: funnels.MAX_NOTIFY_RECIPIENTS,
       MAX_SETTINGS_NAME_LENGTH: emailSettings.MAX_NAME_LENGTH,
       MAX_TEMPLATE_SUBJECT_LENGTH: templates.MAX_TEMPLATE_SUBJECT_LENGTH,
       MAX_TEMPLATE_BODY_LENGTH: templates.MAX_TEMPLATE_BODY_LENGTH,

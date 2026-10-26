@@ -4,6 +4,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
 import { intakeForms, leadEvents, leads, stages } from '../db/schema.ts'
+import { defaultFunnelId } from '../funnels/service.ts'
 import { notifyLeadCreated, type CreatedLead, type LeadCreatedHook } from '../notify.ts'
 import { DedupeWindow } from './dedupe.ts'
 import { TokenBucket, type TokenBucketOptions } from './rate-limit.ts'
@@ -65,6 +66,8 @@ interface IntakeForm {
   formKey: string
   name: string
   allowedOrigins: string
+  /** Null for a form written before funnels: the default one — ADR-0009. */
+  pipelineId: number | null
 }
 
 /**
@@ -154,6 +157,7 @@ function findForm(db: Db, formKey: string): IntakeForm | undefined {
       formKey: intakeForms.formKey,
       name: intakeForms.name,
       allowedOrigins: intakeForms.allowedOrigins,
+      pipelineId: intakeForms.pipelineId,
     })
     .from(intakeForms)
     .where(eq(intakeForms.formKey, formKey))
@@ -197,17 +201,19 @@ function isSupportedContentType(c: Context): boolean {
 /**
  * Lead and its `created` event in one transaction — DESIGN.md (Data model): the
  * timeline is written with the mutation it records, never after it. Returns
- * undefined when the instance has no stage to file the lead under, which only
- * happens if an operator deleted every one of them.
+ * undefined when the form's funnel has no stage to file the lead under, which
+ * the last-stage rule in stages/service.ts keeps from happening.
  */
 function createLead(db: Db, form: IntakeForm, submission: Submission): CreatedLead | undefined {
   return db.transaction((tx) => {
-    // One pipeline in the MVP; ordering by it as well keeps the choice
-    // deterministic if a second one ever appears.
+    // The first stage of the form's own funnel — ADR-0009.
+    const funnelId = form.pipelineId ?? defaultFunnelId(db)
+    if (funnelId === undefined) return undefined
     const [stage] = tx
       .select({ id: stages.id })
       .from(stages)
-      .orderBy(asc(stages.pipelineId), asc(stages.position), asc(stages.id))
+      .where(eq(stages.pipelineId, funnelId))
+      .orderBy(asc(stages.position), asc(stages.id))
       .limit(1)
       .all()
     if (stage === undefined) return undefined

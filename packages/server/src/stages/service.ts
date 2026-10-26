@@ -1,6 +1,7 @@
 import { and, asc, eq, sql } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
-import { leads, pipelines, stages } from '../db/schema.ts'
+import { leads, stages } from '../db/schema.ts'
+import { resolveFunnelId } from '../funnels/service.ts'
 import { err, ok, type Result } from '../result.ts'
 
 export const MAX_STAGE_NAME_LENGTH = 80
@@ -16,6 +17,7 @@ export type StageError =
   | 'last_stage'
   | 'too_many_stages'
   | 'no_pipeline'
+  | 'funnel_not_found'
 
 export interface StageRecord {
   id: number
@@ -31,19 +33,19 @@ export interface StageRecord {
 }
 
 /**
- * The Default pipeline. One row exists from first boot and there is no
- * pipeline-management UI in the MVP (DESIGN.md, Data model), so "the pipeline"
- * is the lowest-numbered one — deterministic if a second one ever appears, and
- * the reason every query here is scoped to it rather than to the whole table.
+ * The funnel a call acts on — ADR-0009: the one named, or the default. Every
+ * query here is scoped to it, so one funnel's edit can never reach another's.
  */
-function defaultPipelineId(db: Db): number | undefined {
-  const [pipeline] = db
-    .select({ id: pipelines.id })
-    .from(pipelines)
-    .orderBy(asc(pipelines.id))
-    .limit(1)
-    .all()
-  return pipeline?.id
+function scope(db: Db, funnelId: number | undefined): Result<number, StageError> {
+  const id = resolveFunnelId(db, funnelId)
+  if (id !== undefined) return ok(id)
+  return err(funnelId === undefined ? 'no_pipeline' : 'funnel_not_found')
+}
+
+/** The funnel a stage belongs to — what an id-addressed edit is scoped by. */
+function funnelOfStage(db: Db, id: number): number | undefined {
+  const [stage] = db.select({ pipelineId: stages.pipelineId }).from(stages).where(eq(stages.id, id)).limit(1).all()
+  return stage?.pipelineId
 }
 
 function stagesOf(db: Db, pipelineId: number): StageRecord[] {
@@ -63,9 +65,10 @@ function stagesOf(db: Db, pipelineId: number): StageRecord[] {
     .all()
 }
 
-export function listStages(db: Db): StageRecord[] {
-  const pipelineId = defaultPipelineId(db)
-  return pipelineId === undefined ? [] : stagesOf(db, pipelineId)
+export function listStages(db: Db, funnelId?: number): Result<StageRecord[], StageError> {
+  const scoped = scope(db, funnelId)
+  if (!scoped.ok) return funnelId === undefined ? ok([]) : scoped
+  return ok(stagesOf(db, scoped.value))
 }
 
 function stageName(raw: unknown): string | undefined {
@@ -83,6 +86,7 @@ function stageName(raw: unknown): string | undefined {
 export function createStage(
   db: Db,
   input: { name?: unknown; isTerminal?: unknown },
+  funnelId?: number,
 ): Result<StageRecord, StageError> {
   const name = stageName(input.name)
   if (name === undefined) return err('invalid_name')
@@ -91,8 +95,9 @@ export function createStage(
   }
   const isTerminal = input.isTerminal ?? false
 
-  const pipelineId = defaultPipelineId(db)
-  if (pipelineId === undefined) return err('no_pipeline')
+  const scoped = scope(db, funnelId)
+  if (!scoped.ok) return scoped
+  const pipelineId = scoped.value
 
   const created = db.transaction((tx) => {
     const existing = tx
@@ -127,8 +132,8 @@ export function updateStage(
   const name = patch.name === undefined ? undefined : stageName(patch.name)
   const isTerminal = patch.isTerminal as boolean | undefined
 
-  const pipelineId = defaultPipelineId(db)
-  if (pipelineId === undefined) return err('no_pipeline')
+  const pipelineId = funnelOfStage(db, id)
+  if (pipelineId === undefined) return err('not_found')
 
   const updated = db.transaction((tx) => {
     const [stage] = tx
@@ -160,15 +165,20 @@ export function updateStage(
  * would leave two stages claiming the same slot and the board's ordering would
  * come down to which id sorted first.
  */
-export function reorderStages(db: Db, stageIds: unknown): Result<StageRecord[], StageError> {
+export function reorderStages(
+  db: Db,
+  stageIds: unknown,
+  funnelId?: number,
+): Result<StageRecord[], StageError> {
   if (!Array.isArray(stageIds)) return err('invalid_order')
   const requested: unknown[] = stageIds
   if (!requested.every((id) => Number.isInteger(id) && (id as number) > 0)) return err('invalid_order')
   const order = requested as number[]
   if (new Set(order).size !== order.length) return err('invalid_order')
 
-  const pipelineId = defaultPipelineId(db)
-  if (pipelineId === undefined) return err('no_pipeline')
+  const scoped = scope(db, funnelId)
+  if (!scoped.ok) return scoped
+  const pipelineId = scoped.value
 
   const applied = db.transaction((tx) => {
     const existing = tx
@@ -191,13 +201,13 @@ export function reorderStages(db: Db, stageIds: unknown): Result<StageRecord[], 
 }
 
 /**
- * Delete-if-empty. The last stage is kept whatever its count: `leads` references
+ * Delete-if-empty, scoped to the stage's own funnel. The last stage is kept whatever its count: `leads` references
  * it with `ON DELETE RESTRICT` and intake files every submission under the first
  * stage, so an instance with none would answer its own form with a 503.
  */
 export function deleteStage(db: Db, id: number): Result<StageRecord[], StageError> {
-  const pipelineId = defaultPipelineId(db)
-  if (pipelineId === undefined) return err('no_pipeline')
+  const pipelineId = funnelOfStage(db, id)
+  if (pipelineId === undefined) return err('not_found')
 
   const outcome = db.transaction((tx) => {
     const [stage] = tx

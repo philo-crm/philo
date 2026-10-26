@@ -75,6 +75,8 @@ describe('LeadDetail', () => {
     const api = installFakeApi({ leads: [applicant()] })
     renderDetail()
     await screen.findByRole('heading', { name: 'Dana Okafor' })
+    // The lead's funnel's stages load after the lead does, so wait for them.
+    await screen.findByRole('option', { name: 'Contacted' })
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '2' } })
 

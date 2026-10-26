@@ -51,6 +51,7 @@ const LEAD_STATUS: Record<LeadError, ContentfulStatusCode> = {
   email_or_phone_required: 422,
   // Only reachable if an operator deleted every stage. Same answer intake gives.
   no_stage: 503,
+  invalid_funnel: 422,
 }
 
 const ATTACHMENT_STATUS: Record<AttachmentError, ContentfulStatusCode> = {
@@ -114,6 +115,7 @@ function parseBoundedInt(raw: string | undefined, fallback: number, min: number,
  */
 function parseListQuery(c: Context): Result<ListLeadsFilters, 'invalid_request'> {
   const query = c.req.query()
+  const funnelId = parsePositiveInt(query['funnel'])
   const stageId = parsePositiveInt(query['stage'])
   const formId = parsePositiveInt(query['form'])
   const isSpam = parseBoolean(query['spam'])
@@ -123,6 +125,7 @@ function parseListQuery(c: Context): Result<ListLeadsFilters, 'invalid_request'>
   const offset = parseBoundedInt(query['offset'], 0, 0, Number.MAX_SAFE_INTEGER)
 
   if (
+    funnelId === 'invalid' ||
     stageId === 'invalid' ||
     formId === 'invalid' ||
     isSpam === 'invalid' ||
@@ -135,6 +138,7 @@ function parseListQuery(c: Context): Result<ListLeadsFilters, 'invalid_request'>
   }
 
   return ok({
+    funnelId,
     stageId,
     formId,
     isSpam: isSpam ?? false,

@@ -9,6 +9,8 @@ export interface LeadRecord {
   phone: string | null
   source: string | null
   formId: number | null
+  /** The funnel the lead's current stage belongs to — ADR-0009. */
+  funnelId: number
   stageId: number
   stageName: string
   isSpam: boolean
@@ -53,6 +55,8 @@ export interface LeadPage {
 }
 
 export interface LeadQuery {
+  /** Left out lists every funnel's leads. */
+  funnelId?: number | undefined
   stageId?: number | undefined
   formId?: number | undefined
   /** The spam quarantine instead of the funnel. Defaults to false. */
@@ -71,6 +75,8 @@ export interface NewLead {
   email?: string | undefined
   phone?: string | undefined
   source?: string | undefined
+  /** Left out with `stageId` too: the first stage of the default funnel. */
+  funnelId?: number | undefined
   stageId?: number | undefined
   fields?: Record<string, unknown> | undefined
 }
@@ -93,6 +99,40 @@ export interface StageRecord {
   position: number
   isTerminal: boolean
   leadCount: number
+}
+
+/** An intake form of a funnel, with the URL a website posts to. */
+export interface FunnelForm {
+  id: number
+  name: string
+  formKey: string
+  intakeUrl: string
+}
+
+/**
+ * Mirrors packages/server/src/funnels/routes.ts — ADR-0009. Each setting is an
+ * override of the instance's: empty inherits it.
+ */
+export interface FunnelRecord {
+  id: number
+  name: string
+  /** The funnel every call that names none acts on. */
+  isDefault: boolean
+  fromName: string
+  replyTo: string
+  /** Empty: everyone who can sign in gets the new-lead notification. */
+  notifyRecipients: string[]
+  leadCount: number
+  forms: FunnelForm[]
+  createdAt: string
+}
+
+/** Patch semantics: a key left out keeps its value; `""` or `[]` clears an override. */
+export interface FunnelPatch {
+  name?: string | undefined
+  fromName?: string | undefined
+  replyTo?: string | undefined
+  notifyRecipients?: string[] | undefined
 }
 
 /**

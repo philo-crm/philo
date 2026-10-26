@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import type { AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
+import { parseFunnelParam } from '../funnels/service.ts'
 import { readJsonBody } from '../json-body.ts'
 import type { Result } from '../result.ts'
 import {
@@ -33,6 +34,7 @@ const STAGE_STATUS: Record<StageError, ContentfulStatusCode> = {
   last_stage: 409,
   too_many_stages: 409,
   no_pipeline: 503,
+  funnel_not_found: 404,
 }
 
 function fail(c: Context, error: StageError) {
@@ -56,12 +58,20 @@ function respondList(c: Context, result: Result<StageRecord[], StageError>) {
 export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
-  routes.get('/', (c) => c.json({ stages: listStages(deps.db) }))
+  // `?funnel=<id>` scopes the collection routes — ADR-0009. Absent means the
+  // default funnel, which is every route's behavior from before funnels.
+  routes.get('/', (c) => {
+    const funnel = parseFunnelParam(c.req.query('funnel'))
+    if (funnel === null) return c.json({ error: 'invalid_request' }, 400)
+    return respondList(c, listStages(deps.db, funnel))
+  })
 
   routes.post('/', async (c) => {
+    const funnel = parseFunnelParam(c.req.query('funnel'))
+    if (funnel === null) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    const result = createStage(deps.db, body)
+    const result = createStage(deps.db, body, funnel)
     return result.ok ? c.json({ stage: result.value }, 201) : fail(c, result.error)
   })
 
@@ -74,9 +84,11 @@ export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
    * `POST /:id/...` route later cannot quietly turn "reorder" into an id.
    */
   routes.post('/reorder', async (c) => {
+    const funnel = parseFunnelParam(c.req.query('funnel'))
+    if (funnel === null) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return respondList(c, reorderStages(deps.db, body['stageIds']))
+    return respondList(c, reorderStages(deps.db, body['stageIds'], funnel))
   })
 
   routes.patch('/:id', async (c) => {

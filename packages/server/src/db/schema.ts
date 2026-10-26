@@ -28,10 +28,20 @@ function updatedAt() {
     .$onUpdateFn(() => new Date())
 }
 
-/** One row, seeded at first boot. No pipeline-management UI in the MVP. */
+/**
+ * A funnel — ADR-0009. The table keeps its kickoff name; everything above the
+ * schema says funnel. The lowest-numbered row is the default, which every route
+ * that names no funnel acts on.
+ */
 export const pipelines = sqliteTable('pipelines', {
   id: id(),
   name: text('name').notNull(),
+  /** From display name for this funnel's mail. Empty inherits `email.from_name`. */
+  fromName: text('from_name').notNull().default(''),
+  /** Where replies to this funnel's acknowledgment land. Empty inherits `email.reply_to`. */
+  replyTo: text('reply_to').notNull().default(''),
+  /** JSON array of addresses for the new-lead notification. Empty: everyone who can sign in. */
+  notifyRecipients: text('notify_recipients').notNull().default('[]'),
   createdAt: createdAt(),
 })
 
@@ -57,6 +67,12 @@ export const intakeForms = sqliteTable('intake_forms', {
   formKey: text('form_key').notNull().unique(),
   /** JSON array of origins echoed on CORS preflight. */
   allowedOrigins: text('allowed_origins').notNull().default('[]'),
+  /**
+   * The funnel a submission is filed into — ADR-0009. Nullable only because
+   * SQLite cannot add a NOT NULL foreign key to existing rows; null means the
+   * default funnel.
+   */
+  pipelineId: integer('pipeline_id').references(() => pipelines.id, { onDelete: 'cascade' }),
   createdAt: createdAt(),
 })
 
@@ -158,17 +174,23 @@ export const leadAttachmentBlobs = sqliteTable('lead_attachment_blobs', {
   data: blob('data', { mode: 'buffer' }).notNull(),
 })
 
-export const emailTemplates = sqliteTable('email_templates', {
-  id: id(),
-  /** Enum grows to `stage_changed:<stage>` post-MVP — see DESIGN.md (Email). */
-  trigger: text('trigger', { enum: ['new_lead_notify', 'new_lead_ack'] })
-    .notNull()
-    .unique(),
-  subject: text('subject').notNull(),
-  body: text('body').notNull(),
-  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
-  updatedAt: updatedAt(),
-})
+/** One per trigger per funnel — ADR-0009. */
+export const emailTemplates = sqliteTable(
+  'email_templates',
+  {
+    id: id(),
+    pipelineId: integer('pipeline_id')
+      .notNull()
+      .references(() => pipelines.id, { onDelete: 'cascade' }),
+    /** Enum grows to `stage_changed:<stage>` post-MVP — see DESIGN.md (Email). */
+    trigger: text('trigger', { enum: ['new_lead_notify', 'new_lead_ack'] }).notNull(),
+    subject: text('subject').notNull(),
+    body: text('body').notNull(),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    updatedAt: updatedAt(),
+  },
+  (table) => [uniqueIndex('email_templates_pipeline_trigger_idx').on(table.pipelineId, table.trigger)],
+)
 
 /** Everything configurable that the process does not need before it can serve. */
 export const settings = sqliteTable('settings', {

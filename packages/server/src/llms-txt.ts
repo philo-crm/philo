@@ -20,8 +20,8 @@ export function llmsTxt(publicBaseUrl: string, mcpUrl: string): string {
   return `# Philo
 
 > Philo is a self-hosted CRM that serves exactly one business. Leads arrive from
-> a form on that business's website, move through one funnel of stages, and each
-> carries an append-only timeline. There is no tenant, organization or workspace
+> forms on that business's website, move through the stages of a funnel — one
+> per intake flow — and each carries an append-only timeline. There is no tenant, organization or workspace
 > to select — this instance is the business.
 
 This file is a hand-written tour of the machine-facing surfaces, for agents and
@@ -36,6 +36,11 @@ changed, never their values.
 
 Email templates are live. Editing one changes what the business sends out under
 its own name from the next lead onwards.
+
+A business may run several funnels. Each has its own stages, intake forms,
+email templates, sender name, reply-to and notification recipients; the mail
+server, From address and business name are shared. Calls that name no funnel
+act on the default one, so read the funnel list first.
 
 ## Surfaces
 
@@ -84,7 +89,9 @@ unattended client cannot complete the flow.
 
 Call \`tools/list\` for the schemas. In outline:
 
-- Leads: \`list_leads\` (stage, form, spam, date filters and a full-text
+- Funnels: \`list_funnels\`, \`create_funnel\`, \`update_funnel\`,
+  \`delete_funnel\`. Stage and template tools take an optional \`funnelId\`.
+- Leads: \`list_leads\` (funnel, stage, form, spam, date filters and a full-text
   \`search\`), \`get_lead\` (record, attachments and whole timeline),
   \`create_lead\`, \`update_lead\` (contact and \`details\`),
   \`move_lead_stage\`, \`add_lead_note\`, \`delete_lead\` (permanent, no
@@ -101,12 +108,16 @@ Call \`tools/list\` for the schemas. In outline:
 Every path below is under ${base}/api/v1, answers JSON, and refuses an
 unauthenticated caller with 401. Bodies are JSON, except an attachment's.
 
-- GET /leads — \`?stage=&form=&spam=&search=&createdAfter=&createdBefore=&limit=&offset=\`.
+- GET /funnels, POST /funnels, GET /funnels/{id}, PATCH /funnels/{id},
+  DELETE /funnels/{id} — intake flows, each with its forms' intake URLs and its
+  \`fromName\`, \`replyTo\` and \`notifyRecipients\` overrides (empty inherits).
+  A funnel holding leads will not delete, and neither will the last one left.
+- GET /leads — \`?funnel=&stage=&form=&spam=&search=&createdAfter=&createdBefore=&limit=&offset=\`.
   Newest first, with a total. \`limit\` defaults to 50, maximum 200. \`spam\`
   defaults to false, so the quarantine is opt-in. A filter that does not parse is
   a 400, never a filter silently dropped.
 - POST /leads — files a lead by hand: \`name\`, \`email\`, \`phone\`, \`source\`,
-  \`stageId\`, \`fields\`. At least one of email or phone. Sends no email.
+  \`funnelId\`, \`stageId\`, \`fields\`. At least one of email or phone. Sends no email.
 - GET /leads/{id} — the lead, its attachments and its timeline.
 - PATCH /leads/{id} — \`name\`, \`email\`, \`phone\`, \`details\`. Null clears a
   field; the lead must still have an email or a phone afterwards. \`details\`
@@ -126,10 +137,11 @@ unauthenticated caller with 401. Bodies are JSON, except an attachment's.
 - POST /leads/{id}/not-spam — promotes a quarantined lead and fires the
   notifications that were suppressed when it arrived.
 - GET /stages, POST /stages, PATCH /stages/{id}, DELETE /stages/{id},
-  POST /stages/reorder — the funnel. A stage holding leads will not delete, and
-  neither will the last one left.
+  POST /stages/reorder — a funnel's stages; \`?funnel=\` picks which, default
+  otherwise. A stage holding leads will not delete, and neither will the last one left.
 - GET /settings/email/templates, GET and PATCH /settings/email/templates/{trigger},
-  POST /settings/email/templates/{trigger}/preview — the two templates.
+  POST /settings/email/templates/{trigger}/preview — a funnel's two templates,
+  \`?funnel=\` as above.
 
 Your credential acts for the person who created the key or approved your
 connector, with exactly their authority: everything they can do in the app, you

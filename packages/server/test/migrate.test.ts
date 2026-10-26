@@ -61,14 +61,13 @@ function seedSchemaDatabase(dataDir: string): void {
   migrate(db, { migrationsFolder: partialMigrationsDir(1) })
 
   const now = new Date()
-  const [pipeline] = db
-    .insert(pipelines)
-    .values({ name: 'Recruiting', createdAt: now })
-    .returning({ id: pipelines.id })
-    .all()
+  // Raw SQL: today's `pipelines` has funnel-settings columns this schema lacks.
+  const pipelineId = Number(
+    sqlite.prepare('INSERT INTO pipelines (name, created_at) VALUES (?, ?)').run('Recruiting', +now).lastInsertRowid,
+  )
   const [stage] = db
     .insert(stages)
-    .values({ pipelineId: pipeline!.id, name: 'Applied', position: 0 })
+    .values({ pipelineId, name: 'Applied', position: 0 })
     .returning({ id: stages.id })
     .all()
   // Raw SQL, because the Drizzle schema describes today's `leads` and would name
@@ -81,9 +80,12 @@ function seedSchemaDatabase(dataDir: string): void {
   sqlite
     .prepare("INSERT INTO lead_events (lead_id, type, payload, actor, created_at) VALUES (1, 'created', '{}', 'system', ?)")
     .run(+now)
-  db.insert(emailTemplates)
-    .values(DEFAULT_EMAIL_TEMPLATES.map((template) => ({ ...template, updatedAt: now })))
-    .run()
+  // Raw SQL for the same reason: today's `email_templates` has a funnel column.
+  for (const template of DEFAULT_EMAIL_TEMPLATES) {
+    sqlite
+      .prepare('INSERT INTO email_templates (trigger, subject, body, updated_at) VALUES (?, ?, ?, ?)')
+      .run(template.trigger, template.subject, template.body, +now)
+  }
   db.insert(settings).values({ key: SEEDED_AT_KEY, value: now.toISOString(), updatedAt: now }).run()
 
   // Guards the fixture: if the first migration ever grows a search index, these
@@ -177,11 +179,35 @@ describe('the default intake form', () => {
     const dataDir = tempDir('philo-upgrade-')
     seedSchemaDatabase(dataDir)
     const sqlite = new Database(join(dataDir, DB_FILENAME))
-    drizzle(sqlite).insert(intakeForms).values({ name: 'Careers', formKey: 'existing-key' }).run()
+    sqlite
+      .prepare('INSERT INTO intake_forms (name, form_key, created_at) VALUES (?, ?, ?)')
+      .run('Careers', 'existing-key', Date.now())
     sqlite.close()
 
     const db = openTracked(dataDir)
     expect(db.select().from(intakeForms).all()).toMatchObject([{ formKey: 'existing-key' }])
+  })
+})
+
+describe('upgrading to multiple funnels', () => {
+  it('puts the existing form and templates in the existing funnel', () => {
+    const dataDir = tempDir('philo-upgrade-')
+    seedSchemaDatabase(dataDir)
+    const db = openTracked(dataDir)
+    const [pipeline] = db.select().from(pipelines).all()
+    expect(pipeline).toMatchObject({ name: 'Recruiting', fromName: '', replyTo: '', notifyRecipients: '[]' })
+    expect(db.select().from(intakeForms).all().map((form) => form.pipelineId)).toEqual([pipeline!.id])
+    const templates = db.select().from(emailTemplates).all()
+    expect(templates.map((template) => template.trigger)).toEqual(
+      DEFAULT_EMAIL_TEMPLATES.map((template) => template.trigger),
+    )
+    expect(templates.every((template) => template.pipelineId === pipeline!.id)).toBe(true)
+  })
+
+  it("gives a fresh install's form the seeded funnel", () => {
+    const db = openTracked(tempDir('philo-fresh-'))
+    const [pipeline] = db.select().from(pipelines).all()
+    expect(db.select().from(intakeForms).all().map((form) => form.pipelineId)).toEqual([pipeline!.id])
   })
 })
 

@@ -33,7 +33,7 @@ const LEAD = {
 function context(overrides: Partial<Parameters<typeof buildContext>[0]> = {}) {
   return buildContext(
     { ...LEAD, ...overrides },
-    { businessName: 'Example Co', fromName: 'Example Co Mail', appUrl: 'https://crm.example.com' },
+    { businessName: 'Example Co', fromName: 'Example Co Mail', funnelName: 'Recruiting', appUrl: 'https://crm.example.com' },
   )
 }
 
@@ -43,6 +43,7 @@ describe('buildContext', () => {
     expect(built.lead.name).toBe('Dana Rivers')
     expect(built.lead.fields['years_experience']).toBe(7)
     expect(built.business.name).toBe('Example Co')
+    expect(built.funnel.name).toBe('Recruiting')
     expect(built.lead_url).toBe('https://crm.example.com/leads/42')
   })
 
@@ -50,6 +51,7 @@ describe('buildContext', () => {
     const built = buildContext(LEAD, {
       businessName: '',
       fromName: 'Example Co Mail',
+      funnelName: '',
       appUrl: 'https://crm.example.com',
     })
     expect(built.business.name).toBe('Example Co Mail')
@@ -59,6 +61,7 @@ describe('buildContext', () => {
     const built = buildContext(LEAD, {
       businessName: 'Example Co',
       fromName: '',
+      funnelName: '',
       appUrl: 'https://crm.example.com/',
     })
     expect(built.lead_url).toBe('https://crm.example.com/leads/42')

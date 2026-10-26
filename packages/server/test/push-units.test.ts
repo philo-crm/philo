@@ -160,6 +160,7 @@ describe('buildLeadNotification', () => {
     phone: '555-0100',
     source: 'Careers form',
     formId: 1,
+    funnelId: 1,
     stageId: 1,
     stageName: 'New',
     isSpam: false,

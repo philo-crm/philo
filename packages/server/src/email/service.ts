@@ -1,4 +1,5 @@
 import { and, asc, eq, gte } from 'drizzle-orm'
+import { readFunnelEmailSettings, type FunnelEmailSettings } from '../funnels/service.ts'
 import type { Db } from '../db/index.ts'
 import { emailTemplates, leadEvents, leads, users } from '../db/schema.ts'
 import { getLead, CREATED_VIA_API, type LeadDetail, type LeadEventRecord } from '../leads/service.ts'
@@ -17,6 +18,7 @@ import {
   isEmailConfigured,
   normalizeEmailAddress,
   readEmailSettings,
+  withFunnelOverrides,
   type EmailSettings,
 } from './settings.ts'
 import { smtpSender, type EmailSenderFactory, type SendEmail } from './transport.ts'
@@ -45,7 +47,8 @@ interface TemplateRow {
   enabled: boolean
 }
 
-function readTemplates(db: Db): Map<string, TemplateRow> {
+/** The lead's own funnel's templates — ADR-0009. */
+function readTemplates(db: Db, funnelId: number): Map<string, TemplateRow> {
   const rows = db
     .select({
       trigger: emailTemplates.trigger,
@@ -54,17 +57,20 @@ function readTemplates(db: Db): Map<string, TemplateRow> {
       enabled: emailTemplates.enabled,
     })
     .from(emailTemplates)
+    .where(eq(emailTemplates.pipelineId, funnelId))
     .all()
   return new Map(rows.map((row) => [row.trigger, row]))
 }
 
 /**
- * Who the new-lead notification goes to: everyone who can sign in. There is no
- * separate recipient setting on purpose — on a single-tenant instance with one
- * or two accounts, "the people with logins" is the answer an operator would
- * have typed anyway, and it cannot drift out of date the way a copy would.
+ * Who the new-lead notification goes to: the funnel's own recipients when it
+ * names any (ADR-0009), and otherwise everyone who can sign in — on a
+ * single-tenant instance with one or two accounts, "the people with logins" is
+ * the answer an operator would have typed anyway, and it cannot drift out of
+ * date the way a copy would.
  */
-function operatorRecipients(db: Db): string[] {
+function operatorRecipients(db: Db, funnel: FunnelEmailSettings | undefined): string[] {
+  if (funnel !== undefined && funnel.notifyRecipients.length > 0) return funnel.notifyRecipients
   return db
     .select({ email: users.email })
     .from(users)
@@ -191,9 +197,14 @@ export function ackReplyTo(config: EmailSettings): string {
   return config.replyTo === '' ? config.fromAddress : config.replyTo
 }
 
-function plansFor(deps: EmailDeps, lead: LeadDetail, config: EmailSettings): SendPlan[] {
+function plansFor(
+  deps: EmailDeps,
+  lead: LeadDetail,
+  config: EmailSettings,
+  funnel: FunnelEmailSettings | undefined,
+): SendPlan[] {
   return [
-    { trigger: 'new_lead_notify', to: deliverable(operatorRecipients(deps.db)) },
+    { trigger: 'new_lead_notify', to: deliverable(operatorRecipients(deps.db, funnel)) },
     {
       trigger: 'new_lead_ack',
       // A lead reachable only by phone gets no acknowledgment, which is not a
@@ -290,7 +301,8 @@ async function attemptNewLeadEmails(deps: EmailDeps, leadId: number): Promise<Se
     // what keeps an agent-filed lead from being emailed at the next boot.
     if (wasEntered(lead.events)) return failures
 
-    const config = readEmailSettings(deps.db)
+    const funnel = readFunnelEmailSettings(deps.db, lead.funnelId)
+    const config = withFunnelOverrides(readEmailSettings(deps.db), funnel)
     if (!isEmailConfigured(config)) {
       // Not a failure to retry: nothing about waiting a minute changes it, and
       // the next boot's sweep picks the lead up once SMTP is filled in.
@@ -298,15 +310,16 @@ async function attemptNewLeadEmails(deps: EmailDeps, leadId: number): Promise<Se
       return failures
     }
 
-    const templates = readTemplates(deps.db)
+    const templates = readTemplates(deps.db, lead.funnelId)
     const context = buildContext(lead, {
       businessName: config.businessName,
       fromName: config.fromName,
+      funnelName: funnel?.name ?? '',
       appUrl: deps.appUrl,
     })
     const send = (deps.createSender ?? smtpSender)(config)
 
-    for (const plan of plansFor(deps, lead, config)) {
+    for (const plan of plansFor(deps, lead, config, funnel)) {
       let outcome: SendOutcome
       try {
         outcome = await sendOne(send, lead, context, templates, plan)

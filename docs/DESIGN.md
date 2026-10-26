@@ -125,19 +125,24 @@ Full rationale for the generality decision:
   (JSON), `actor` (user/API key/OAuth client/form), `created_at`. Written in the same
   transaction as the mutation it records. Events are a log, never the source
   of truth — nothing replays them; on disagreement the lead row wins.
-- **`pipelines`** — seeded with one Default row; **no pipeline-management UI
-  in MVP**. The one place future generality is deliberately bought.
+- **`pipelines`** — a **funnel**: one per intake flow
+  ([ADR-0009](adr/0009-multiple-funnels.md)). Seeded with one Default row;
+  more are created in settings, each born with the default stages, both
+  templates and an intake form. Carries the funnel-scoped sender overrides
+  `from_name`, `reply_to` and `notify_recipients` (empty inherits the
+  instance's). The lowest-numbered funnel is the default, which every call
+  that names no funnel acts on.
 - **`stages`** — `id`, `pipeline_id`, `name`, `position`, `is_terminal`.
   User-definable in the app: create, rename, reorder, delete-if-empty.
   Transitions are unrestricted — any stage to any stage. First boot seeds
   `New → Contacted → Qualified → Closed` (terminal), renamed in-app to the
   operator's real funnel.
 - **`intake_forms`** — `id`, `name`, `form_key` (unguessable slug),
-  `allowed_origins`, `created_at`. Per-form keys support the future second
-  use case (second form, same instance).
-- **`email_templates`** — `id`, `trigger` (`new_lead_notify` |
+  `allowed_origins`, `pipeline_id` (the funnel a submission is filed into;
+  null means the default), `created_at`.
+- **`email_templates`** — `id`, `pipeline_id`, `trigger` (`new_lead_notify` |
   `new_lead_ack`; enum grows to `stage_changed:<stage>` post-MVP),
-  `subject`, `body`, `enabled`, `updated_at`. Two rows seeded at first boot.
+  `subject`, `body`, `enabled`, `updated_at`. One per trigger per funnel.
 - **`push_subscriptions`**, **`users`**, **`api_keys`**, **`oauth_clients`**,
   **`authorization_codes`**, **`access_tokens`**, **`refresh_tokens`**,
   **`settings`** — supporting tables per the sections below. (`sessions` is a
@@ -270,8 +275,13 @@ Full rationale: [ADR-0004](adr/0004-push-best-effort-email-guaranteed.md).
 - **Templates live in the DB**, editable in the UI and via MCP. Engine:
   **Handlebars** (HTML-escaping by default). Variables: `{{lead.name}}`,
   `{{lead.email}}`, `{{lead.phone}}`, `{{lead.source}}`,
-  `{{lead.fields.*}}`, `{{business.name}}`, `{{lead_url}}`. First boot
-  seeds a working notify + ack pair.
+  `{{lead.fields.*}}`, `{{business.name}}`, `{{funnel.name}}`,
+  `{{lead_url}}`. Each funnel has its own notify + ack pair, seeded with it.
+- **Instance-wide vs funnel-scoped** ([ADR-0009](adr/0009-multiple-funnels.md)).
+  The SMTP server and credentials, the From address and the business name are
+  the instance's. A funnel may override the From display name, the reply-to,
+  and who receives the new-lead notification (default: everyone who can sign
+  in).
 - **Triggers: lead creation only** (notify owner + acknowledge submitter).
   The `trigger` enum on `email_templates` is the designed-in door for
   stage-transition emails (e.g. a templated rejection) as a fast-follow.
@@ -336,9 +346,11 @@ MVP tool set:
   `move_lead_stage`, `add_lead_note`, `delete_lead` (`destructiveHint`,
   permanent — see Erasure); `update_lead` edits `details`, and
   attachments get add, fetch and remove tools — `get_lead` lists them (ADR-0008)
-- **Funnel:** `list_stages`, `create_stage`, `update_stage` (rename,
+- **Funnels:** `list_funnels`, `create_funnel`, `update_funnel` (name and
+  sender overrides), `delete_funnel` (empty, non-last funnels only)
+- **Stages:** `list_stages`, `create_stage`, `update_stage` (rename,
   terminal flag), `reorder_stages` (whole funnel), `delete_stage` (empty,
-  non-last stages only)
+  non-last stages only) — scoped by an optional `funnelId`
 - **Email templates:** `list_email_templates`, `get_email_template`,
   `update_email_template`, `preview_email_template` (renders against a
   sample or real lead) — so an agent can design the emails
@@ -352,7 +364,6 @@ an agent-oriented tour of every surface (a convention carried from Ollie).
 
 | Deferred | Why / trigger to revisit |
 |---|---|
-| Multi-pipeline UI | Schema supports it (seeded Default pipeline); UI when the sales use case arrives. |
 | Stage-transition emails/push | `trigger` enum is the door; fast-follow after MVP. |
 | Vector/semantic search | FTS5 suffices at MVP corpus size; sqlite-vec in the same file when a corpus worth embedding exists. |
 | Custom-field engine | JSON `fields` + form-level convention; backfill path documented in ADR-0003. |

@@ -71,6 +71,13 @@
       "when": 1792981865168,
       "tag": "0009_leads_fts_secure_delete",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792983345925,
+      "tag": "0010_multiple_funnels",
+      "breakpoints": true
     }
   ]
 }

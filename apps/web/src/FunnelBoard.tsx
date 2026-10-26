@@ -9,6 +9,7 @@ import {
   updateStage,
   MAX_STAGE_NAME_LENGTH,
 } from './api.ts'
+import { FunnelPicker, useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
 import { firstFailure } from './http.ts'
 import { StageColumn } from './StageColumn.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
@@ -18,7 +19,14 @@ export interface FunnelBoardProps {
 }
 
 export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
-  const loadBoard = useCallback((signal: AbortSignal) => fetchBoard(signal), [])
+  const funnels = useFunnels()
+  const [funnelId, selectFunnel] = useSelectedFunnel(funnels.data)
+  // Waits for the funnel list, so the board never flashes the default funnel's
+  // columns before switching to the one this browser last looked at.
+  const loadBoard = useCallback(
+    (signal: AbortSignal) => (funnelId === undefined ? Promise.resolve([]) : fetchBoard(signal, funnelId)),
+    [funnelId],
+  )
   const board = useResource(loadBoard)
 
   const [actionError, setActionError] = useState<unknown>(undefined)
@@ -27,14 +35,14 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
   const [newName, setNewName] = useState('')
   const [newTerminal, setNewTerminal] = useState(false)
 
-  const error = firstFailure(board.error, actionError)
+  const error = firstFailure(funnels.error, board.error, actionError)
   useSessionGuard(error, onSessionExpired)
 
   const columns = board.data ?? []
   const stages = columns.map((column) => column.stage)
   // Still busy while the refetch below is in flight: re-enabling the controls
   // over stale counts invites a second edit against a funnel that just moved.
-  const busy = pending || board.loading
+  const busy = pending || board.loading || funnels.loading
 
   /**
    * Every action here changes a count, a position, or which column a card is in
@@ -76,7 +84,7 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
     const next = [...order]
     next[from] = displaced
     next[from + offset] = moved
-    void run(() => reorderStages(next))
+    void run(() => reorderStages(next, funnelId))
   }
 
   async function handleCreateStage(event: FormEvent<HTMLFormElement>) {
@@ -84,7 +92,7 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
     const name = newName.trim()
     if (busy || name === '') return
     // Cleared only on success, so a rejected name is still there to fix.
-    if (await run(() => createStage(name, newTerminal))) {
+    if (await run(() => createStage(name, newTerminal, funnelId))) {
       setNewName('')
       setNewTerminal(false)
     }
@@ -94,6 +102,7 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
     <section className="screen screen-wide">
       <header className="screen-head">
         <h1>Funnel</h1>
+        <FunnelPicker funnels={funnels.data ?? []} selected={funnelId} onChange={selectFunnel} disabled={busy} />
         <p className="count" aria-live="polite">
           {board.loading && board.data === undefined ? 'Loading…' : `${stages.length} stages`}
         </p>

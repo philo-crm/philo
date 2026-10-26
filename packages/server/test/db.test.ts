@@ -135,9 +135,13 @@ describe('first-boot seeds', () => {
   // database that no later boot would repair.
   it('rolls the whole seed back when any part of it fails', () => {
     const db = openUnseeded(tempDataDir())
+    // A template already holding the first funnel's slot, so the seed's own
+    // insert collides with it. Foreign keys off to plant it ahead of its funnel.
+    db.$client.pragma('foreign_keys = OFF')
     db.insert(emailTemplates)
-      .values({ trigger: 'new_lead_notify', subject: 'taken', body: 'taken' })
+      .values({ pipelineId: 1, trigger: 'new_lead_notify', subject: 'taken', body: 'taken' })
       .run()
+    db.$client.pragma('foreign_keys = ON')
 
     expect(() => seed(db)).toThrow()
     expect(db.select().from(pipelines).all()).toEqual([])
@@ -270,20 +274,27 @@ describe('full-text search', () => {
     const dataDir = tempDataDir()
     const olderMigrations = join(tempDataDir(), 'drizzle')
     cpSync(MIGRATIONS_DIR, olderMigrations, { recursive: true })
-    rmSync(join(olderMigrations, '0009_leads_fts_secure_delete.sql'))
+    // The database as the release before 0009 left it: that migration and every
+    // later one are not applied yet.
     const journalPath = join(olderMigrations, 'meta', '_journal.json')
     const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as { entries: { tag: string }[] }
-    journal.entries = journal.entries.filter((entry) => entry.tag !== '0009_leads_fts_secure_delete')
+    const cut = journal.entries.findIndex((entry) => entry.tag === '0009_leads_fts_secure_delete')
+    for (const entry of journal.entries.slice(cut)) rmSync(join(olderMigrations, `${entry.tag}.sql`))
+    journal.entries = journal.entries.slice(0, cut)
     writeFileSync(journalPath, JSON.stringify(journal))
 
     const sqlite = new Database(join(dataDir, DB_FILENAME))
     sqlite.pragma('journal_mode = WAL')
     const older = drizzle(sqlite, { schema })
     migrate(older, { migrationsFolder: olderMigrations })
-    seed(older)
+    // Raw SQL: today's schema names funnel columns this one does not have yet.
+    const pipelineId = sqlite.prepare("INSERT INTO pipelines (name, created_at) VALUES ('Default', 0)").run().lastInsertRowid
+    const stageId = Number(
+      sqlite.prepare("INSERT INTO stages (pipeline_id, name, position) VALUES (?, 'New', 0)").run(pipelineId).lastInsertRowid,
+    )
     const [lead] = older
       .insert(leads)
-      .values({ email: 'oldsecret-a-much-longer-address@example.com', currentStageId: firstStageId(older), fields: '{}' })
+      .values({ email: 'oldsecret-a-much-longer-address@example.com', currentStageId: stageId, fields: '{}' })
       .returning({ id: leads.id })
       .all()
     older.update(leads).set({ email: 'nv@example.com' }).where(eq(leads.id, lead!.id)).run()
