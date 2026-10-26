@@ -631,8 +631,8 @@ function registerFunnelTools(server: McpServer, philo: PhiloClient): void {
 
 const AUTH_HEADER = z
   .object({
-    name: z.string().min(1).max(MAX_AUTH_HEADER_NAME_LENGTH).describe('e.g. Authorization or X-Api-Key.'),
-    value: z.string().min(1).max(MAX_AUTH_HEADER_VALUE_LENGTH).describe('e.g. "Bearer <token>". Never listed back.'),
+    name: z.string().trim().min(1).max(MAX_AUTH_HEADER_NAME_LENGTH).describe('e.g. Authorization or X-Api-Key.'),
+    value: z.string().trim().min(1).max(MAX_AUTH_HEADER_VALUE_LENGTH).describe('e.g. "Bearer <token>". Never listed back.'),
   })
   .describe(
     'A header sent on every delivery beside the signature, for a receiver that authenticates by a static key.',
