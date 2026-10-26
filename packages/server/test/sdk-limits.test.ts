@@ -9,6 +9,7 @@ import * as leads from '../src/leads/service.ts'
 import * as stages from '../src/stages/service.ts'
 import * as feed from '../src/events/feed.ts'
 import * as webhooks from '../src/webhooks/service.ts'
+import * as intake from '../src/intake/payload.ts'
 import * as sdk from '../../sdk/src/limits.ts'
 
 // The SDK tracks the server. These bounds are copied rather than imported so
@@ -38,6 +39,7 @@ describe('limits mirror the server', () => {
       MAX_WEBHOOKS: sdk.MAX_WEBHOOKS,
       MAX_WEBHOOK_URL_LENGTH: sdk.MAX_WEBHOOK_URL_LENGTH,
       CHANGE_TYPES: sdk.CHANGE_TYPES,
+      HONEYPOT_FIELD: sdk.HONEYPOT_FIELD,
     }).toEqual({
       DEFAULT_PAGE_SIZE: leads.DEFAULT_PAGE_SIZE,
       MAX_PAGE_SIZE: leads.MAX_PAGE_SIZE,
@@ -61,6 +63,7 @@ describe('limits mirror the server', () => {
       MAX_WEBHOOKS: webhooks.MAX_WEBHOOKS,
       MAX_WEBHOOK_URL_LENGTH: webhooks.MAX_WEBHOOK_URL_LENGTH,
       CHANGE_TYPES: feed.CHANGE_TYPES,
+      HONEYPOT_FIELD: intake.HONEYPOT_FIELD,
     })
   })
 })

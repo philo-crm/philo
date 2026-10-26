@@ -11,6 +11,7 @@ import {
   MAX_STAGE_NAME_LENGTH,
 } from './api.ts'
 import { FunnelPicker, useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
+import { IntakeDetails } from './IntakeDetails.tsx'
 import { firstFailure } from './http.ts'
 import { useLiveChanges } from './live.ts'
 import { Link } from './router.tsx'
@@ -53,6 +54,7 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
   useSessionGuard(error, onSessionExpired)
 
   const columns = board.data ?? []
+  const intakeForms = funnels.data?.find((funnel) => funnel.id === funnelId)?.forms ?? []
   const stages = columns.map((column) => column.stage)
   // Still busy while the refetch below is in flight: re-enabling the controls
   // over stale counts invites a second edit against a funnel that just moved.
@@ -135,6 +137,16 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
         <p className="notice notice-error" role="alert">
           {stageErrorMessage(error)}
         </p>
+      )}
+
+      {/* Where this funnel's leads come from, for whoever is wiring up the website. */}
+      {intakeForms.length > 0 && (
+        <details className="panel board-intake">
+          <summary>Connect a website form</summary>
+          {intakeForms.map((form) => (
+            <IntakeDetails key={form.id} form={form} />
+          ))}
+        </details>
       )}
 
       <div className="board">

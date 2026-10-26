@@ -841,3 +841,52 @@ main {
   overflow-wrap: anywhere;
   user-select: all;
 }
+
+.intake {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.copy-row .intake-url {
+  flex: 1;
+  min-width: 0;
+}
+
+.intake-sample {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+}
+
+.board-intake {
+  margin-bottom: 1rem;
+}
+
+.board-intake summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+fieldset.field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+}

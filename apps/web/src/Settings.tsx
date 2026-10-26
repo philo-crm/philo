@@ -20,6 +20,7 @@ import {
   type PushState,
 } from './push.ts'
 import { useResource, useSessionGuard } from './useResource.ts'
+import { Webhooks } from './Webhooks.tsx'
 
 export interface SettingsProps {
   onSessionExpired: () => void
@@ -52,6 +53,7 @@ export function Settings({ onSessionExpired }: SettingsProps) {
       <FunnelSettings onSessionExpired={onSessionExpired} />
       <EmailTemplates onSessionExpired={onSessionExpired} />
       <ApiKeys onSessionExpired={onSessionExpired} />
+      <Webhooks onSessionExpired={onSessionExpired} />
     </>
   )
 }

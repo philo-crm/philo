@@ -9,6 +9,7 @@ import {
   type FunnelRecord,
 } from './api.ts'
 import { useFunnels } from './FunnelPicker.tsx'
+import { IntakeDetails } from './IntakeDetails.tsx'
 import { useSessionGuard } from './useResource.ts'
 
 export interface FunnelSettingsProps {
@@ -203,10 +204,7 @@ function FunnelEditor({ funnel, deletable, onChanged }: FunnelEditorProps) {
         </label>
         <p className="hint">One address per line.</p>
         {funnel.forms.map((form) => (
-          <p key={form.id} className="field">
-            <span className="field-label">Intake URL</span>
-            <code className="intake-url">{form.intakeUrl}</code>
-          </p>
+          <IntakeDetails key={form.id} form={form} />
         ))}
       </div>
 

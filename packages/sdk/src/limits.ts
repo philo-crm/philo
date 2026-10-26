@@ -51,3 +51,6 @@ export const CHANGE_TYPES = [
   'funnel.changed',
 ] as const
 export type ChangeType = (typeof CHANGE_TYPES)[number]
+
+/** packages/server/src/intake/payload.ts — the hidden field a form leaves empty; filled, the lead is spam. */
+export const HONEYPOT_FIELD = '_hp'
