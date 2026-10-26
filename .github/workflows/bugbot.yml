@@ -120,7 +120,7 @@ jobs:
             - Broken contracts: REST routes, MCP tool names or schemas, OAuth endpoints, or public types changed without updating every caller and the docs that describe them.
             - Intake regressions: a public intake form that no longer submits, loses fields, or double-submits; notification delivery that breaks the guarantee in ADR 0004 (email guaranteed, push best-effort).
             - Locked design: a change that contradicts `docs/DESIGN.md` or an accepted ADR without a superseding ADR.
-            - Scope guardrail: any new field for SSN, driver's license number, DOB, or other DOT/DQ-file data. Always Blocking.
+            - Scope guardrail (ADR-0008): a typed schema column for PII such as a government identifier or date of birth, or a regulated workflow (compliance-mandated forms, background-check or consumer-report integrations). Sensitive values in a lead's free-form `details` or attachments are allowed. Always Blocking.
             - Public-repo rule: real businesses, individuals, or deployment domains in code, docs, tests, or fixtures. Always Blocking.
             - New behavior on a critical path (auth, intake, leads, OAuth, MCP, email) with no test.
             - Project conventions from CLAUDE.md, AGENTS.md, or CONTRIBUTING.md.

@@ -8,9 +8,11 @@ Philo targets **single-business self-hosting** — one business running its own
 instance. Multi-tenancy is a permanent non-goal. Contributions that fit that
 scope are welcome; features outside it will not be merged into the core.
 
-Philo's recruiting use case is pre-screening only. Anything touching DOT driver
-qualification files, FMCSA-mandated employment applications, background checks,
-or FCRA-regulated consumer reports is out of scope and will not be merged.
+Philo is a CRM, not a regulated workflow. Compliance-mandated forms or
+record-keeping, background-check or consumer-report integrations, and typed PII
+columns are out of scope and will not be merged; sensitive data an operator
+chooses to keep lives in a lead's free-form `details`
+([ADR-0008](docs/adr/0008-lead-details-and-attachments.md)).
 
 ## Developer Certificate of Origin (DCO)
 

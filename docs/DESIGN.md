@@ -111,9 +111,17 @@ Full rationale for the generality decision:
   non-reserved keys. No user-definable custom-field engine; the intake form
   defines what lands in JSON. `json_extract` keeps it queryable; if
   first-class custom fields are ever needed, a field-definitions table
-  backfills from the JSON with zero data loss.
+  backfills from the JSON with zero data loss. `fields` is the intake record
+  and stays read-only; **`details` (JSON)** holds what users and agents add
+  as the lead moves through the funnel, sensitive data included
+  ([ADR-0008](adr/0008-lead-details-and-attachments.md)).
+- **`lead_attachments`** / **`lead_attachment_blobs`** — files on a lead:
+  metadata (`id`, `lead_id`, `filename`, `content_type`, `size`, `sha256`,
+  `created_at`, `actor`) apart from the bytes, both in SQLite. 10 MB per
+  file; downloads always served as attachments. Not accepted at intake.
 - **`lead_events`** — append-only unified timeline: `id`, `lead_id`, `type`
-  (`created` | `stage_changed` | `note_added` | `email_sent`), `payload`
+  (`created` | `stage_changed` | `note_added` | `email_sent` |
+  `details_changed` | `attachment_added` | `attachment_removed`), `payload`
   (JSON), `actor` (user/API key/OAuth client/form), `created_at`. Written in the same
   transaction as the mutation it records. Events are a log, never the source
   of truth — nothing replays them; on disagreement the lead row wins.
@@ -275,7 +283,8 @@ MVP tool set:
 
 - **Leads:** `list_leads` (filters: stage, form, spam, date; FTS5 `search`),
   `get_lead` (record + timeline), `create_lead`, `update_lead`,
-  `move_lead_stage`, `add_lead_note`
+  `move_lead_stage`, `add_lead_note`; `update_lead` edits `details`, and
+  attachments get list, add, fetch and remove tools (ADR-0008)
 - **Funnel:** `list_stages`, `create_stage`, `update_stage` (rename,
   terminal flag), `reorder_stages` (whole funnel), `delete_stage` (empty,
   non-last stages only)
@@ -292,7 +301,6 @@ an agent-oriented tour of every surface (a convention carried from Ollie).
 
 | Deferred | Why / trigger to revisit |
 |---|---|
-| Attachments (resumes, documents) | Biggest scope item serving the weakest need; CDL/medical docs are guardrail-banned PII anyway. Revisit with the sales use case (proposals, contracts). |
 | Multi-pipeline UI | Schema supports it (seeded Default pipeline); UI when the sales use case arrives. |
 | Stage-transition emails/push | `trigger` enum is the door; fast-follow after MVP. |
 | Vector/semantic search | FTS5 suffices at MVP corpus size; sqlite-vec in the same file when a corpus worth embedding exists. |
@@ -303,7 +311,7 @@ an agent-oriented tour of every surface (a convention carried from Ollie).
 | Delivery webhooks (bounce/open tracking) | Lost by choosing SMTP-generic; revisit only if deliverability becomes a real problem. |
 | Agent automation workflows (triage, shadow review) | Ollie's are repo-proven; adopt after there's code to review. |
 | `assigned_to` / ownership | 1–2 users per instance; add when a real second user needs it. |
-| Logo / visual branding | Business name only in MVP; a logo upload drags in the file-upload machinery deliberately cut with attachments. |
+| Logo / visual branding | Business name only in MVP; revisit once attachments ([ADR-0008](adr/0008-lead-details-and-attachments.md)) have built the upload machinery. |
 
 ## Open questions
 

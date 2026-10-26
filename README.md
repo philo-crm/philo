@@ -101,10 +101,6 @@ Underneath both the app and MCP is a conventional REST API at `/api/v1`, and
 ## What it will not do
 
 - **Multi-tenancy.** One business, one instance, forever.
-- **DOT driver qualification files**, FMCSA employment applications, background
-  checks, MVR pulls, or anything FCRA-regulated. Philo's recruiting use case is
-  pre-screening only, and it keeps collected PII minimal by design — no SSN, no
-  licence number, no date of birth.
 
 ## How it is built
 
