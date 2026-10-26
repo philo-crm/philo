@@ -130,7 +130,8 @@ unauthenticated caller with 401. Bodies are JSON, except an attachment's.
 - DELETE /leads/{id} — erases the lead with its timeline, details and files.
   204, or 404 if there is no such lead. Permanent: there is no undo, and
   nothing about the lead is kept apart from its id in the server log, though
-  backups taken before now still hold it. To take a lead out of the funnel,
+  backups taken before now still hold it, and so does any webhook receiver
+  already sent it — deleting reaches neither. To take a lead out of the funnel,
   move it to a final stage instead.
 - POST /leads/{id}/attachments?filename=... — the file is the raw body, typed by
   its Content-Type; up to 10 MB.

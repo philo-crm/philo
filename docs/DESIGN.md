@@ -173,6 +173,11 @@ written in its place — a timeline entry or tombstone that named the person
 would keep the thing that was asked to go; the server log gets the id and the
 actor only. No soft delete, undo window, bulk delete or retention schedule.
 
+Copies already sent out are not reached: a webhook receiver (ADR-0010) holds
+whatever lead events it was delivered, details included. Deleting sends
+`lead.deleted` so a receiver can drop its own copy, and a delivery still
+waiting to retry is dropped rather than re-sending the deleted lead.
+
 Gone from the tables is not gone from the file. Three things, all of them
 needed (measured: drop any one and the deleted values can still be read out of
 the file with `grep`):
@@ -285,8 +290,10 @@ Full rationale: [ADR-0010](adr/0010-change-feed-and-webhooks.md).
 - **Webhooks** carry the same events to a URL, scoped to one funnel or all of
   them and to chosen types. Each POST is signed — `X-Philo-Signature:
   sha256=HMAC(secret, "<timestamp>.<body>")` — with a secret shown once at
-  creation. A failure is retried twice (10 s, 60 s); delivery is best-effort and
-  in memory, so a receiver that must not miss a change reconciles against the API.
+  creation. A failure is retried twice (10 s, 60 s), each retry carrying the
+  lead as it then stands — and none at all once the lead or the registration is
+  gone. Delivery is best-effort and in memory, so a receiver that must not miss
+  a change reconciles against the API.
 - These are an integration surface, not a third notification channel: email
   stays the guaranteed path for a new lead (ADR-0004).
 
