@@ -238,6 +238,30 @@ describe('funnel-scoped leads', () => {
     expect(window.localStorage.getItem('philo.funnel')).toBe('2')
   })
 
+  it('leaves "All funnels" when the top bar switches funnel', async () => {
+    twoFunnels({
+      leads: [
+        makeLead({ id: 1, name: 'Dana Okafor' }),
+        makeLead({ id: 2, name: 'Sam Reyes', funnelId: 2, stageId: 10, stageName: 'Lease review' }),
+      ],
+    })
+    render(
+      <>
+        <FunnelSwitcher />
+        <LeadList isSpam={false} onSessionExpired={vi.fn()} />
+      </>,
+    )
+    await screen.findByText('Dana Okafor')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Funnel' }), { target: { value: 'all' } })
+    await screen.findByText('Sam Reyes')
+
+    switchTo('Owner-operators', 'Default')
+
+    await waitFor(() => expect(screen.queryByText('Dana Okafor')).toBeNull())
+    expect(screen.getByText('Sam Reyes')).toBeDefined()
+    expect((screen.getByRole('combobox', { name: 'Funnel' }) as HTMLSelectElement).value).toBe('2')
+  })
+
   it('moves a lead into another funnel at its first stage', async () => {
     const api = twoFunnels({ leads: [makeLead({ id: 5, name: 'Dana Okafor' })] })
     render(<LeadDetail leadId={5} currentUserId={TEST_USER.id} onSessionExpired={vi.fn()} />)

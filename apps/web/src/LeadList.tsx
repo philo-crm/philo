@@ -28,8 +28,12 @@ const ALL_FUNNELS = 'all'
 export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
-  /** Whether to look past the selected funnel, at every funnel's leads at once. */
-  const [acrossFunnels, setAcrossFunnels] = useState(false)
+  /**
+   * "All funnels", remembered with the funnel selected when it was picked, so
+   * choosing another funnel in the top bar ends it rather than leaving the
+   * list and the switcher naming different things.
+   */
+  const [acrossUnder, setAcrossUnder] = useState<{ funnelId: number | undefined } | undefined>(undefined)
   const [stageFilter, setStageFilter] = useState<{ funnelId: number | undefined; stageId: number | undefined }>({
     funnelId: undefined,
     stageId: undefined,
@@ -63,6 +67,7 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   const multiFunnel = (funnels.data?.length ?? 0) > 1
   // The list follows the funnel chosen in the top bar, like the board — unless
   // it was asked to look across all of them. The spam view has no funnels.
+  const acrossFunnels = acrossUnder !== undefined && acrossUnder.funnelId === selectedFunnel
   const funnelId = isSpam || !multiFunnel || acrossFunnels ? undefined : selectedFunnel
   // A stage filter or a page belongs to the funnel it was set under; switching
   // funnels, from here or from the top bar, starts both over.
@@ -175,7 +180,7 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
               value={funnelId === undefined ? ALL_FUNNELS : String(funnelId)}
               onChange={(event) => {
                 const value = event.target.value
-                setAcrossFunnels(value === ALL_FUNNELS)
+                setAcrossUnder(value === ALL_FUNNELS ? { funnelId: selectedFunnel } : undefined)
                 if (value !== ALL_FUNNELS) selectFunnel(Number(value))
               }}
             >
