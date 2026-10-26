@@ -59,6 +59,11 @@ silently.
 actually work. Every lead carries an append-only timeline: created, moved,
 noted, emailed.
 
+**Details and files that grow with the lead.** What the form submitted stays as
+it was sent; what you learn afterwards — on a call, from a document — goes in the
+lead's details or as an attached file, up to 10 MB each. The timeline records
+which details changed but never their values.
+
 ![The funnel board](docs/images/funnel.png)
 
 **Email that you write.** A notification to you and an acknowledgment to the
@@ -73,8 +78,8 @@ themselves at first boot, so there is nothing to configure; on iOS the app walks
 you through adding it to the Home Screen, which is what Apple requires before
 push will work at all.
 
-**Full-text search** over names, contact details, and every answer a form
-submitted.
+**Full-text search** over names, contact details, every answer a form
+submitted, and every detail added since.
 
 ![A lead and its timeline](docs/images/lead-detail.png)
 
@@ -110,6 +115,8 @@ the MCP server for agents. The container runs all of them in one Node process on
 one origin, over one SQLite file. TypeScript and Hono throughout, Drizzle for the
 schema, SQLite FTS5 for search. All state — the database and the secrets Philo generates
 for itself — lives in one directory, so **backup is copying that directory**.
+That includes attached files and anything sensitive you record about a lead, so
+protect the directory and its backups the way you would the records themselves.
 
 The reasoning is written down: [docs/DESIGN.md](docs/DESIGN.md) for the
 architecture, [docs/adr/](docs/adr/) for the contested calls.
