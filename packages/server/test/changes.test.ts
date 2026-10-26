@@ -26,7 +26,7 @@ interface Harness {
   feed: ChangeFeed
   events: ChangeEvent[]
   authorization: string
-  api: (path: string, init?: RequestInit) => Promise<Response>
+  api: (path: string, init?: RequestInit) => Response | Promise<Response>
 }
 
 async function harness(): Promise<Harness> {

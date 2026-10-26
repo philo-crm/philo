@@ -81,10 +81,15 @@ the same way. Each delivery is a `POST` of the event as JSON, signed:
   retried twice more, after 10 s and 60 s. Redirects are not followed.
   The last outcome is kept on the registration for the settings screen.
 
-Only `http` and `https` URLs are accepted. Philo does not try to keep a
-registration off private addresses: the person registering one already holds
-the instance's full authority, and a local automation (a workflow tool on the
-same host) is a legitimate target.
+Only `http` and `https` URLs are accepted. Loopback and private addresses
+are allowed on purpose: the person registering one already holds the
+instance's full authority, and a local automation (a workflow tool on the same
+host) is a legitimate target. What is refused, checked against every address
+the host resolves to at each attempt, is link-local (where cloud metadata
+services answer), unspecified and multicast. The check and the connection
+resolve separately, so a host that rebinds between them could still reach a
+refused address; closing that needs a pinned resolver in the HTTP client, and
+is the next step if the check ever has to carry more weight than this.
 
 ## Consequences
 

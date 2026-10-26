@@ -33,13 +33,16 @@ function receiver(statuses: number[] = [200]) {
 interface Harness {
   testApp: TestApp
   feed: ChangeFeed
-  api: (path: string, init?: RequestInit) => Promise<Response>
+  api: (path: string, init?: RequestInit) => Response | Promise<Response>
 }
+
+/** Every name resolves to a documentation address, so no test touches real DNS. */
+const lookup = async (host: string) => (host === 'metadata.example.com' ? ['169.254.169.254'] : ['203.0.113.10'])
 
 async function harness(fake?: typeof fetch): Promise<Harness> {
   const feed = new ChangeFeed()
-  const testApp = createTestApp({ changeFeed: feed, webhookTuning: { fetch: fake } })
-  if (fake !== undefined) startWebhookDelivery(testApp.db, feed, { fetch: fake, retryDelaysMs: [1, 1] })
+  const testApp = createTestApp({ changeFeed: feed, webhookTuning: { fetch: fake, lookup } })
+  if (fake !== undefined) startWebhookDelivery(testApp.db, feed, { fetch: fake, lookup, retryDelaysMs: [1, 1] })
   const authorization = await setupAdmin(testApp)
   const api = (path: string, init: RequestInit = {}) =>
     testApp.app.request(`/api/v1${path}`, {
@@ -225,4 +228,35 @@ describe('delivery', () => {
 
     expect(await res.json()).toMatchObject({ delivery: { ok: false, status: null, error: 'fetch failed' } })
   })
+
+  it.each([
+    'http://169.254.169.254/latest/meta-data',
+    'http://[fe80::1]/',
+    'http://[::ffff:169.254.169.254]/',
+    'http://0.0.0.0/',
+    'https://metadata.example.com/',
+  ])('refuses to post to %s', async (url) => {
+    const { fake, received } = receiver()
+    const h = await harness(fake)
+    const { body } = await register(h, { url })
+
+    const res = await h.api(`/webhooks/${body.webhook.id}/test`, { method: 'POST' })
+
+    expect(await res.json()).toMatchObject({ delivery: { ok: false, status: null, error: 'address not allowed' } })
+    expect(received).toHaveLength(0)
+  })
+
+  it.each(['http://127.0.0.1:5678/hook', 'http://10.0.0.5/hook', 'http://automation.internal/hook'])(
+    'posts to a local receiver at %s',
+    async (url) => {
+      const { fake, received } = receiver()
+      const h = await harness(fake)
+      const { body } = await register(h, { url })
+
+      const res = await h.api(`/webhooks/${body.webhook.id}/test`, { method: 'POST' })
+
+      expect(await res.json()).toMatchObject({ delivery: { ok: true, status: 200 } })
+      expect(received).toHaveLength(1)
+    },
+  )
 })
