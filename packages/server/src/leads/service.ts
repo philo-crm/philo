@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
-import { leadEvents, leads, stages } from '../db/schema.ts'
+import { leadAttachments, leadEvents, leads, stages } from '../db/schema.ts'
 import { isWithinDepthLimit } from '../intake/payload.ts'
 import { err, ok, type Result } from '../result.ts'
 
@@ -19,6 +19,12 @@ export const MAX_NOTE_LENGTH = 5_000
 /** RFC 5321's practical ceiling, matching auth/routes.ts. */
 export const MAX_EMAIL_LENGTH = 254
 export const MAX_CONTACT_FIELD_LENGTH = 200
+export const MAX_DETAIL_KEY_LENGTH = 100
+/**
+ * Ceiling on a lead's whole `details` object, serialized. Each PATCH is already
+ * bounded by the request-body limit; this bounds what repeated ones add up to.
+ */
+export const MAX_DETAILS_BYTES = 32_000
 
 /** The note the timeline records when a quarantined lead is promoted. */
 export const NOT_SPAM_NOTE = 'Marked as not spam.'
@@ -38,6 +44,7 @@ export type LeadError =
   | 'invalid_contact'
   | 'invalid_source'
   | 'invalid_fields'
+  | 'invalid_details'
   | 'email_or_phone_required'
   | 'no_stage'
 
@@ -53,6 +60,8 @@ export interface LeadRecord {
   isSpam: boolean
   /** The intake payload's non-reserved keys, parsed — see ADR-0003. */
   fields: Record<string, unknown>
+  /** Added after intake by users and agents — ADR-0008. */
+  details: Record<string, unknown>
   createdAt: string
   updatedAt: string
 }
@@ -65,8 +74,19 @@ export interface LeadEventRecord {
   createdAt: string
 }
 
+export interface LeadAttachmentRecord {
+  id: number
+  filename: string
+  contentType: string
+  size: number
+  sha256: string
+  actor: string
+  createdAt: string
+}
+
 export interface LeadDetail extends LeadRecord {
   events: LeadEventRecord[]
+  attachments: LeadAttachmentRecord[]
 }
 
 export interface LeadPage {
@@ -93,6 +113,11 @@ export interface ContactPatch {
   name?: unknown
   email?: unknown
   phone?: unknown
+}
+
+/** `details` merges by key: a value sets it, `null` removes it, an absent key is untouched. */
+export interface LeadPatch extends ContactPatch {
+  details?: unknown
 }
 
 /** A lead entered by hand rather than submitted. Same unvalidated contract. */
@@ -148,6 +173,7 @@ const LEAD_COLUMNS = {
   stageName: stages.name,
   isSpam: leads.isSpam,
   fields: leads.fields,
+  details: leads.details,
   createdAt: leads.createdAt,
   updatedAt: leads.updatedAt,
 } as const
@@ -163,6 +189,7 @@ function toRecord(row: {
   stageName: string
   isSpam: boolean
   fields: string
+  details: string
   createdAt: Date
   updatedAt: Date
 }): LeadRecord {
@@ -177,6 +204,7 @@ function toRecord(row: {
     stageName: row.stageName,
     isSpam: row.isSpam,
     fields: parseJsonObject(row.fields),
+    details: parseJsonObject(row.details),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
@@ -271,11 +299,29 @@ function timeline(db: Db, leadId: number): LeadEventRecord[] {
     }))
 }
 
-/** The record plus its whole timeline — the shape every action here answers with. */
+function attachments(db: Db, leadId: number): LeadAttachmentRecord[] {
+  return db
+    .select({
+      id: leadAttachments.id,
+      filename: leadAttachments.filename,
+      contentType: leadAttachments.contentType,
+      size: leadAttachments.size,
+      sha256: leadAttachments.sha256,
+      actor: leadAttachments.actor,
+      createdAt: leadAttachments.createdAt,
+    })
+    .from(leadAttachments)
+    .where(eq(leadAttachments.leadId, leadId))
+    .orderBy(asc(leadAttachments.createdAt), asc(leadAttachments.id))
+    .all()
+    .map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }))
+}
+
+/** The record plus its timeline and files — the shape every action here answers with. */
 export function getLead(db: Db, id: number): LeadDetail | undefined {
   const record = findLead(db, id)
   if (record === undefined) return undefined
-  return { ...record, events: timeline(db, id) }
+  return { ...record, events: timeline(db, id), attachments: attachments(db, id) }
 }
 
 function requireLead(db: Db, id: number): Result<LeadDetail, LeadError> {
@@ -316,6 +362,43 @@ function leadFields(raw: unknown): string | undefined {
   if (typeof raw !== 'object' || Array.isArray(raw)) return undefined
   const fields = raw as Record<string, unknown>
   return isWithinDepthLimit(fields) ? JSON.stringify(fields) : undefined
+}
+
+type DetailsPatch = Map<string, unknown>
+
+/**
+ * The patch's `details` as key → new value (`null` meaning remove), or INVALID.
+ * Keys are trimmed, so " phone " and "phone" cannot become two entries.
+ */
+function detailsPatch(raw: unknown): DetailsPatch | undefined | typeof INVALID {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return INVALID
+  const patch: DetailsPatch = new Map()
+  for (const [rawKey, value] of Object.entries(raw)) {
+    const key = rawKey.trim()
+    if (key.length === 0 || key.length > MAX_DETAIL_KEY_LENGTH || value === undefined) return INVALID
+    patch.set(key, value)
+  }
+  return patch
+}
+
+/**
+ * Applies the patch to the stored object. Built through a Map and
+ * `Object.fromEntries`, never by assignment: a key may be `__proto__`, and
+ * assigning that onto an ordinary object would set the prototype instead.
+ */
+function mergeDetails(current: Record<string, unknown>, patch: DetailsPatch) {
+  const merged = new Map(Object.entries(current))
+  const changed: string[] = []
+  for (const [key, value] of patch) {
+    if (value === null) {
+      if (merged.delete(key)) changed.push(key)
+      continue
+    }
+    if (!merged.has(key) || JSON.stringify(merged.get(key)) !== JSON.stringify(value)) changed.push(key)
+    merged.set(key, value)
+  }
+  return { details: Object.fromEntries(merged) as Record<string, unknown>, changed: changed.toSorted() }
 }
 
 /**
@@ -411,27 +494,33 @@ export function createLead(
 }
 
 /**
- * Contact fields only. `fields` is the intake payload as submitted and stays
- * that way; editing it would make the record disagree with what the applicant
- * actually sent.
+ * Contact fields and `details`. `fields` is the intake payload as submitted and
+ * stays that way; editing it would make the record disagree with what the
+ * applicant actually sent. What was learned since goes in `details` — ADR-0008.
  *
  * The result must stay contactable — the same rule intake applies at 422, kept
  * here so an edit cannot leave behind a lead nobody can answer. A patch may set
  * email and phone together, so there is always a way through.
+ *
+ * A `details` change is recorded by key only. The values may be sensitive, and
+ * the timeline must not become a second copy of them that outlives an edit.
  */
-export function updateLeadContact(
+export function updateLead(
   db: Db,
   id: number,
-  patch: ContactPatch,
+  patch: LeadPatch,
+  actor: string,
 ): Result<LeadDetail, LeadError> {
   const name = contactField(patch.name, MAX_CONTACT_FIELD_LENGTH)
   const email = contactField(patch.email, MAX_EMAIL_LENGTH)
   const phone = contactField(patch.phone, MAX_CONTACT_FIELD_LENGTH)
   if (name === INVALID || email === INVALID || phone === INVALID) return err('invalid_contact')
+  const details = detailsPatch(patch.details)
+  if (details === INVALID) return err('invalid_details')
 
   const outcome = db.transaction((tx) => {
     const [current] = tx
-      .select({ email: leads.email, phone: leads.phone })
+      .select({ email: leads.email, phone: leads.phone, details: leads.details })
       .from(leads)
       .where(eq(leads.id, id))
       .limit(1)
@@ -443,19 +532,37 @@ export function updateLeadContact(
     const nextPhone = phone === undefined ? current.phone : phone
     if (nextEmail === null && nextPhone === null) return 'email_or_phone_required' as const
 
-    // A patch that names none of the three fields is a no-op, not an error: a UI
-    // that PATCHes only what changed will send one. Returning early is also what
-    // keeps it off drizzle's update builder, which rejects an empty `set`.
-    if (name === undefined && email === undefined && phone === undefined) return 'updated' as const
+    const merged = details === undefined ? undefined : mergeDetails(parseJsonObject(current.details), details)
+    let storedDetails: string | undefined
+    if (merged !== undefined && merged.changed.length > 0) {
+      // The same depth cap `fields` gets, for the same reason: the FTS trigger
+      // walks this with `json_tree`.
+      if (!isWithinDepthLimit(merged.details)) return 'invalid_details' as const
+      storedDetails = JSON.stringify(merged.details)
+      if (Buffer.byteLength(storedDetails) > MAX_DETAILS_BYTES) return 'invalid_details' as const
+    }
+
+    // A patch that changes nothing is a no-op, not an error: a UI that PATCHes
+    // only what changed will send one. Returning early is also what keeps it off
+    // drizzle's update builder, which rejects an empty `set`.
+    if (name === undefined && email === undefined && phone === undefined && storedDetails === undefined) {
+      return 'updated' as const
+    }
 
     tx.update(leads)
       .set({
         ...(name === undefined ? {} : { name }),
         ...(email === undefined ? {} : { email: nextEmail }),
         ...(phone === undefined ? {} : { phone: nextPhone }),
+        ...(storedDetails === undefined ? {} : { details: storedDetails }),
       })
       .where(eq(leads.id, id))
       .run()
+    if (merged !== undefined && storedDetails !== undefined) {
+      tx.insert(leadEvents)
+        .values({ leadId: id, type: 'details_changed', payload: JSON.stringify({ keys: merged.changed }), actor })
+        .run()
+    }
     return 'updated' as const
   })
 
@@ -564,7 +671,7 @@ export interface SpamPromotion {
  * "not spam" action clears the flag and fires the pipeline that was held back.
  *
  * The promotion is recorded as a note rather than an event type of its own: the
- * four types in DESIGN.md (Data model) are the contract, and a system-authored
+ * event types in DESIGN.md (Data model) are the contract, and a system-authored
  * note puts the same fact on the timeline without changing it.
  */
 export function clearLeadSpam(db: Db, id: number, actor: string): Result<SpamPromotion, LeadError> {

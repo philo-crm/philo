@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { blob, check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 /**
  * Integer primary keys are rowid aliases, so they survive `VACUUM` — the
@@ -75,6 +75,8 @@ export const leads = sqliteTable(
       .references(() => stages.id, { onDelete: 'restrict' }),
     /** Raw intake payload minus the reserved keys — see ADR-0003. */
     fields: text('fields').notNull().default('{}'),
+    /** What users and agents add as the lead moves through the funnel — ADR-0008. */
+    details: text('details').notNull().default('{}'),
     isSpam: integer('is_spam', { mode: 'boolean' }).notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -87,6 +89,7 @@ export const leads = sqliteTable(
     // The FTS trigger walks this with `json_tree`, which errors on malformed
     // input; rejecting it at write time keeps a bad write from wedging inserts.
     check('leads_fields_json', sql`json_valid(${table.fields})`),
+    check('leads_details_json', sql`json_valid(${table.details})`),
   ],
 )
 
@@ -102,7 +105,15 @@ export const leadEvents = sqliteTable(
       .notNull()
       .references(() => leads.id, { onDelete: 'cascade' }),
     type: text('type', {
-      enum: ['created', 'stage_changed', 'note_added', 'email_sent'],
+      enum: [
+        'created',
+        'stage_changed',
+        'note_added',
+        'email_sent',
+        'details_changed',
+        'attachment_added',
+        'attachment_removed',
+      ],
     }).notNull(),
     payload: text('payload').notNull().default('{}'),
     /**
@@ -117,6 +128,35 @@ export const leadEvents = sqliteTable(
     check('lead_events_payload_json', sql`json_valid(${table.payload})`),
   ],
 )
+
+/**
+ * Files on a lead — ADR-0008. The bytes live in `lead_attachment_blobs` so that
+ * reading a lead's attachment list never pulls file content off disk.
+ */
+export const leadAttachments = sqliteTable(
+  'lead_attachments',
+  {
+    id: id(),
+    leadId: integer('lead_id')
+      .notNull()
+      .references(() => leads.id, { onDelete: 'cascade' }),
+    filename: text('filename').notNull(),
+    contentType: text('content_type').notNull(),
+    size: integer('size').notNull(),
+    sha256: text('sha256').notNull(),
+    /** Same vocabulary as `lead_events.actor`. */
+    actor: text('actor').notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index('lead_attachments_lead_idx').on(table.leadId)],
+)
+
+export const leadAttachmentBlobs = sqliteTable('lead_attachment_blobs', {
+  attachmentId: integer('attachment_id')
+    .primaryKey()
+    .references(() => leadAttachments.id, { onDelete: 'cascade' }),
+  data: blob('data', { mode: 'buffer' }).notNull(),
+})
 
 export const emailTemplates = sqliteTable('email_templates', {
   id: id(),

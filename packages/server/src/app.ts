@@ -36,6 +36,8 @@ const INTAKE_PREFIX = '/api/intake'
  */
 const MAX_BODY_BYTES = 64 * 1024
 
+const ATTACHMENT_UPLOAD_PATH = new RegExp(`^${API_PREFIX}/leads/\\d+/attachments$`)
+
 /**
  * Reachable without a token. Everything else under `API_PREFIX` is guarded, so
  * a route added later is private until it is listed here on purpose.
@@ -107,12 +109,13 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   // served from somewhere else entirely.
   app.use(`${API_PREFIX}/*`, cors({ origin: '*', allowHeaders: ['Authorization', 'Content-Type'] }))
 
-  app.use(
-    `${API_PREFIX}/*`,
-    bodyLimit({
-      maxSize: MAX_BODY_BYTES,
-      onError: (c) => c.json({ error: 'payload_too_large' }, 413),
-    }),
+  const apiBodyLimit = bodyLimit({
+    maxSize: MAX_BODY_BYTES,
+    onError: (c) => c.json({ error: 'payload_too_large' }, 413),
+  })
+  // An attachment upload carries its own, larger limit on its route.
+  app.use(`${API_PREFIX}/*`, (c, next) =>
+    c.req.method === 'POST' && ATTACHMENT_UPLOAD_PATH.test(c.req.path) ? next() : apiBodyLimit(c, next),
   )
 
   // Responses here carry account data, so they must not sit in a shared cache.

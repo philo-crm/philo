@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { Db } from '../src/db/index.ts'
 import { DB_FILENAME, MIGRATIONS_DIR, openDatabase } from '../src/db/index.ts'
 import { DEFAULT_EMAIL_TEMPLATES, SEEDED_AT_KEY } from '../src/db/seed.ts'
-import { emailTemplates, intakeForms, leads, pipelines, settings, stages } from '../src/db/schema.ts'
+import { emailTemplates, intakeForms, leadEvents, leads, pipelines, settings, stages } from '../src/db/schema.ts'
 
 interface Journal {
   entries: { idx: number; tag: string }[]
@@ -71,16 +71,16 @@ function seedSchemaDatabase(dataDir: string): void {
     .values({ pipelineId: pipeline!.id, name: 'Applied', position: 0 })
     .returning({ id: stages.id })
     .all()
-  db.insert(leads)
-    .values({
-      name: 'Dana Rivers',
-      email: 'dana@example.com',
-      currentStageId: stage!.id,
-      fields: JSON.stringify({ endorsements: 'hazmat' }),
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run()
+  // Raw SQL, because the Drizzle schema describes today's `leads` and would name
+  // columns the first migration never created.
+  sqlite
+    .prepare(
+      'INSERT INTO leads (name, email, current_stage_id, fields, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    .run('Dana Rivers', 'dana@example.com', stage!.id, JSON.stringify({ endorsements: 'hazmat' }), +now, +now)
+  sqlite
+    .prepare("INSERT INTO lead_events (lead_id, type, payload, actor, created_at) VALUES (1, 'created', '{}', 'system', ?)")
+    .run(+now)
   db.insert(emailTemplates)
     .values(DEFAULT_EMAIL_TEMPLATES.map((template) => ({ ...template, updatedAt: now })))
     .run()
@@ -123,9 +123,12 @@ describe('upgrading an existing database', () => {
     seedSchemaDatabase(dataDir)
     const db = openTracked(dataDir)
     expect(db.select().from(leads).all()).toMatchObject([
-      { name: 'Dana Rivers', email: 'dana@example.com' },
+      { name: 'Dana Rivers', email: 'dana@example.com', details: '{}' },
     ])
     expect(db.select().from(stages).all()).toMatchObject([{ name: 'Applied' }])
+    // The timeline hangs off `leads` by a cascading foreign key, so it is the
+    // first thing a careless rebuild of that table would lose.
+    expect(db.select().from(leadEvents).all()).toHaveLength(1)
   })
 
   it('backfills pre-existing leads into the search index', () => {
@@ -141,6 +144,15 @@ describe('upgrading an existing database', () => {
     const [stage] = db.select().from(stages).limit(1).all()
     db.insert(leads).values({ name: 'Sam Brooks', currentStageId: stage!.id }).run()
     expect(search(db, 'Brooks')).toHaveLength(1)
+  })
+
+  it('indexes details added after the upgrade', () => {
+    const dataDir = tempDir('philo-upgrade-')
+    seedSchemaDatabase(dataDir)
+    const db = openTracked(dataDir)
+    db.update(leads).set({ details: JSON.stringify({ callback: 'tuesday' }) }).run()
+    expect(search(db, 'tuesday')).toHaveLength(1)
+    expect(search(db, 'hazmat')).toHaveLength(1)
   })
 
   it('does not re-seed an install that was already seeded', () => {
