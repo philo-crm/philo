@@ -51,6 +51,8 @@ function createTestApp(options: Parameters<typeof createServerTestApp>[0] = {}):
 const TOOL_NAMES = [
   'add_lead_note',
   'create_lead',
+  'create_stage',
+  'delete_stage',
   'get_email_template',
   'get_lead',
   'list_email_templates',
@@ -58,8 +60,10 @@ const TOOL_NAMES = [
   'list_stages',
   'move_lead_stage',
   'preview_email_template',
+  'reorder_stages',
   'update_email_template',
   'update_lead',
+  'update_stage',
 ]
 
 interface ToolAnswer {
@@ -481,6 +485,88 @@ describe('mcp lead tools', () => {
       expect(
         testApp.db.select().from(leadEvents).where(eq(leadEvents.type, 'note_added')).all(),
       ).toHaveLength(0)
+    })
+  })
+})
+
+describe('mcp stage tools', () => {
+  type Stage = { id: number; name: string; position: number; isTerminal: boolean; leadCount: number }
+
+  it('creates, renames, reorders and deletes a stage end to end', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+
+    await withMcpClient(testApp, key, async (call) => {
+      const created = await call('create_stage', { name: 'Road test', isTerminal: false })
+      expect(created.isError).toBe(false)
+      const stage = created.data['stage'] as Stage
+      expect(stage).toMatchObject({ name: 'Road test', isTerminal: false, leadCount: 0 })
+
+      const renamed = await call('update_stage', { stageId: stage.id, name: 'Road test booked', isTerminal: true })
+      expect(renamed.data['stage']).toMatchObject({ id: stage.id, name: 'Road test booked', isTerminal: true })
+
+      const before = (await call('list_stages')).data['stages'] as Stage[]
+      expect(before.at(-1)?.id).toBe(stage.id)
+      const order = [stage.id, ...before.filter((s) => s.id !== stage.id).map((s) => s.id)]
+      const reordered = await call('reorder_stages', { stageIds: order })
+      expect((reordered.data['stages'] as Stage[]).map((s) => s.id)).toEqual(order)
+
+      const deleted = await call('delete_stage', { stageId: stage.id })
+      expect(deleted.isError).toBe(false)
+      expect((deleted.data['stages'] as Stage[]).map((s) => s.id)).toEqual(order.slice(1))
+    })
+  })
+
+  it('refuses a name the board could not show', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+
+    await withMcpClient(testApp, key, async (call) => {
+      const blank = await call('create_stage', { name: '   ' })
+      expect(blank.isError).toBe(true)
+      expect(blank.data).toEqual({ error: 'invalid_name' })
+
+      const stageId = firstStageId(testApp)
+      const rename = await call('update_stage', { stageId, name: '   ' })
+      expect(rename.data).toEqual({ error: 'invalid_name' })
+
+      const missing = await call('update_stage', { stageId: 9_999, name: 'Ghost' })
+      expect(missing.data).toEqual({ error: 'not_found' })
+    })
+  })
+
+  it('refuses a partial order and moves nothing', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+
+    await withMcpClient(testApp, key, async (call) => {
+      const before = (await call('list_stages')).data['stages'] as Stage[]
+      const partial = await call('reorder_stages', { stageIds: before.slice(1).map((s) => s.id) })
+      expect(partial.isError).toBe(true)
+      expect(partial.data).toEqual({ error: 'invalid_order' })
+
+      const after = (await call('list_stages')).data['stages'] as Stage[]
+      expect(after.map((s) => s.id)).toEqual(before.map((s) => s.id))
+    })
+  })
+
+  it('will not delete a stage holding a lead, or the last stage', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+    await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com' })
+
+    await withMcpClient(testApp, key, async (call) => {
+      const occupied = await call('delete_stage', { stageId: firstStageId(testApp) })
+      expect(occupied.isError).toBe(true)
+      expect(occupied.data).toEqual({ error: 'stage_not_empty' })
+
+      testApp.db.delete(leads).run()
+      const all = (await call('list_stages')).data['stages'] as Stage[]
+      for (const stage of all.slice(1)) {
+        expect((await call('delete_stage', { stageId: stage.id })).isError).toBe(false)
+      }
+      const last = await call('delete_stage', { stageId: all[0]?.id })
+      expect(last.data).toEqual({ error: 'last_stage' })
     })
   })
 })

@@ -8,6 +8,7 @@ import {
   MAX_NOTE_LENGTH,
   MAX_PAGE_SIZE,
   MAX_SEARCH_LENGTH,
+  MAX_STAGE_NAME_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
   MAX_TEMPLATE_SUBJECT_LENGTH,
   TEMPLATE_TRIGGERS,
@@ -93,6 +94,10 @@ const TRIGGER = z
   .describe('Which email: new_lead_notify goes to the business, new_lead_ack to the lead.')
 
 const LEAD_ID = z.number().int().positive().describe('The lead id.')
+
+const STAGE_ID = z.number().int().positive().describe('The stage id.')
+
+const STAGE_NAME = z.string().min(1).max(MAX_STAGE_NAME_LENGTH).describe('The stage name, as the board shows it.')
 
 /**
  * Every tool, bound to one API client carrying the caller's own token — so the
@@ -272,6 +277,72 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       annotations: { readOnlyHint: true },
     },
     () => call('stages', () => philo.stages.list()),
+  )
+
+  server.registerTool(
+    'create_stage',
+    {
+      title: 'Create a funnel stage',
+      description:
+        'Appends a stage to the end of the funnel; call reorder_stages to place it elsewhere. ' +
+        'Names need not be unique. A terminal stage is one a lead finishes in, such as Hired or ' +
+        'Rejected. A funnel already at the stage limit refuses with too_many_stages.',
+      inputSchema: {
+        name: STAGE_NAME,
+        isTerminal: z.boolean().optional().describe('Whether leads finish here. Defaults to false.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    (args) => call('stage', () => philo.stages.create(args.name, args.isTerminal ?? false)),
+  )
+
+  server.registerTool(
+    'update_stage',
+    {
+      title: 'Update a funnel stage',
+      description:
+        'Renames a stage or changes whether it is terminal. A field you leave out is unchanged. ' +
+        'Leads in the stage stay where they are.',
+      inputSchema: {
+        stageId: STAGE_ID,
+        name: STAGE_NAME.optional(),
+        isTerminal: z.boolean().optional().describe('Whether leads finish here.'),
+      },
+      // The old name is overwritten and nothing records what it was. Not additive.
+      annotations: { readOnlyHint: false, idempotentHint: true },
+    },
+    ({ stageId, ...patch }) => call('stage', () => philo.stages.update(stageId, patch)),
+  )
+
+  server.registerTool(
+    'reorder_stages',
+    {
+      title: 'Reorder the funnel',
+      description:
+        'Sets the order of the whole funnel. Pass every stage id, each exactly once, in the new ' +
+        'order. A partial list or a repeated id is refused with invalid_order and nothing moves. Call list_stages ' +
+        'for the ids.',
+      inputSchema: {
+        stageIds: z.array(STAGE_ID).min(1).describe('Every stage id, first stage first.'),
+      },
+      // Replaces the previous order wholesale. Not additive.
+      annotations: { readOnlyHint: false, idempotentHint: true },
+    },
+    (args) => call('stages', () => philo.stages.reorder(args.stageIds)),
+  )
+
+  server.registerTool(
+    'delete_stage',
+    {
+      title: 'Delete a funnel stage',
+      description:
+        'Deletes an empty stage and answers with the funnel that remains. A stage that still ' +
+        'holds leads, spam included, is refused with stage_not_empty: move them first. The last ' +
+        'stage is refused with last_stage, because intake files every new lead under the first.',
+      inputSchema: { stageId: STAGE_ID },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    (args) => call('stages', () => philo.stages.delete(args.stageId)),
   )
 
   server.registerTool(
