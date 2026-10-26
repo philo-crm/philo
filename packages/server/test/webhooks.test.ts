@@ -149,6 +149,9 @@ describe('/api/v1/webhooks', () => {
   it.each([
     ['a reserved name', { name: 'Content-Type', value: 'text/plain' }],
     ['a name Philo signs with', { name: 'X-Philo-Signature', value: 'sha256=forged' }],
+    ['a reserved name in lower case', { name: 'host', value: 'evil.example.com' }],
+    ['a Philo name in lower case', { name: 'x-philo-event', value: 'lead.deleted' }],
+    ['a name too long', { name: 'X-'.padEnd(101, 'a'), value: 'x' }],
     ['a name that is not a token', { name: 'Bad Header', value: 'x' }],
     ['an empty name', { name: '', value: 'x' }],
     ['an empty value', { name: 'Authorization', value: '   ' }],

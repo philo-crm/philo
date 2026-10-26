@@ -47,11 +47,12 @@ sender can solve.
   `PATCH /api/v1/webhooks/{id}` (MCP `update_webhook`), which changes that and
   nothing else; `null` removes it. A different URL, scope or set of types is
   still a new registration.
-- Every delivery and test ping sends it as given, alongside `X-Philo-Signature`
+- Every delivery and test ping sends it, trimmed of surrounding spaces, alongside `X-Philo-Signature`
   and the rest. A receiver that can verify the signature still should.
 - The name is an HTTP token and may not be one Philo or the HTTP layer sets:
   `Content-Type`, `Content-Length`, `Host`, `User-Agent`, any `X-Philo-*`, and
-  the hop-by-hop headers. The value is printable ASCII on one line — what a key
+  the connection-level ones (`Connection`, `Keep-Alive`, `Transfer-Encoding`,
+  `TE`, `Trailer`, `Upgrade`, `Expect`, `Proxy-Connection`); the check ignores case. The value is printable ASCII on one line — what a key
   is made of, and nothing that could start a header of its own.
 - The value is kept as-is, like the signing secret, because it is sent. It is
   never answered back: a registration lists `authHeaderName` only. Unlike the
