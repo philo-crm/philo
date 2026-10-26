@@ -33,8 +33,8 @@ async function submit(testApp: TestApp, payload: Record<string, unknown>): Promi
     body: JSON.stringify(payload),
   })
   if (res.status !== 201) throw new Error(`intake failed: ${res.status} ${await res.text()}`)
-  const [lead] = testApp.db.select({ id: leads.id }).from(leads).all().toReversed()
-  return lead!.id
+  const [newest] = testApp.db.select({ id: leads.id }).from(leads).all().toReversed()
+  return newest!.id
 }
 
 async function setup() {
