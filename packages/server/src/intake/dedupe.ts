@@ -10,7 +10,8 @@ const PRUNE_THRESHOLD = 4096
  * permanent property, and a table would trade a restart's worth of forgiveness
  * for a write on the hot path. A restart inside the window is the one case where
  * a duplicate gets through, and a duplicate lead is a visible, fixable annoyance
- * rather than a correctness problem.
+ * rather than a correctness problem. The other is deliberate: a repeat whose lead
+ * has since been deleted is filed as a new lead (see `leadFor` and its caller).
  */
 export class DedupeWindow {
   readonly #windowMs: number
