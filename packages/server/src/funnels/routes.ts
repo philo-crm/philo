@@ -37,9 +37,15 @@ function fail(c: Context, error: FunnelError) {
   return c.json({ error }, FUNNEL_STATUS[error])
 }
 
+/** Without trailing slashes. A loop, not `/\/+$/`, which backtracks on a long run of them. */
+function trimTrailingSlashes(url: string): string {
+  let end = url.length
+  while (end > 0 && url[end - 1] === '/') end -= 1
+  return url.slice(0, end)
+}
+
 /** A funnel as answered: each form with the public URL its website posts to. */
-function present(funnel: FunnelRecord, publicBaseUrl: string) {
-  const base = publicBaseUrl.replace(/\/+$/, '')
+function present(funnel: FunnelRecord, base: string) {
   return {
     ...funnel,
     forms: funnel.forms.map((form) => ({ ...form, intakeUrl: `${base}/api/intake/${form.formKey}` })),
@@ -49,10 +55,11 @@ function present(funnel: FunnelRecord, publicBaseUrl: string) {
 /** Funnels — ADR-0009. Open to any credential acting for the user (ADR-0007). */
 export function createFunnelRoutes(deps: FunnelRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
+  const base = trimTrailingSlashes(deps.publicBaseUrl)
   const one = (c: Context, result: Result<FunnelRecord, FunnelError>, status: ContentfulStatusCode = 200) =>
-    result.ok ? c.json({ funnel: present(result.value, deps.publicBaseUrl) }, status) : fail(c, result.error)
+    result.ok ? c.json({ funnel: present(result.value, base) }, status) : fail(c, result.error)
   const all = (c: Context, funnels: FunnelRecord[]) =>
-    c.json({ funnels: funnels.map((funnel) => present(funnel, deps.publicBaseUrl)) })
+    c.json({ funnels: funnels.map((funnel) => present(funnel, base)) })
 
   routes.get('/', (c) => all(c, listFunnels(deps.db)))
 
