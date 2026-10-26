@@ -136,5 +136,27 @@ export function describeEvent(event: LeadEventRecord): EventSummary {
       body: undefined,
     }
   }
+  if (event.type === 'details_changed') {
+    const keys = Array.isArray(payload['keys']) ? payload['keys'].filter((key) => typeof key === 'string') : []
+    return {
+      label: 'Details updated',
+      detail: keys.length === 0 ? undefined : keys.map(humanizeKey).join(', '),
+      body: undefined,
+    }
+  }
+  if (event.type === 'attachment_added' || event.type === 'attachment_removed') {
+    return {
+      label: event.type === 'attachment_added' ? 'File attached' : 'File removed',
+      detail: text(payload['filename']),
+      body: undefined,
+    }
+  }
   return { label: humanizeKey(event.type), detail: undefined, body: undefined }
+}
+
+/** A file size the way a file manager shows one. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
