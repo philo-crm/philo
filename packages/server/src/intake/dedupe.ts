@@ -14,28 +14,30 @@ const PRUNE_THRESHOLD = 4096
  */
 export class DedupeWindow {
   readonly #windowMs: number
-  readonly #seen = new Map<string, number>()
+  /** hash → [expiresAt, the lead it created]. */
+  readonly #seen = new Map<string, [number, number]>()
 
   constructor(windowMs: number) {
     this.#windowMs = windowMs
   }
 
-  has(hash: string, now = Date.now()): boolean {
-    const expiresAt = this.#seen.get(hash)
-    if (expiresAt === undefined) return false
-    if (expiresAt > now) return true
+  /** The lead an identical submission created inside the window, if any. */
+  leadFor(hash: string, now = Date.now()): number | undefined {
+    const entry = this.#seen.get(hash)
+    if (entry === undefined) return undefined
+    if (entry[0] > now) return entry[1]
     this.#seen.delete(hash)
-    return false
+    return undefined
   }
 
-  record(hash: string, now = Date.now()): void {
+  record(hash: string, leadId: number, now = Date.now()): void {
     this.#pruneIfCrowded(now)
-    this.#seen.set(hash, now + this.#windowMs)
+    this.#seen.set(hash, [now + this.#windowMs, leadId])
   }
 
   #pruneIfCrowded(now: number): void {
     if (this.#seen.size < PRUNE_THRESHOLD) return
-    for (const [hash, expiresAt] of this.#seen) {
+    for (const [hash, [expiresAt]] of this.#seen) {
       if (expiresAt <= now) this.#seen.delete(hash)
     }
     // Map iteration is insertion-ordered, so this drops the oldest entries.

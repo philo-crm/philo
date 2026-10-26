@@ -262,6 +262,16 @@ describe('full-text search', () => {
     expect(triggers).toEqual(['leads_fts_delete', 'leads_fts_insert', 'leads_fts_update'])
   })
 
+  // DESIGN.md (Erasure): both are needed for a deleted lead to leave no bytes.
+  it('zeroes freed space, in the file and in the search index', () => {
+    const db = openTracked(tempDataDir())
+    expect(db.$client.pragma('secure_delete', { simple: true })).toBe(1)
+    const option = db.$client
+      .prepare<[], { v: number }>("SELECT v FROM leads_fts_config WHERE k = 'secure-delete'")
+      .get()
+    expect(option?.v).toBe(1)
+  })
+
   it('indexes name, email, phone, and the values in fields', () => {
     const db = openTracked(tempDataDir())
     const [lead] = db

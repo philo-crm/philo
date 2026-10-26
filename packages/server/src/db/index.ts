@@ -32,6 +32,9 @@ export function openDatabase(dataDir: string): Db {
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('synchronous = NORMAL')
   sqlite.pragma('busy_timeout = 5000')
+  // Freed space is zeroed rather than left holding what was there, so a deleted
+  // lead or attachment cannot be read back out of the file — DESIGN.md (Erasure).
+  sqlite.pragma('secure_delete = ON')
 
   const db = drizzle(sqlite, { schema })
   // SQLite cannot alter most of a table in place, so drizzle-kit migrates by

@@ -655,6 +655,29 @@ export function addLeadNote(
   return requireLead(db, id)
 }
 
+/**
+ * Erases the lead and everything held about it — DESIGN.md (Erasure). Its
+ * timeline, attachments and search row go with it by cascade and trigger, and
+ * nothing is written anywhere in its place: a record of the deletion that named
+ * the person would be the very thing that was asked to go.
+ *
+ * `secure_delete` zeroes the freed pages, but the old page images stay in the
+ * WAL until a checkpoint copies the zeroed ones over the file, so this runs one
+ * rather than waiting for SQLite's own. A reader holding the WAL open (a backup
+ * in progress) can keep it from completing; the next one finishes the job.
+ */
+export function deleteLead(db: Db, id: number, actor: string): boolean {
+  const deleted = db.delete(leads).where(eq(leads.id, id)).run().changes > 0
+  if (!deleted) return false
+
+  console.log(`lead ${id} deleted by ${actor}`)
+  const [checkpoint] = db.$client.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[]
+  if (checkpoint !== undefined && checkpoint.busy !== 0) {
+    console.warn(`lead ${id}: the WAL could not be checkpointed yet, so its old pages linger until the next one`)
+  }
+  return true
+}
+
 export interface SpamPromotion {
   lead: LeadDetail
   /**

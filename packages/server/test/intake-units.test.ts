@@ -226,14 +226,14 @@ describe('TokenBucket', () => {
 })
 
 describe('DedupeWindow', () => {
-  it('remembers a hash for the window and forgets it after', () => {
+  it('remembers a hash and its lead for the window and forgets it after', () => {
     const window = new DedupeWindow(1_000)
-    window.record('hash', 0)
-    expect(window.has('hash', 500)).toBe(true)
-    expect(window.has('hash', 1_001)).toBe(false)
+    window.record('hash', 42, 0)
+    expect(window.leadFor('hash', 500)).toBe(42)
+    expect(window.leadFor('hash', 1_001)).toBeUndefined()
   })
 
   it('knows nothing it was not told', () => {
-    expect(new DedupeWindow(1_000).has('hash', 0)).toBe(false)
+    expect(new DedupeWindow(1_000).leadFor('hash', 0)).toBeUndefined()
   })
 })
