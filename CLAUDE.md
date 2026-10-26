@@ -36,8 +36,9 @@ This applies to every agent and session unless explicitly told otherwise.
 - **Design-first:** [`docs/DESIGN.md`](docs/DESIGN.md) and `docs/adr/` are the
   source of truth for architecture. Implement against an approved design and a
   scoped issue; a contested call gets an ADR, not a unilateral change.
-- **Scope guardrail:** recruiting use case is pre-screening only — no DOT/DQ
-  fields, no SSN, no license number, no DOB. Flag, don't build.
+- **Scope guardrail:** a CRM, not a regulated workflow — no compliance-mandated
+  forms, no background-check integrations, no typed PII columns (sensitive
+  data lives in operator-defined `details`, ADR-0008). Flag, don't build.
 - **Single-tenant, permanently.** One business per instance. Take every
   simplification that follows.
 - **No real-world names in repo content.** Public repo: no real businesses,

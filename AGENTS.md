@@ -73,21 +73,21 @@ conversation, not the repo.
 | PWA `short_name` | Philo |
 | Config dir | `~/.config/philo/` |
 
-## Scope Guardrail — recruiting is pre-screening ONLY
+## Scope Guardrail — a CRM, not a regulated workflow
 
-Philo is **not** a DOT-compliant employment application system and must not
-become one by accident. Out of scope, permanently:
+Philo stores what an operator chooses to keep about a lead — details added
+as the lead moves through the funnel, sensitive ones included, and file
+attachments ([ADR-0008](docs/adr/0008-lead-details-and-attachments.md)).
+What it does not do, permanently:
 
-- DOT driver qualification (DQ) files
-- The FMCSA-mandated application for employment
-- Background checks, MVR pulls, drug & alcohol clearinghouse queries
-- Anything touching FCRA-regulated consumer reports
+- Implement compliance-mandated forms or record-keeping workflows
+- Run or integrate background checks, consumer reports, or similar
+  third-party screening
+- Hardcode use-case-specific PII as schema columns — sensitive data lives in
+  operator-defined `details`, never in typed columns
 
-Practical consequence: collected PII stays minimal — contact info and basic
-qualification questions (years of experience, endorsements, equipment type,
-availability). **No SSN, no license number, no DOB.** If you find yourself
-designing a field that belongs on a DQ file, stop and flag it to the human
-instead of building it.
+If you find yourself building a regulated workflow or a typed PII column,
+stop and flag it to the human instead of building it.
 
 ## Build and test
 
