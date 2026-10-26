@@ -7,6 +7,8 @@ import { bearerMiddleware, requireAuth, type AuthDeps, type AuthEnv } from './au
 import { createAuthGuards, createAuthRoutes, type AuthTuning } from './auth/routes.ts'
 import type { Db } from './db/index.ts'
 import type { EmailSenderFactory } from './email/transport.ts'
+import { ChangeFeed } from './events/feed.ts'
+import { createEventRoutes } from './events/routes.ts'
 import { createFunnelRoutes } from './funnels/routes.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
@@ -21,6 +23,8 @@ import { createPushRoutes } from './push/routes.ts'
 import { createSettingsRoutes } from './settings/routes.ts'
 import { createStageRoutes } from './stages/routes.ts'
 import { VERSION } from './version.ts'
+import type { DeliveryTuning } from './webhooks/deliver.ts'
+import { createWebhookRoutes } from './webhooks/routes.ts'
 
 /** Mount point for the REST surface. */
 export const API_PREFIX = '/api/v1'
@@ -70,6 +74,13 @@ export interface AppOptions {
    */
   liveFeed?: LiveFeed | undefined
   liveTuning?: LiveTuning | undefined
+  /**
+   * Where every committed change is published — ADR-0010. The change stream
+   * reads it, and boot.ts hangs webhook delivery off it. Unset, a private one.
+   */
+  changeFeed?: ChangeFeed | undefined
+  /** The webhook Test button's timeout. Defaults are the production ones. */
+  webhookTuning?: DeliveryTuning | undefined
   /** Login throttle and hash-concurrency limits. Defaults are the production ones. */
   authTuning?: AuthTuning
   /** Intake rate limit and dedupe window. Defaults are the production ones. */
@@ -102,6 +113,7 @@ function signInConfig(options: AppOptions) {
 export function createApp(options: AppOptions): Hono<AuthEnv> {
   const deps: AuthDeps = { db: options.db, trustProxy: options.trustProxy, externalIdp: options.externalIdp }
   const app = new Hono<AuthEnv>()
+  const changes = options.changeFeed ?? new ChangeFeed()
 
   app.get('/version', (c) => c.json({ name: 'philo', version: VERSION }))
 
@@ -142,12 +154,17 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db }))
   app.route(
     `${API_PREFIX}/leads`,
-    createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated }),
+    createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated, changes }),
   )
-  app.route(`${API_PREFIX}/stages`, createStageRoutes({ db: options.db }))
+  app.route(`${API_PREFIX}/stages`, createStageRoutes({ db: options.db, changes }))
   app.route(
     `${API_PREFIX}/funnels`,
-    createFunnelRoutes({ db: options.db, publicBaseUrl: options.publicBaseUrl }),
+    createFunnelRoutes({ db: options.db, publicBaseUrl: options.publicBaseUrl, changes }),
+  )
+  app.route(`${API_PREFIX}/events`, createEventRoutes({ changes, liveTuning: options.liveTuning }))
+  app.route(
+    `${API_PREFIX}/webhooks`,
+    createWebhookRoutes({ db: options.db, deliveryTuning: options.webhookTuning }),
   )
   app.route(
     `${API_PREFIX}/push`,
@@ -194,6 +211,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
       {
         db: options.db,
         onLeadCreated: options.onLeadCreated,
+        changes,
         trustProxy: options.trustProxy,
       },
       options.intakeTuning ?? {},

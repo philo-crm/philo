@@ -2,6 +2,7 @@ import { createApp } from './app.ts'
 import { createExternalIdp } from './auth/external-idp.ts'
 import type { Config } from './config.ts'
 import { openDatabase, type Db } from './db/index.ts'
+import { ChangeFeed } from './events/feed.ts'
 import { createLeadEmailHook, sweepUnsentEmails, type EmailDeps } from './email/service.ts'
 import { isEmailConfigured, readEmailSettings } from './email/settings.ts'
 import { createSmtpSender, smtpGreetingName } from './email/transport.ts'
@@ -12,6 +13,7 @@ import { loadOrCreateSigningKey } from './oauth/signing-key.ts'
 import { loadOrCreateVapidKeys } from './push/keys.ts'
 import { createLiveLeadHook, LiveFeed } from './push/live.ts'
 import { createLeadPushHook, resetSubscriptionsForNewKeys } from './push/service.ts'
+import { startWebhookDelivery } from './webhooks/deliver.ts'
 
 export { loadConfig, type Config } from './config.ts'
 export { VERSION } from './version.ts'
@@ -48,6 +50,8 @@ export function bootServer(config: Config): BootedServer {
 
   const pushDeps = { db, appUrl: config.appUrl, vapidKeys: vapid.keys }
   const liveFeed = new LiveFeed()
+  const changeFeed = new ChangeFeed()
+  startWebhookDelivery(db, changeFeed)
 
   const app = createApp({
     db,
@@ -58,6 +62,7 @@ export function bootServer(config: Config): BootedServer {
     externalIdp: config.externalIdp === undefined ? undefined : createExternalIdp(config.externalIdp),
     vapidPublicKey: vapid.keys.publicKey,
     liveFeed,
+    changeFeed,
     trustProxy: config.trustProxy,
     createEmailSender: createSender,
     // Email is the guaranteed notification channel and push is the fast one —

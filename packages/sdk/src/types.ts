@@ -1,3 +1,5 @@
+import type { ChangeType } from './limits.ts'
+
 // The REST shapes are the contract. Each one mirrors a response the server
 // builds; a change on either side lands in the same PR.
 
@@ -239,4 +241,59 @@ export interface LiveNotification {
   navigate: string
   /** One per lead, so a repeat replaces the banner rather than stacking. */
   tag: string
+}
+
+/**
+ * One change, as `GET /api/v1/events` streams it and a webhook receives it —
+ * ADR-0010. Mirrors packages/server/src/events/feed.ts.
+ */
+export interface ChangeEvent {
+  /** Unique per event: a retried webhook delivery repeats it. */
+  id: string
+  type: ChangeType
+  occurredAt: string
+  /** For a moved lead, the funnel it is in now; `data.from` says where it was. */
+  funnelId: number
+  data: {
+    /** Every lead event but `lead.deleted`, which carries only `leadId`. */
+    lead?: LeadRecord
+    leadId?: number
+    from?: { id: number; name: string; funnelId: number }
+  }
+}
+
+/** The last attempt to reach a webhook. */
+export interface WebhookDelivery {
+  at: string
+  /** Null when there was no HTTP answer at all. */
+  status: number | null
+  ok: boolean
+  error: string | null
+}
+
+/** Mirrors packages/server/src/webhooks/service.ts. The secret is only ever in `NewWebhookResult`. */
+export interface WebhookRecord {
+  id: number
+  url: string
+  /** Null: every funnel. */
+  funnelId: number | null
+  /** Empty: every type. */
+  events: ChangeType[]
+  actor: string
+  createdAt: string
+  lastDelivery: WebhookDelivery | null
+}
+
+export interface NewWebhook {
+  url: string
+  /** Left out or null: every funnel. */
+  funnelId?: number | null | undefined
+  /** Left out or empty: every type. */
+  events?: ChangeType[] | undefined
+}
+
+export interface NewWebhookResult {
+  webhook: WebhookRecord
+  /** Signs every delivery (`X-Philo-Signature`). Shown once; nothing stores it for you. */
+  secret: string
 }

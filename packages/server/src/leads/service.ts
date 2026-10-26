@@ -283,7 +283,8 @@ export function listLeads(db: Db, filters: ListLeadsFilters): LeadPage {
   }
 }
 
-function findLead(db: Db, id: number): LeadRecord | undefined {
+/** The record alone, without the timeline and files `getLead` adds. */
+export function findLead(db: Db, id: number): LeadRecord | undefined {
   const [row] = db
     .select(LEAD_COLUMNS)
     .from(leads)

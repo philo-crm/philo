@@ -47,16 +47,18 @@ function createTestApp(options: Parameters<typeof createServerTestApp>[0] = {}):
   return { ...server, app: app as unknown as TestApp['app'] }
 }
 
-/** Every tool DESIGN.md (MCP surface) names, with the funnel tools of ADR-0009. */
+/** Every tool DESIGN.md (MCP surface) names, with the funnel tools of ADR-0009 and webhooks of ADR-0010. */
 const TOOL_NAMES = [
   'add_lead_attachment',
   'add_lead_note',
   'create_funnel',
   'create_lead',
   'create_stage',
+  'create_webhook',
   'delete_funnel',
   'delete_lead',
   'delete_stage',
+  'delete_webhook',
   'get_email_template',
   'get_lead',
   'get_lead_attachment',
@@ -64,10 +66,12 @@ const TOOL_NAMES = [
   'list_funnels',
   'list_leads',
   'list_stages',
+  'list_webhooks',
   'move_lead_stage',
   'preview_email_template',
   'remove_lead_attachment',
   'reorder_stages',
+  'test_webhook',
   'update_email_template',
   'update_funnel',
   'update_lead',
@@ -703,6 +707,29 @@ describe('mcp funnel tools', () => {
 
       const refused = await call('delete_funnel', { funnelId: funnel.id })
       expect(refused.data['error']).toBe('funnel_not_empty')
+    })
+  })
+})
+
+describe('mcp webhook tools', () => {
+  it('registers, lists and deletes a webhook, handing the secret over once', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+
+    await withMcpClient(testApp, key, async (call) => {
+      const created = await call('create_webhook', { url: 'https://hooks.example.com/', events: ['lead.created'] })
+      expect(created.isError).toBe(false)
+      expect(created.data['secret']).toMatch(/^whsec_/)
+      const { id } = created.data['webhook'] as { id: number }
+
+      const listed = await call('list_webhooks')
+      expect(JSON.stringify(listed.data)).not.toContain(created.data['secret'] as string)
+
+      const refused = await call('create_webhook', { url: 'ftp://files.example.com/' })
+      expect(refused.data['error']).toBe('invalid_url')
+
+      expect((await call('delete_webhook', { webhookId: id })).isError).toBe(false)
+      expect((await call('delete_webhook', { webhookId: id })).data['error']).toBe('not_found')
     })
   })
 })

@@ -3,6 +3,7 @@ import { bodyLimit } from 'hono/body-limit'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { actorOf, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
+import type { ChangeFeed } from '../events/feed.ts'
 import { readJsonBody } from '../json-body.ts'
 import { notifyLeadCreated, type LeadCreatedHook } from '../notify.ts'
 import {
@@ -17,6 +18,7 @@ import {
   clearLeadSpam,
   createLead,
   deleteLead,
+  findLead,
   getLead,
   listLeads,
   moveLeadStage,
@@ -33,6 +35,8 @@ export interface LeadRoutesDeps {
   db: Db
   /** Re-fired when a quarantined lead is promoted — see clearLeadSpam. */
   onLeadCreated?: LeadCreatedHook | undefined
+  /** Told about every committed change — ADR-0010. */
+  changes: ChangeFeed
 }
 
 /**
@@ -150,12 +154,15 @@ function parseListQuery(c: Context): Result<ListLeadsFilters, 'invalid_request'>
   })
 }
 
-function respond(c: Context, result: Result<LeadDetail, LeadError>) {
-  return result.ok ? c.json({ lead: result.value }) : fail(c, result.error)
-}
-
 export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
+
+  /** Answers with the lead, and tells the feed it changed. */
+  function updated(c: Context, result: Result<LeadDetail, LeadError>) {
+    if (!result.ok) return fail(c, result.error)
+    deps.changes.publishLead(deps.db, 'lead.updated', result.value.id)
+    return c.json({ lead: result.value })
+  }
 
   routes.get('/', (c) => {
     const filters = parseListQuery(c)
@@ -171,7 +178,9 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = createLead(deps.db, body, actorOf(c))
-    return result.ok ? c.json({ lead: result.value }, 201) : fail(c, result.error)
+    if (!result.ok) return fail(c, result.error)
+    deps.changes.publishLead(deps.db, 'lead.created', result.value.id)
+    return c.json({ lead: result.value }, 201)
   })
 
   routes.get('/:id', (c) => {
@@ -187,14 +196,18 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return respond(c, updateLead(deps.db, id, body, actorOf(c)))
+    return updated(c, updateLead(deps.db, id, body, actorOf(c)))
   })
 
   /** For good: no undo, no tombstone. Open to any credential — ADR-0007. */
   routes.delete('/:id', (c) => {
     const id = parseId(c.req.param('id'))
     if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
-    if (!deleteLead(deps.db, id, actorOf(c))) return fail(c, 'not_found')
+    // Read first: afterwards there is nothing left to say which funnel it was in.
+    const lead = findLead(deps.db, id)
+    if (lead === undefined || !deleteLead(deps.db, id, actorOf(c))) return fail(c, 'not_found')
+    // The id alone — ADR-0010: an event naming the person would outlive the erasure.
+    if (!lead.isSpam) deps.changes.publish('lead.deleted', lead.funnelId, { leadId: id })
     return c.body(null, 204)
   })
 
@@ -203,7 +216,17 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return respond(c, moveLeadStage(deps.db, id, body['stageId'], actorOf(c)))
+    const before = findLead(deps.db, id)
+    const result = moveLeadStage(deps.db, id, body['stageId'], actorOf(c))
+    if (!result.ok) return fail(c, result.error)
+    if (before !== undefined && before.stageId !== result.value.stageId) {
+      deps.changes.publishLead(deps.db, 'lead.stage_changed', id, {
+        id: before.stageId,
+        name: before.stageName,
+        funnelId: before.funnelId,
+      })
+    }
+    return c.json({ lead: result.value })
   })
 
   routes.post('/:id/notes', async (c) => {
@@ -211,7 +234,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return respond(c, addLeadNote(deps.db, id, body['note'], actorOf(c)))
+    return updated(c, addLeadNote(deps.db, id, body['note'], actorOf(c)))
   })
 
   /**
@@ -229,6 +252,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     const { lead, promoted, formId } = result.value
     if (promoted) {
       notifyLeadCreated(deps.onLeadCreated, { id: lead.id, formId, isSpam: false })
+      deps.changes.publishLead(deps.db, 'lead.created', lead.id)
     }
     return c.json({ lead })
   })
@@ -255,7 +279,9 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
         { filename: c.req.query('filename'), contentType: c.req.header('content-type'), data },
         actorOf(c),
       )
-      return result.ok ? c.json({ lead: result.value }, 201) : c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
+      if (!result.ok) return c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
+      deps.changes.publishLead(deps.db, 'lead.updated', id)
+      return c.json({ lead: result.value }, 201)
     },
   )
 
@@ -283,7 +309,9 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     const attachmentId = parseId(c.req.param('attachmentId'))
     if (id === undefined || attachmentId === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = removeAttachment(deps.db, id, attachmentId, actorOf(c))
-    return result.ok ? c.json({ lead: result.value }) : c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
+    if (!result.ok) return c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
+    deps.changes.publishLead(deps.db, 'lead.updated', id)
+    return c.json({ lead: result.value })
   })
 
   return routes

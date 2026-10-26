@@ -47,6 +47,8 @@ act on the default one, so read the funnel list first.
 - ${mcp} — MCP over streamable HTTP, POST only. The agent surface; start here.
 - ${base}/api/v1/... — REST: the API itself. MCP is a client of it.
 - ${base}/api/intake/{form_key} — public form intake. No credential, and not for you.
+  Each funnel has its own form key, so the URL alone files a submission into the
+  right funnel; GET /funnels lists every form's \`intakeUrl\`.
 - ${base}/version — {"name":"philo","version":"..."}. No credential.
 - ${base}/llms.txt — this file.
 
@@ -102,6 +104,8 @@ Call \`tools/list\` for the schemas. In outline:
   \`reorder_stages\`, \`delete_stage\`
 - Email: \`list_email_templates\`, \`get_email_template\`,
   \`update_email_template\`, \`preview_email_template\`
+- Webhooks: \`list_webhooks\`, \`create_webhook\`, \`test_webhook\`,
+  \`delete_webhook\`
 
 ## The REST surface
 
@@ -142,6 +146,32 @@ unauthenticated caller with 401. Bodies are JSON, except an attachment's.
 - GET /settings/email/templates, GET and PATCH /settings/email/templates/{trigger},
   POST /settings/email/templates/{trigger}/preview — a funnel's two templates,
   \`?funnel=\` as above.
+- GET /events — every change as Server-Sent Events while you hold it open,
+  \`?funnel=\` to narrow it. Each event is named by its type and its data is the
+  JSON a webhook would receive. The server ends the stream after 15 minutes;
+  reconnect.
+- GET /webhooks, POST /webhooks, DELETE /webhooks/{id}, POST /webhooks/{id}/test —
+  \`{"url": "https://...", "funnelId": n, "events": ["lead.created", ...]}\`;
+  \`funnelId\` and \`events\` left out mean every funnel and every type. The
+  answer to POST carries the signing \`secret\`, once.
+
+## Changes, as they happen
+
+Types: \`lead.created\` (a form submission, a lead filed by hand, or one
+promoted out of spam), \`lead.updated\` (contact, details, a note or a file),
+\`lead.stage_changed\` (with \`data.from\`, which may be another funnel),
+\`lead.deleted\` (\`data.leadId\` only) and \`funnel.changed\` (its stages or
+name). Quarantined leads produce none. A body looks like:
+
+    {"id":"<uuid>","type":"lead.stage_changed","occurredAt":"...","funnelId":1,
+     "data":{"lead":{...},"from":{"id":3,"name":"New","funnelId":1}}}
+
+A webhook delivery is a POST of that body with \`X-Philo-Event\`,
+\`X-Philo-Delivery\` (the event id), \`X-Philo-Timestamp\` (Unix seconds) and
+\`X-Philo-Signature: sha256=<hex>\` — HMAC-SHA256 of \`<timestamp>.<body>\` with
+the secret. Answer 2xx within 10 seconds; anything else is retried twice, after
+10 and 60 seconds. Delivery is best-effort and does not survive a restart, so
+reconcile against GET /leads if missing a change matters.
 
 Your credential acts for the person who created the key or approved your
 connector, with exactly their authority: everything they can do in the app, you

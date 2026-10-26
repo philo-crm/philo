@@ -344,3 +344,25 @@ export const pushSubscriptions = sqliteTable(
   },
   (table) => [uniqueIndex('push_subscriptions_endpoint_idx').on(table.endpoint)],
 )
+
+/**
+ * Outbound change notifications — ADR-0010. The secret is kept as-is because
+ * every delivery is signed with it; it is shown once, at creation.
+ */
+export const webhooks = sqliteTable('webhooks', {
+  id: id(),
+  url: text('url').notNull(),
+  /** Null: every funnel. */
+  pipelineId: integer('pipeline_id').references(() => pipelines.id, { onDelete: 'cascade' }),
+  /** JSON array of change types; empty means every type. */
+  events: text('events').notNull().default('[]'),
+  secret: text('secret').notNull(),
+  /** The credential that registered it, as the timeline names actors. */
+  actor: text('actor').notNull(),
+  createdAt: createdAt(),
+  /** The last attempt's outcome, for the settings screen. Null until the first one. */
+  lastAttemptAt: timestamp('last_attempt_at'),
+  /** The HTTP status; null when there was none — a timeout or a refused connection. */
+  lastStatus: integer('last_status'),
+  lastError: text('last_error'),
+})

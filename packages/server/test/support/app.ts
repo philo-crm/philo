@@ -15,6 +15,8 @@ import {
   type EmailSettings,
 } from '../../src/email/settings.ts'
 import type { EmailSenderFactory, OutgoingEmail } from '../../src/email/transport.ts'
+import type { ChangeFeed } from '../../src/events/feed.ts'
+import type { DeliveryTuning } from '../../src/webhooks/deliver.ts'
 import type { IntakeTuning } from '../../src/intake/routes.ts'
 import type { CreatedLead } from '../../src/notify.ts'
 import { FIRST_PARTY_CLIENT_ID } from '../../src/oauth/first-party.ts'
@@ -65,6 +67,8 @@ export function createTestApp(
     trustProxy?: boolean
     liveFeed?: LiveFeed | undefined
     liveTuning?: LiveTuning | undefined
+    changeFeed?: ChangeFeed | undefined
+    webhookTuning?: DeliveryTuning | undefined
   } = {},
 ): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
@@ -90,6 +94,8 @@ export function createTestApp(
     createEmailSender: options.createEmailSender,
     liveFeed: options.liveFeed,
     liveTuning: options.liveTuning,
+    changeFeed: options.changeFeed,
+    webhookTuning: options.webhookTuning,
   })
   return { app, db, dataDir, vapidPublicKey, signingKey }
 }
