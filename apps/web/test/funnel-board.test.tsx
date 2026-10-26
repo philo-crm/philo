@@ -33,6 +33,7 @@ function cardOf(name: string): HTMLElement {
 /** jsdom does no layout, so "what is under the finger" is answered by the test. */
 function fingerOver(element: Element | null) {
   document.elementFromPoint = () => element
+  document.elementsFromPoint = () => (element === null ? [] : [element])
 }
 
 const lift = () => new Promise((resolve) => setTimeout(resolve, LIFT_DELAY_MS + 50))

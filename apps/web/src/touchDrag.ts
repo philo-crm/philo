@@ -15,8 +15,11 @@ const SLOP_PX = 10
 /** Every column marks itself with this, so a drop can find the one under the finger. */
 export const STAGE_ATTRIBUTE = 'data-stage-id'
 
-export function stageAt(x: number, y: number): number | undefined {
-  const target = document.elementFromPoint(x, y)?.closest(`[${STAGE_ATTRIBUTE}]`)
+/** The column under a point, looking past `held` — the lifted card sits under the finger itself. */
+export function stageAt(x: number, y: number, held?: Element | null): number | undefined {
+  const hits = document.elementsFromPoint?.(x, y) ?? [document.elementFromPoint(x, y)]
+  const under = hits.find((hit) => hit !== null && (held === undefined || held === null || !held.contains(hit)))
+  const target = under?.closest(`[${STAGE_ATTRIBUTE}]`)
   const id = Number(target?.getAttribute(STAGE_ATTRIBUTE))
   return Number.isSafeInteger(id) && id > 0 ? id : undefined
 }
@@ -84,8 +87,15 @@ export function useTouchDrag<T extends HTMLElement>(options: TouchDragOptions) {
         if (current === undefined || current.pointerId !== pointerId) return
         current.lifted = true
         setLifted(true)
-        ref.current?.setPointerCapture?.(pointerId)
         latest.current.onLift()
+        // Keeps the moves coming to this card wherever the finger goes. It
+        // throws for a pointer the browser no longer considers down, and the
+        // drag works without it, so a failure is not the drag's failure.
+        try {
+          ref.current?.setPointerCapture?.(pointerId)
+        } catch {
+          // Lifted all the same.
+        }
       }, LIFT_DELAY_MS)
       press.current = { pointerId, startX: event.clientX, startY: event.clientY, timer, lifted: false }
     },
@@ -99,7 +109,7 @@ export function useTouchDrag<T extends HTMLElement>(options: TouchDragOptions) {
         return
       }
       if (ref.current !== null) ref.current.style.transform = `translate(${dx}px, ${dy}px)`
-      latest.current.onOver(stageAt(event.clientX, event.clientY))
+      latest.current.onOver(stageAt(event.clientX, event.clientY, ref.current))
     },
     onPointerUp(event: ReactPointerEvent<T>) {
       const current = press.current
