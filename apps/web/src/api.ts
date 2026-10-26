@@ -440,6 +440,9 @@ export function deleteFunnel(id: number): Promise<FunnelRecord[]> {
 const WEBHOOK_MESSAGES: Record<string, string> = {
   invalid_url: 'That is not a web address Philo can post to. It needs to start with http:// or https://.',
   invalid_events: 'Pick changes from the list.',
+  invalid_auth_header:
+    'Philo cannot send that header. The name needs to be a plain header name that Philo does not set itself, ' +
+    'and the value plain text on one line.',
   invalid_funnel: 'That funnel no longer exists. Reload and try again.',
   too_many_webhooks: 'That is as many webhooks as Philo keeps. Delete one first.',
   not_found: 'That webhook has already been deleted. Reload to see the current list.',

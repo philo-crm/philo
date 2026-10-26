@@ -279,6 +279,8 @@ export interface WebhookRecord {
   funnelId: number | null
   /** Empty: every type. */
   events: ChangeType[]
+  /** The header sent beside the signature, by name only; null when there is none. */
+  authHeaderName: string | null
   actor: string
   createdAt: string
   lastDelivery: WebhookDelivery | null
@@ -290,6 +292,23 @@ export interface NewWebhook {
   funnelId?: number | null | undefined
   /** Left out or empty: every type. */
   events?: ChangeType[] | undefined
+  /** Left out or null: none — receivers verify the signature. */
+  authHeader?: WebhookAuthHeader | null | undefined
+}
+
+/**
+ * A header sent as-is on every delivery, beside the signature, for a receiver
+ * that authenticates by a static key — `Authorization: Bearer …`, `X-Api-Key: …`.
+ * The value is never answered back.
+ */
+export interface WebhookAuthHeader {
+  name: string
+  value: string
+}
+
+/** Only the auth header can change; null removes it. */
+export interface WebhookPatch {
+  authHeader: WebhookAuthHeader | null
 }
 
 export interface NewWebhookResult {

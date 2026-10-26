@@ -47,6 +47,33 @@ describe('Webhooks', () => {
     expect(await screen.findByText('Every change')).toBeDefined()
   })
 
+  it('sends an auth header when both halves are given, and lists it by name', async () => {
+    const api = installFakeApi()
+    render(<Webhooks onSessionExpired={vi.fn()} />)
+    await screen.findByText('No webhooks yet.')
+
+    fireEvent.change(within(form()).getByLabelText('Post to'), { target: { value: 'https://hooks.example.com/' } })
+    fireEvent.change(within(form()).getByLabelText('Auth header (optional)'), { target: { value: 'Authorization' } })
+    const add = within(form()).getByRole('button', { name: 'Add webhook' }) as HTMLButtonElement
+    expect(add.disabled).toBe(true)
+    expect(within(form()).getByText('Give the header both a name and a value.')).toBeDefined()
+
+    fireEvent.change(within(form()).getByLabelText('Header value'), { target: { value: 'Bearer tok_ui' } })
+    expect(add.disabled).toBe(false)
+    fireEvent.click(add)
+
+    await screen.findByLabelText('Signing secret')
+    const created = api.calls.find((call) => call.method === 'POST' && call.path === '/api/v1/webhooks')
+    expect(created?.body).toEqual({
+      url: 'https://hooks.example.com/',
+      funnelId: null,
+      events: [],
+      authHeader: { name: 'Authorization', value: 'Bearer tok_ui' },
+    })
+    expect(await screen.findByText('Sends Authorization')).toBeDefined()
+    expect((within(form()).getByLabelText('Header value') as HTMLInputElement).value).toBe('')
+  })
+
   it('explains a refused address', async () => {
     installFakeApi()
     render(<Webhooks onSessionExpired={vi.fn()} />)
@@ -66,6 +93,7 @@ describe('Webhooks', () => {
           url: 'https://hooks.example.com/a',
           funnelId: null,
           events: [],
+          authHeaderName: null,
           actor: 'user:7',
           createdAt: '2026-07-01T12:00:00.000Z',
           lastDelivery: null,

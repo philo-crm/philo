@@ -38,7 +38,8 @@ function describeDelivery(delivery: WebhookDelivery | null): string {
 
 /**
  * Webhooks — ADR-0010: each change posted to a URL as it happens, for every
- * funnel or one, signed with a secret shown once.
+ * funnel or one, signed with a secret shown once; ADR-0011: optionally with a
+ * header the receiver authenticates by.
  */
 export function Webhooks({ onSessionExpired }: WebhooksProps) {
   const load = useCallback((signal: AbortSignal) => fetchWebhooks(signal), [])
@@ -48,6 +49,8 @@ export function Webhooks({ onSessionExpired }: WebhooksProps) {
   const [url, setUrl] = useState('')
   const [scope, setScope] = useState(ALL_FUNNELS)
   const [events, setEvents] = useState<ChangeType[]>([])
+  const [headerName, setHeaderName] = useState('')
+  const [headerValue, setHeaderValue] = useState('')
   const [secret, setSecret] = useState<string | undefined>(undefined)
   const [confirming, setConfirming] = useState<number | undefined>(undefined)
   const [tested, setTested] = useState<{ id: number; delivery: WebhookDelivery } | undefined>(undefined)
@@ -56,6 +59,9 @@ export function Webhooks({ onSessionExpired }: WebhooksProps) {
   useSessionGuard(hooks.error ?? funnels.error ?? error, onSessionExpired)
 
   const funnelNames = new Map((funnels.data ?? []).map((funnel) => [funnel.id, funnel.name]))
+  const hasHeader = headerName.trim() !== '' || headerValue.trim() !== ''
+  const headerComplete = headerName.trim() !== '' && headerValue.trim() !== ''
+  const canCreate = url.trim() !== '' && (!hasHeader || headerComplete)
 
   async function run(action: () => Promise<void>) {
     if (busy) return
@@ -76,16 +82,19 @@ export function Webhooks({ onSessionExpired }: WebhooksProps) {
 
   function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (url.trim() === '') return
+    if (!canCreate) return
     void run(async () => {
       const created = await createWebhook({
         url: url.trim(),
         funnelId: scope === ALL_FUNNELS ? null : Number(scope),
         events,
+        ...(hasHeader && { authHeader: { name: headerName.trim(), value: headerValue.trim() } }),
       })
       setSecret(created.secret)
       setUrl('')
       setEvents([])
+      setHeaderName('')
+      setHeaderValue('')
       hooks.reload()
     })
   }
@@ -119,6 +128,10 @@ export function Webhooks({ onSessionExpired }: WebhooksProps) {
         agent that should react without polling. Every request carries{' '}
         <code>X-Philo-Signature: sha256=…</code>, an HMAC of <code>X-Philo-Timestamp</code>, a dot and
         the body, keyed with the webhook&rsquo;s secret. A failed delivery is retried twice.
+      </p>
+      <p className="hint">
+        A receiver that only takes a fixed key can get one in a header of its own as well, such as{' '}
+        <code>Authorization: Bearer …</code>. Philo sends it with every request and never shows it again.
       </p>
 
       {error !== undefined && (
@@ -180,9 +193,30 @@ export function Webhooks({ onSessionExpired }: WebhooksProps) {
             ))}
             <span className="hint">Tick none for every change.</span>
           </fieldset>
+          <label className="field">
+            <span className="field-label">Auth header (optional)</span>
+            <input
+              value={headerName}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Authorization"
+              onChange={(event) => setHeaderName(event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Header value</span>
+            <input
+              value={headerValue}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Bearer …"
+              onChange={(event) => setHeaderValue(event.target.value)}
+            />
+          </label>
+          {hasHeader && !headerComplete && <p className="hint">Give the header both a name and a value.</p>}
         </div>
         <div className="settings-actions">
-          <button type="submit" disabled={busy || url.trim() === ''}>
+          <button type="submit" disabled={busy || !canCreate}>
             {busy ? 'Working…' : 'Add webhook'}
           </button>
         </div>
@@ -217,6 +251,7 @@ export function Webhooks({ onSessionExpired }: WebhooksProps) {
                   <tr key={hook.id}>
                     <td>
                       <code className="intake-url">{hook.url}</code>
+                      {hook.authHeaderName !== null && <p className="hint">Sends {hook.authHeaderName}</p>}
                     </td>
                     <td>
                       {hook.funnelId === null ? 'Every funnel' : (funnelNames.get(hook.funnelId) ?? 'A funnel')}

@@ -104,8 +104,8 @@ Call \`tools/list\` for the schemas. In outline:
   \`reorder_stages\`, \`delete_stage\`
 - Email: \`list_email_templates\`, \`get_email_template\`,
   \`update_email_template\`, \`preview_email_template\`
-- Webhooks: \`list_webhooks\`, \`create_webhook\`, \`test_webhook\`,
-  \`delete_webhook\`
+- Webhooks: \`list_webhooks\`, \`create_webhook\`, \`update_webhook\`,
+  \`test_webhook\`, \`delete_webhook\`
 
 ## The REST surface
 
@@ -151,10 +151,15 @@ unauthenticated caller with 401. Bodies are JSON, except an attachment's.
   \`?funnel=\` to narrow it. Each event is named by its type and its data is the
   JSON a webhook would receive. The server ends the stream after 15 minutes;
   reconnect.
-- GET /webhooks, POST /webhooks, DELETE /webhooks/{id}, POST /webhooks/{id}/test —
-  \`{"url": "https://...", "funnelId": n, "events": ["lead.created", ...]}\`;
-  \`funnelId\` and \`events\` left out mean every funnel and every type. The
-  answer to POST carries the signing \`secret\`, once.
+- GET /webhooks, POST /webhooks, PATCH /webhooks/{id}, DELETE /webhooks/{id},
+  POST /webhooks/{id}/test —
+  \`{"url": "https://...", "funnelId": n, "events": ["lead.created", ...],
+  "authHeader": {"name": "Authorization", "value": "Bearer ..."}}\`;
+  \`funnelId\` and \`events\` left out mean every funnel and every type, and
+  \`authHeader\` is optional. The answer to POST carries the signing
+  \`secret\`, once. PATCH takes only \`{"authHeader": {...}}\`, or null to
+  remove it; a webhook lists the header's name as \`authHeaderName\`, never
+  its value.
 
 ## Changes, as they happen
 
@@ -170,7 +175,9 @@ name). Quarantined leads produce none. A body looks like:
 A webhook delivery is a POST of that body with \`X-Philo-Event\`,
 \`X-Philo-Delivery\` (the event id), \`X-Philo-Timestamp\` (Unix seconds) and
 \`X-Philo-Signature: sha256=<hex>\` — HMAC-SHA256 of \`<timestamp>.<body>\` with
-the secret. Answer 2xx within 10 seconds; anything else is retried twice, after
+the secret. A webhook with an \`authHeader\` also sends that header, as given,
+for a receiver that authenticates by a fixed key instead of the signature; the
+signature is still there. Answer 2xx within 10 seconds; anything else is retried twice, after
 10 and 60 seconds. Delivery is best-effort and does not survive a restart, so
 reconcile against GET /leads if missing a change matters.
 

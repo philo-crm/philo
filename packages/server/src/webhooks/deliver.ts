@@ -110,6 +110,7 @@ async function attempt(db: Db, target: WebhookTarget, payload: Payload, tuning: 
     status = await post(
       new URL(target.url),
       {
+        ...(target.authHeader && { [target.authHeader.name]: target.authHeader.value }),
         'Content-Type': 'application/json',
         'User-Agent': `philo/${VERSION}`,
         'X-Philo-Event': payload.type,

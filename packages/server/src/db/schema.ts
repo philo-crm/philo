@@ -357,6 +357,12 @@ export const webhooks = sqliteTable('webhooks', {
   /** JSON array of change types; empty means every type. */
   events: text('events').notNull().default('[]'),
   secret: text('secret').notNull(),
+  /**
+   * One header a receiver authenticates by, sent beside the signature — ADR-0011.
+   * Both null or both set; the value is kept as-is because it is sent, and never listed.
+   */
+  authHeaderName: text('auth_header_name'),
+  authHeaderValue: text('auth_header_value'),
   /** The credential that registered it, as the timeline names actors. */
   actor: text('actor').notNull(),
   createdAt: createdAt(),

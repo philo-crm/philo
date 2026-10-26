@@ -246,6 +246,20 @@ describe('webhooks', () => {
     })
   })
 
+  it('sets the auth header with a PATCH and answers the webhook', async () => {
+    const webhook = { id: 3, authHeaderName: 'Authorization' }
+    const { calls, fetch } = recorder(() => json({ webhook }))
+
+    const updated = await new PhiloClient({ fetch }).webhooks.update(3, {
+      authHeader: { name: 'Authorization', value: 'Bearer x' },
+    })
+
+    expect(updated).toEqual(webhook)
+    expect(calls[0]?.url).toBe('/api/v1/webhooks/3')
+    expect(calls[0]?.init?.method).toBe('PATCH')
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ authHeader: { name: 'Authorization', value: 'Bearer x' } })
+  })
+
   it('answers the outcome of a test', async () => {
     const delivery = { at: 'now', status: 500, ok: false, error: 'HTTP 500' }
     const { calls, fetch } = recorder(() => json({ delivery }))

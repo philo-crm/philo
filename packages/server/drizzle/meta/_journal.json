@@ -85,6 +85,13 @@
       "when": 1792985015773,
       "tag": "0011_webhooks",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792992174385,
+      "tag": "0012_webhook_auth_header",
+      "breakpoints": true
     }
   ]
 }

@@ -41,6 +41,8 @@ export const MIN_PASSWORD_LENGTH = 12
 /** packages/server/src/webhooks/service.ts */
 export const MAX_WEBHOOKS = 50
 export const MAX_WEBHOOK_URL_LENGTH = 2_000
+export const MAX_AUTH_HEADER_NAME_LENGTH = 100
+export const MAX_AUTH_HEADER_VALUE_LENGTH = 4_000
 
 /** packages/server/src/events/feed.ts */
 export const CHANGE_TYPES = [

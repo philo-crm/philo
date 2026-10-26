@@ -76,6 +76,7 @@ const TOOL_NAMES = [
   'update_funnel',
   'update_lead',
   'update_stage',
+  'update_webhook',
 ]
 
 interface ToolAnswer {
@@ -727,6 +728,17 @@ describe('mcp webhook tools', () => {
 
       const refused = await call('create_webhook', { url: 'ftp://files.example.com/' })
       expect(refused.data['error']).toBe('invalid_url')
+
+      const updated = await call('update_webhook', {
+        webhookId: id,
+        authHeader: { name: 'Authorization', value: 'Bearer tok_mcp' },
+      })
+      expect(updated.data['webhook']).toMatchObject({ id, authHeaderName: 'Authorization' })
+      expect(JSON.stringify((await call('list_webhooks')).data)).not.toContain('tok_mcp')
+      const reserved = await call('update_webhook', { webhookId: id, authHeader: { name: 'Host', value: 'x' } })
+      expect(reserved.data['error']).toBe('invalid_auth_header')
+      const cleared = await call('update_webhook', { webhookId: id, authHeader: null })
+      expect(cleared.data['webhook']).toMatchObject({ authHeaderName: null })
 
       expect((await call('delete_webhook', { webhookId: id })).isError).toBe(false)
       expect((await call('delete_webhook', { webhookId: id })).data['error']).toBe('not_found')
