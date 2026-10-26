@@ -80,20 +80,33 @@ export class Transport {
   }
 
   async request<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const payload =
+      method === 'GET' ? undefined : { data: JSON.stringify(body ?? {}), contentType: 'application/json' }
+    const res = await this.send(method, path, payload, signal)
+    if (res.status === 204) return undefined as T
+    return (await res.json()) as T
+  }
+
+  /** The response itself, for a body that is not JSON either way. Throws on a non-2xx. */
+  async send(
+    method: Method,
+    path: string,
+    body?: { data: NonNullable<RequestInit['body']>; contentType: string },
+    signal?: AbortSignal,
+  ): Promise<Response> {
     const headers: Record<string, string> = { accept: 'application/json' }
     const token = await this.#options.accessToken?.()
     if (token !== undefined) headers['authorization'] = `Bearer ${token}`
     const init: RequestInit = { method, headers }
-    if (method !== 'GET') {
-      headers['content-type'] = 'application/json'
-      init.body = JSON.stringify(body ?? {})
+    if (body !== undefined) {
+      headers['content-type'] = body.contentType
+      init.body = body.data
     }
     if (signal !== undefined) init.signal = signal
 
     const fetchImpl = this.#options.fetch ?? ((input, requestInit) => fetch(input, requestInit))
     const res = await fetchImpl(`${this.baseUrl}${path}`, init)
     if (!res.ok) throw await toApiError(res)
-    if (res.status === 204) return undefined as T
-    return (await res.json()) as T
+    return res
   }
 }

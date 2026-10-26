@@ -3,7 +3,10 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import {
   ApiError,
   DEFAULT_PAGE_SIZE,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_FILENAME_LENGTH,
   MAX_CONTACT_FIELD_LENGTH,
+  MAX_DETAIL_KEY_LENGTH,
   MAX_EMAIL_LENGTH,
   MAX_NOTE_LENGTH,
   MAX_PAGE_SIZE,
@@ -26,9 +29,10 @@ stages; every lead carries a timeline of what happened to it.
 
 Two things worth knowing before you write anything:
 
-- Philo is for pre-screening only. Never record government identifiers of any
-  kind — no social security number, no driver's licence number, no date of
-  birth. Contact details and qualification answers only.
+- What a lead submitted is in \`fields\` and never changes. What you learn
+  afterwards goes in \`details\` (update_lead) or as a file (add_lead_attachment).
+  Both may hold sensitive personal data when the business needs it; the
+  timeline records which detail keys changed, never their values.
 - Email templates are live. Editing one changes what the business sends out
   under its own name from the next lead onwards.
 
@@ -97,6 +101,8 @@ const LEAD_ID = z.number().int().positive().describe('The lead id.')
 
 const STAGE_ID = z.number().int().positive().describe('The stage id.')
 
+const ATTACHMENT_ID = z.number().int().positive().describe('The attachment id, from get_lead.')
+
 const STAGE_NAME = z.string().min(1).max(MAX_STAGE_NAME_LENGTH).describe('The stage name, as the board shows it.')
 
 /**
@@ -121,7 +127,7 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       title: 'List leads',
       description:
         'Leads newest first, with a total for paging. Filters combine. `search` is a ' +
-        'full-text search over name, email, phone and the answers in `fields`; it matches ' +
+        'full-text search over name, email, phone and the values in `fields` and `details`; it matches ' +
         'whole words and word prefixes, and is not a query language — type the words, not operators.',
       inputSchema: {
         stageId: z.number().int().positive().optional().describe('Only leads in this stage.'),
@@ -169,7 +175,9 @@ export function createMcpServer(philo: PhiloClient): McpServer {
     'get_lead',
     {
       title: 'Get a lead',
-      description: 'One lead in full, with its whole timeline: creation, stage moves, notes, emails sent.',
+      description:
+        'One lead in full: contact details, submitted `fields`, added `details`, the list of ' +
+        'attachments (metadata only — get_lead_attachment fetches one), and the whole timeline.',
       inputSchema: { leadId: LEAD_ID },
       annotations: { readOnlyHint: true },
     },
@@ -204,8 +212,8 @@ export function createMcpServer(philo: PhiloClient): McpServer {
           .record(z.string(), z.unknown())
           .optional()
           .describe(
-            'Pre-screening answers, as free-form key/value pairs — the same place intake stores ' +
-              'what a form asked. No government identifiers.',
+            'Answers as a form would have submitted them, as free-form key/value pairs — the same ' +
+              'place intake stores what a form asked. Fixed once filed; later additions go in `details`.',
           ),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
@@ -218,14 +226,19 @@ export function createMcpServer(philo: PhiloClient): McpServer {
     {
       title: 'Update a lead',
       description:
-        'Corrects contact details. A field you leave out is unchanged; null clears it. The lead ' +
-        'must still have an email or a phone afterwards. The submitted answers in `fields` are ' +
-        'not editable — they are the record of what the applicant actually sent.',
+        'Corrects contact details and adds to `details`. A field you leave out is unchanged; null ' +
+        'clears it. The lead must still have an email or a phone afterwards. `details` merges by ' +
+        'key: name only the keys you are setting, or null to remove one. The submitted answers in ' +
+        '`fields` are not editable — they are the record of what the lead actually sent.',
       inputSchema: {
         leadId: LEAD_ID,
         name: z.string().max(MAX_CONTACT_FIELD_LENGTH).nullable().optional(),
         email: z.string().max(MAX_EMAIL_LENGTH).nullable().optional(),
         phone: z.string().max(MAX_CONTACT_FIELD_LENGTH).nullable().optional(),
+        details: z
+          .record(z.string().min(1).max(MAX_DETAIL_KEY_LENGTH), z.unknown())
+          .optional()
+          .describe('Keys to set (any JSON value) or remove (null), e.g. {"start_date": "2026-11-02"}.'),
       },
       // Destructive by the spec's meaning, which is "not additive": the old
       // name, email and phone are overwritten in place and no timeline event
@@ -233,7 +246,7 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       // reading this, so it has to say so. Same at update_email_template.
       annotations: { readOnlyHint: false, idempotentHint: true },
     },
-    ({ leadId, ...patch }) => call('lead', () => philo.leads.updateContact(leadId, patch)),
+    ({ leadId, ...patch }) => call('lead', () => philo.leads.update(leadId, patch)),
   )
 
   server.registerTool(
@@ -264,6 +277,75 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
     (args) => call('lead', () => philo.leads.addNote(args.leadId, args.note)),
+  )
+
+  server.registerTool(
+    'add_lead_attachment',
+    {
+      title: 'Attach a file to a lead',
+      description:
+        `Stores a file on the lead, up to ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB, and records it on ` +
+        'the timeline. Answers with the whole lead; the new file is last in `attachments`.',
+      inputSchema: {
+        leadId: LEAD_ID,
+        filename: z.string().min(1).max(MAX_ATTACHMENT_FILENAME_LENGTH).describe('e.g. "resume.pdf".'),
+        contentType: z.string().optional().describe('MIME type, e.g. "application/pdf". Defaults to a generic one.'),
+        data: z.base64().describe('The file content, base64-encoded.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    (args) =>
+      call('lead', () =>
+        philo.leads.attachments.upload(args.leadId, {
+          data: Uint8Array.from(Buffer.from(args.data, 'base64')),
+          filename: args.filename,
+          contentType: args.contentType,
+        }),
+      ),
+  )
+
+  server.registerTool(
+    'get_lead_attachment',
+    {
+      title: 'Fetch a lead attachment',
+      description: 'The content of one file on a lead, as an embedded resource. get_lead lists the ids.',
+      inputSchema: { leadId: LEAD_ID, attachmentId: ATTACHMENT_ID },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => {
+      try {
+        const blob = await philo.leads.attachments.download(args.leadId, args.attachmentId)
+        const data = Buffer.from(await blob.arrayBuffer())
+        return {
+          content: [
+            {
+              type: 'resource',
+              resource: {
+                uri: `philo://leads/${args.leadId}/attachments/${args.attachmentId}`,
+                mimeType: blob.type === '' ? 'application/octet-stream' : blob.type,
+                blob: data.toString('base64'),
+              },
+            },
+          ],
+        }
+      } catch (error) {
+        if (error instanceof ApiError) return failure(error.code === '' ? `http_${error.status}` : error.code)
+        throw error
+      }
+    },
+  )
+
+  server.registerTool(
+    'remove_lead_attachment',
+    {
+      title: 'Remove a lead attachment',
+      description:
+        'Deletes a file from the lead for good — the bytes are gone, not hidden. The timeline keeps ' +
+        'a record that it was removed, with its name and size.',
+      inputSchema: { leadId: LEAD_ID, attachmentId: ATTACHMENT_ID },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    },
+    (args) => call('lead', () => philo.leads.attachments.remove(args.leadId, args.attachmentId)),
   )
 
   server.registerTool(

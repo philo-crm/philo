@@ -50,6 +50,36 @@ describe('PhiloClient', () => {
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ stageId: 7 })
   })
 
+  it('uploads an attachment as the raw body, typed and named', async () => {
+    const { calls, fetch } = recorder(() => json({ lead: { id: 3 } }, 201))
+    const data = new Uint8Array([1, 2, 3])
+    const lead = await new PhiloClient({ fetch }).leads.attachments.upload(3, { data, filename: 'my résumé.pdf' })
+    expect(lead).toEqual({ id: 3 })
+    expect(calls[0]?.url).toBe('/api/v1/leads/3/attachments?filename=my%20r%C3%A9sum%C3%A9.pdf')
+    expect(calls[0]?.init?.method).toBe('POST')
+    expect(header(calls[0], 'content-type')).toBe('application/octet-stream')
+    expect(calls[0]?.init?.body).toBe(data)
+  })
+
+  it('takes a Blob’s own type when none is given', async () => {
+    const { calls, fetch } = recorder(() => json({ lead: { id: 3 } }, 201))
+    const data = new Blob(['x'], { type: 'image/png' })
+    await new PhiloClient({ fetch }).leads.attachments.upload(3, { data, filename: 'a.png' })
+    expect(header(calls[0], 'content-type')).toBe('image/png')
+  })
+
+  it('downloads an attachment as a Blob, and throws the API error on a miss', async () => {
+    const { fetch } = recorder(() => new Response('bytes', { headers: { 'content-type': 'text/plain' } }))
+    const blob = await new PhiloClient({ fetch }).leads.attachments.download(3, 9)
+    await expect(blob.text()).resolves.toBe('bytes')
+
+    const missing = recorder(() => json({ error: 'attachment_not_found' }, 404))
+    await expect(new PhiloClient({ fetch: missing.fetch }).leads.attachments.download(3, 9)).rejects.toMatchObject({
+      status: 404,
+      code: 'attachment_not_found',
+    })
+  })
+
   it('builds the lead query from only the filters that were given', async () => {
     const { calls, fetch } = recorder(() => json({ leads: [], total: 0, limit: 5, offset: 0 }))
     const client = new PhiloClient({ fetch })

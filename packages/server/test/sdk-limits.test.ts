@@ -3,6 +3,7 @@ import * as apiKeys from '../src/auth/api-keys.ts'
 import * as password from '../src/auth/password.ts'
 import * as emailSettings from '../src/email/settings.ts'
 import * as templates from '../src/email/templates.ts'
+import * as attachments from '../src/leads/attachments.ts'
 import * as leads from '../src/leads/service.ts'
 import * as stages from '../src/stages/service.ts'
 import * as sdk from '../../sdk/src/limits.ts'
@@ -18,6 +19,10 @@ describe('limits mirror the server', () => {
       MAX_NOTE_LENGTH: sdk.MAX_NOTE_LENGTH,
       MAX_CONTACT_FIELD_LENGTH: sdk.MAX_CONTACT_FIELD_LENGTH,
       MAX_EMAIL_LENGTH: sdk.MAX_EMAIL_LENGTH,
+      MAX_DETAIL_KEY_LENGTH: sdk.MAX_DETAIL_KEY_LENGTH,
+      MAX_DETAILS_BYTES: sdk.MAX_DETAILS_BYTES,
+      MAX_ATTACHMENT_BYTES: sdk.MAX_ATTACHMENT_BYTES,
+      MAX_ATTACHMENT_FILENAME_LENGTH: sdk.MAX_ATTACHMENT_FILENAME_LENGTH,
       MAX_STAGE_NAME_LENGTH: sdk.MAX_STAGE_NAME_LENGTH,
       MAX_SETTINGS_NAME_LENGTH: sdk.MAX_SETTINGS_NAME_LENGTH,
       MAX_TEMPLATE_SUBJECT_LENGTH: sdk.MAX_TEMPLATE_SUBJECT_LENGTH,
@@ -32,6 +37,10 @@ describe('limits mirror the server', () => {
       MAX_NOTE_LENGTH: leads.MAX_NOTE_LENGTH,
       MAX_CONTACT_FIELD_LENGTH: leads.MAX_CONTACT_FIELD_LENGTH,
       MAX_EMAIL_LENGTH: leads.MAX_EMAIL_LENGTH,
+      MAX_DETAIL_KEY_LENGTH: leads.MAX_DETAIL_KEY_LENGTH,
+      MAX_DETAILS_BYTES: leads.MAX_DETAILS_BYTES,
+      MAX_ATTACHMENT_BYTES: attachments.MAX_ATTACHMENT_BYTES,
+      MAX_ATTACHMENT_FILENAME_LENGTH: attachments.MAX_ATTACHMENT_FILENAME_LENGTH,
       MAX_STAGE_NAME_LENGTH: stages.MAX_STAGE_NAME_LENGTH,
       MAX_SETTINGS_NAME_LENGTH: emailSettings.MAX_NAME_LENGTH,
       MAX_TEMPLATE_SUBJECT_LENGTH: templates.MAX_TEMPLATE_SUBJECT_LENGTH,
