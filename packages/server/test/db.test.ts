@@ -135,9 +135,13 @@ describe('first-boot seeds', () => {
   // database that no later boot would repair.
   it('rolls the whole seed back when any part of it fails', () => {
     const db = openUnseeded(tempDataDir())
+    // A template already holding the first funnel's slot, so the seed's own
+    // insert collides with it. Foreign keys off to plant it ahead of its funnel.
+    db.$client.pragma('foreign_keys = OFF')
     db.insert(emailTemplates)
-      .values({ trigger: 'new_lead_notify', subject: 'taken', body: 'taken' })
+      .values({ pipelineId: 1, trigger: 'new_lead_notify', subject: 'taken', body: 'taken' })
       .run()
+    db.$client.pragma('foreign_keys = ON')
 
     expect(() => seed(db)).toThrow()
     expect(db.select().from(pipelines).all()).toEqual([])

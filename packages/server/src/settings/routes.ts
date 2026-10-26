@@ -2,10 +2,12 @@ import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { currentUser, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
+import { parseFunnelParam, readFunnelEmailSettings, resolveFunnelId } from '../funnels/service.ts'
 import { ackReplyTo, sendTestEmail, type TestEmailError } from '../email/service.ts'
 import {
   readEmailSettings,
   validateEmailSettings,
+  withFunnelOverrides,
   writeEmailSettings,
   type EmailSettings,
 } from '../email/settings.ts'
@@ -69,6 +71,18 @@ const TEMPLATE_STATUS: Record<EmailTemplateError, ContentfulStatusCode> = {
   invalid_lead: 400,
 }
 
+/**
+ * The funnel a template route means — ADR-0009: `?funnel=<id>`, or the default
+ * funnel when absent. A malformed id is a 400; one that names no funnel, a 404.
+ */
+function templateFunnel(c: Context<AuthEnv>, db: Db): number | Response {
+  const requested = parseFunnelParam(c.req.query('funnel'))
+  if (requested === null) return c.json({ error: 'invalid_request' }, 400)
+  const funnelId = resolveFunnelId(db, requested)
+  if (funnelId === undefined) return c.json({ error: 'funnel_not_found' }, 404)
+  return funnelId
+}
+
 export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
@@ -117,22 +131,30 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
     )
   })
 
-  routes.get('/email/templates', (c) => c.json({ templates: listEmailTemplates(deps.db) }))
+  routes.get('/email/templates', (c) => {
+    const funnelId = templateFunnel(c, deps.db)
+    if (funnelId instanceof Response) return funnelId
+    return c.json({ templates: listEmailTemplates(deps.db, funnelId) })
+  })
 
   routes.get('/email/templates/:trigger', (c) => {
+    const funnelId = templateFunnel(c, deps.db)
+    if (funnelId instanceof Response) return funnelId
     const trigger = c.req.param('trigger')
-    const template = isEmailTrigger(trigger) ? getEmailTemplate(deps.db, trigger) : undefined
+    const template = isEmailTrigger(trigger) ? getEmailTemplate(deps.db, funnelId, trigger) : undefined
     if (template === undefined) return c.json({ error: 'not_found' }, 404)
     return c.json({ template })
   })
 
   routes.patch('/email/templates/:trigger', async (c) => {
+    const funnelId = templateFunnel(c, deps.db)
+    if (funnelId instanceof Response) return funnelId
     const trigger = c.req.param('trigger')
     if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
-    const result = updateEmailTemplate(deps.db, deps.appUrl, trigger, body)
+    const result = updateEmailTemplate(deps.db, deps.appUrl, funnelId, trigger, body)
     if (!result.ok) return templateError(c, result)
     return c.json({ template: result.value })
   })
@@ -142,12 +164,14 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
    * on a template without committing anything a real lead would then be sent.
    */
   routes.post('/email/templates/:trigger/preview', async (c) => {
+    const funnelId = templateFunnel(c, deps.db)
+    if (funnelId instanceof Response) return funnelId
     const trigger = c.req.param('trigger')
     if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
-    const result = previewEmailTemplate(deps.db, deps.appUrl, trigger, body)
+    const result = previewEmailTemplate(deps.db, deps.appUrl, funnelId, trigger, body)
     if (!result.ok) return templateError(c, result)
     return c.json({ preview: result.value })
   })
@@ -159,15 +183,18 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono<AuthEnv> {
    * this read right in my mail client", and only that inbox can answer it.
    */
   routes.post('/email/templates/:trigger/test', async (c) => {
+    const funnelId = templateFunnel(c, deps.db)
+    if (funnelId instanceof Response) return funnelId
     const trigger = c.req.param('trigger')
     if (!isEmailTrigger(trigger)) return c.json({ error: 'not_found' }, 404)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
 
-    const rendered = previewEmailTemplate(deps.db, deps.appUrl, trigger, body)
+    const rendered = previewEmailTemplate(deps.db, deps.appUrl, funnelId, trigger, body)
     if (!rendered.ok) return templateError(c, rendered)
 
-    const config = readEmailSettings(deps.db)
+    // Sent as the funnel sends it: its sender name and reply-to, not the instance's.
+    const config = withFunnelOverrides(readEmailSettings(deps.db), readFunnelEmailSettings(deps.db, funnelId))
     const result = await sendTestEmail(
       { createSender: deps.createEmailSender },
       config,

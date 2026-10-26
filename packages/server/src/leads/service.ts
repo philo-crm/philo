@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { leadAttachments, leadEvents, leads, stages } from '../db/schema.ts'
+import { resolveFunnelId } from '../funnels/service.ts'
 import { isWithinDepthLimit } from '../intake/payload.ts'
 import { err, ok, type Result } from '../result.ts'
 
@@ -47,6 +48,7 @@ export type LeadError =
   | 'invalid_details'
   | 'email_or_phone_required'
   | 'no_stage'
+  | 'invalid_funnel'
 
 export interface LeadRecord {
   id: number
@@ -55,6 +57,8 @@ export interface LeadRecord {
   phone: string | null
   source: string | null
   formId: number | null
+  /** The funnel the lead's current stage belongs to — ADR-0009. */
+  funnelId: number
   stageId: number
   stageName: string
   isSpam: boolean
@@ -97,6 +101,8 @@ export interface LeadPage {
 }
 
 export interface ListLeadsFilters {
+  /** Absent lists every funnel's leads. */
+  funnelId?: number | undefined
   stageId?: number | undefined
   formId?: number | undefined
   /** Spam is quarantined, so the default list is the non-spam one. */
@@ -124,8 +130,13 @@ export interface LeadPatch extends ContactPatch {
 export interface CreateLeadInput extends ContactPatch {
   /** Where it came from, in the operator's words — intake stores the form's name here. */
   source?: unknown
-  /** Omitted files the lead under the first stage of the funnel, as intake does. */
+  /**
+   * Omitted files the lead under the first stage of `funnelId`'s funnel (the
+   * default funnel when that is omitted too), as intake does.
+   */
   stageId?: unknown
+  /** Ignored when `stageId` names a stage, unless the two disagree — then refused. */
+  funnelId?: unknown
   /** Pre-screening answers, the same free-form shape intake stores — see ADR-0003. */
   fields?: unknown
 }
@@ -169,6 +180,7 @@ const LEAD_COLUMNS = {
   phone: leads.phone,
   source: leads.source,
   formId: leads.formId,
+  funnelId: stages.pipelineId,
   stageId: leads.currentStageId,
   stageName: stages.name,
   isSpam: leads.isSpam,
@@ -185,6 +197,7 @@ function toRecord(row: {
   phone: string | null
   source: string | null
   formId: number | null
+  funnelId: number
   stageId: number
   stageName: string
   isSpam: boolean
@@ -200,6 +213,7 @@ function toRecord(row: {
     phone: row.phone,
     source: row.source,
     formId: row.formId,
+    funnelId: row.funnelId,
     stageId: row.stageId,
     stageName: row.stageName,
     isSpam: row.isSpam,
@@ -213,6 +227,9 @@ function toRecord(row: {
 function buildFilters(filters: ListLeadsFilters, match: string | undefined): SQL | undefined {
   const conditions: SQL[] = [eq(leads.isSpam, filters.isSpam)]
   if (filters.stageId !== undefined) conditions.push(eq(leads.currentStageId, filters.stageId))
+  if (filters.funnelId !== undefined) {
+    conditions.push(sql`${leads.currentStageId} IN (SELECT ${stages.id} FROM ${stages} WHERE ${stages.pipelineId} = ${filters.funnelId})`)
+  }
   if (filters.formId !== undefined) conditions.push(eq(leads.formId, filters.formId))
   if (filters.createdAfter !== undefined) conditions.push(gte(leads.createdAt, filters.createdAfter))
   if (filters.createdBefore !== undefined) conditions.push(lte(leads.createdAt, filters.createdBefore))
@@ -446,20 +463,36 @@ export function createLead(
   }
   const requestedStageId = requested as number | undefined
 
+  const requestedFunnel = input.funnelId
+  if (
+    requestedFunnel !== undefined &&
+    (!Number.isSafeInteger(requestedFunnel) || (requestedFunnel as number) <= 0)
+  ) {
+    return err('invalid_funnel')
+  }
+  const funnelId = resolveFunnelId(db, requestedFunnel as number | undefined)
+  if (funnelId === undefined) return err(requestedFunnel === undefined ? 'no_stage' : 'invalid_funnel')
+
   const outcome = db.transaction((tx) => {
     // Unnamed files the lead under the funnel's first stage, exactly as intake
-    // does — one pipeline in the MVP, ordered by it too so the choice stays
-    // deterministic if a second one ever appears.
+    // does — ADR-0009.
     const [stage] =
       requestedStageId === undefined
         ? tx
-            .select({ id: stages.id })
+            .select({ id: stages.id, pipelineId: stages.pipelineId })
             .from(stages)
-            .orderBy(asc(stages.pipelineId), asc(stages.position), asc(stages.id))
+            .where(eq(stages.pipelineId, funnelId))
+            .orderBy(asc(stages.position), asc(stages.id))
             .limit(1)
             .all()
-        : tx.select({ id: stages.id }).from(stages).where(eq(stages.id, requestedStageId)).limit(1).all()
+        : tx
+            .select({ id: stages.id, pipelineId: stages.pipelineId })
+            .from(stages)
+            .where(eq(stages.id, requestedStageId))
+            .limit(1)
+            .all()
     if (stage === undefined) return requestedStageId === undefined ? 'no_stage' : 'invalid_stage'
+    if (requestedFunnel !== undefined && stage.pipelineId !== funnelId) return 'invalid_stage'
 
     const [lead] = tx
       .insert(leads)

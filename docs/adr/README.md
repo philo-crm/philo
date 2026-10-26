@@ -27,3 +27,4 @@ named `NNNN-short-kebab-title.md`.
 - [0006 — Headless server, an SDK that tracks it, and the PWA and MCP as clients](0006-headless-server-sdk-clients.md) (authority levels superseded by 0007)
 - [0007 — An agent acts with its user's authority, no more and no less](0007-agents-act-as-their-user.md)
 - [0008 — Operator-entered lead details and attachments, PII included](0008-lead-details-and-attachments.md)
+- [0009 — Multiple funnels per instance, with funnel-scoped settings](0009-multiple-funnels.md)

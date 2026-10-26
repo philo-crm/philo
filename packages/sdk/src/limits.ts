@@ -19,6 +19,10 @@ export const MAX_ATTACHMENT_FILENAME_LENGTH = 255
 /** packages/server/src/stages/service.ts */
 export const MAX_STAGE_NAME_LENGTH = 80
 
+/** packages/server/src/funnels/service.ts */
+export const MAX_FUNNEL_NAME_LENGTH = 80
+export const MAX_NOTIFY_RECIPIENTS = 20
+
 /** packages/server/src/email/settings.ts */
 export const MAX_SETTINGS_NAME_LENGTH = 200
 

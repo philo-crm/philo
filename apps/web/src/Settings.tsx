@@ -10,6 +10,7 @@ import {
 } from './api.ts'
 import { ApiKeys } from './ApiKeys.tsx'
 import { EmailTemplates } from './EmailTemplates.tsx'
+import { FunnelSettings } from './FunnelSettings.tsx'
 import { isStandalone, isIosSafari } from './install.ts'
 import {
   disablePush,
@@ -48,6 +49,7 @@ export function Settings({ onSessionExpired }: SettingsProps) {
       {/* Outside the branch above: a template is editable whether or not the
           SMTP settings loaded, and the two fail independently. */}
       <PushNotifications onSessionExpired={onSessionExpired} />
+      <FunnelSettings onSessionExpired={onSessionExpired} />
       <EmailTemplates onSessionExpired={onSessionExpired} />
       <ApiKeys onSessionExpired={onSessionExpired} />
     </>
@@ -381,7 +383,7 @@ function EmailSettingsForm({ initial, onSaved }: EmailSettingsFormProps) {
               </label>
               <p className="hint">
                 Where a reply to the acknowledgment lands. Philo never receives email, so make this
-                a real inbox.
+                a real inbox. A funnel can override the from name and reply-to below.
               </p>
             </div>
           </div>
@@ -409,7 +411,8 @@ function EmailSettingsForm({ initial, onSaved }: EmailSettingsFormProps) {
             {busy ? 'Saving…' : 'Save settings'}
           </button>
           <span className="hint">
-            New leads are emailed to everyone who can sign in, and acknowledged to the applicant.
+            New leads are emailed to everyone who can sign in, unless their funnel names its own
+            recipients, and acknowledged to the applicant.
           </span>
         </div>
       </form>

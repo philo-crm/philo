@@ -15,6 +15,8 @@ export interface TemplateContext {
     fields: Record<string, unknown>
   }
   business: { name: string }
+  /** The lead's funnel — ADR-0009. */
+  funnel: { name: string }
   lead_url: string
 }
 
@@ -25,7 +27,7 @@ export interface TemplateContext {
  */
 export function buildContext(
   lead: Pick<LeadRecord, 'id' | 'name' | 'email' | 'phone' | 'source' | 'fields'>,
-  options: { businessName: string; fromName: string; appUrl: string },
+  options: { businessName: string; fromName: string; funnelName: string; appUrl: string },
 ): TemplateContext {
   return {
     lead: {
@@ -36,6 +38,7 @@ export function buildContext(
       fields: lead.fields,
     },
     business: { name: options.businessName || options.fromName },
+    funnel: { name: options.funnelName },
     lead_url: `${options.appUrl.replace(/\/+$/, '')}/leads/${lead.id}`,
   }
 }

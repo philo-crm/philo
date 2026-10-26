@@ -1,10 +1,11 @@
-import { asc, eq } from 'drizzle-orm'
+import { and, asc, eq } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { emailTemplates } from '../db/schema.ts'
 import { getLead, type LeadRecord } from '../leads/service.ts'
 import { buildContext, renderBodyResult, renderSubjectResult, type TemplateContext } from './render.ts'
 import type { EmailTrigger } from './service.ts'
-import { readEmailSettings } from './settings.ts'
+import { readFunnelEmailSettings } from '../funnels/service.ts'
+import { readEmailSettings, withFunnelOverrides } from './settings.ts'
 
 /** The pair the MVP sends. Mirrors the `trigger` column's enum — DESIGN.md (Email). */
 export const TEMPLATE_TRIGGERS = ['new_lead_notify', 'new_lead_ack'] as const satisfies readonly EmailTrigger[]
@@ -104,21 +105,33 @@ const TEMPLATE_COLUMNS = {
   updatedAt: emailTemplates.updatedAt,
 } as const
 
-/** Ordered by id, which is seed order — so the editor's two panels never swap places. */
-export function listEmailTemplates(db: Db): EmailTemplateRecord[] {
+/**
+ * One funnel's templates — ADR-0009. Ordered by id, which is seed order — so
+ * the editor's two panels never swap places.
+ */
+export function listEmailTemplates(db: Db, funnelId: number): EmailTemplateRecord[] {
   return db
     .select(TEMPLATE_COLUMNS)
     .from(emailTemplates)
+    .where(eq(emailTemplates.pipelineId, funnelId))
     .orderBy(asc(emailTemplates.id))
     .all()
     .map(toRecord)
 }
 
-export function getEmailTemplate(db: Db, trigger: EmailTrigger): EmailTemplateRecord | undefined {
+function scoped(funnelId: number, trigger: EmailTrigger) {
+  return and(eq(emailTemplates.pipelineId, funnelId), eq(emailTemplates.trigger, trigger))
+}
+
+export function getEmailTemplate(
+  db: Db,
+  funnelId: number,
+  trigger: EmailTrigger,
+): EmailTemplateRecord | undefined {
   const [row] = db
     .select(TEMPLATE_COLUMNS)
     .from(emailTemplates)
-    .where(eq(emailTemplates.trigger, trigger))
+    .where(scoped(funnelId, trigger))
     .limit(1)
     .all()
   return row === undefined ? undefined : toRecord(row)
@@ -190,18 +203,22 @@ export interface TemplatePreview {
 
 /**
  * The context a preview renders in: a real lead when one is named, the sample
- * otherwise. `{{business.name}}` and `{{lead_url}}` come from the same settings
- * the send path reads, so a preview is a statement about the real thing.
+ * otherwise. `{{business.name}}`, `{{funnel.name}}` and `{{lead_url}}` come from
+ * the same settings the send path reads — the edited template's funnel's — so a
+ * preview is a statement about the real thing.
  */
 function previewContext(
   db: Db,
   appUrl: string,
+  funnelId: number,
   rawLeadId: unknown,
 ): TemplateResult<{ context: TemplateContext; leadId: number | null }> {
-  const config = readEmailSettings(db)
+  const funnel = readFunnelEmailSettings(db, funnelId)
+  const config = withFunnelOverrides(readEmailSettings(db), funnel)
   const options = {
     businessName: config.businessName,
     fromName: config.fromName,
+    funnelName: funnel?.name ?? '',
     appUrl,
   }
 
@@ -224,16 +241,17 @@ function previewContext(
 export function previewEmailTemplate(
   db: Db,
   appUrl: string,
+  funnelId: number,
   trigger: EmailTrigger,
   input: Record<string, unknown>,
 ): TemplateResult<TemplatePreview> {
-  const stored = getEmailTemplate(db, trigger)
+  const stored = getEmailTemplate(db, funnelId, trigger)
   if (stored === undefined) return fail('not_found')
 
   const draft = applyPatch(fieldsOf(stored), input)
   if (!draft.ok) return draft
 
-  const resolved = previewContext(db, appUrl, input['leadId'])
+  const resolved = previewContext(db, appUrl, funnelId, input['leadId'])
   if (!resolved.ok) return resolved
 
   const subject = renderSubjectResult(draft.value.subject, resolved.value.context)
@@ -257,10 +275,11 @@ export function previewEmailTemplate(
 export function updateEmailTemplate(
   db: Db,
   appUrl: string,
+  funnelId: number,
   trigger: EmailTrigger,
   patch: Record<string, unknown>,
 ): TemplateResult<EmailTemplateRecord> {
-  const stored = getEmailTemplate(db, trigger)
+  const stored = getEmailTemplate(db, funnelId, trigger)
   if (stored === undefined) return fail('not_found')
 
   const next = applyPatch(fieldsOf(stored), patch)
@@ -273,7 +292,7 @@ export function updateEmailTemplate(
   // question here is whether the template is well-formed, and one lead's data
   // must not be what decides whether a save is allowed.
   if ('subject' in patch || 'body' in patch) {
-    const rendered = previewEmailTemplate(db, appUrl, trigger, {
+    const rendered = previewEmailTemplate(db, appUrl, funnelId, trigger, {
       subject: next.value.subject,
       body: next.value.body,
     })
@@ -283,7 +302,7 @@ export function updateEmailTemplate(
   const [row] = db
     .update(emailTemplates)
     .set(next.value)
-    .where(eq(emailTemplates.trigger, trigger))
+    .where(scoped(funnelId, trigger))
     .returning(TEMPLATE_COLUMNS)
     .all()
   if (row === undefined) return fail('not_found')

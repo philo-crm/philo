@@ -233,6 +233,23 @@ export function validateEmailSettings(
   return ok(next)
 }
 
+/**
+ * The instance settings as one funnel sends with them — ADR-0009. The funnel's
+ * sender name and reply-to override the instance's when set; the mail server,
+ * From address and business name are instance-wide and never overridden.
+ */
+export function withFunnelOverrides(
+  config: EmailSettings,
+  funnel: { fromName: string; replyTo: string } | undefined,
+): EmailSettings {
+  if (funnel === undefined) return config
+  return {
+    ...config,
+    fromName: funnel.fromName === '' ? config.fromName : funnel.fromName,
+    replyTo: funnel.replyTo === '' ? config.replyTo : funnel.replyTo,
+  }
+}
+
 /** One transaction, so a half-written SMTP configuration is never read back. */
 export function writeEmailSettings(db: Db, config: EmailSettings): void {
   const values = [

@@ -116,6 +116,36 @@ describe('PhiloClient', () => {
     expect(calls[0]?.url).toBe('/api/v1/settings/email/templates/a%2Fb')
   })
 
+  it('scopes stages, templates and leads to a funnel when one is named', async () => {
+    const { calls, fetch } = recorder(() => json({ stages: [], templates: [], template: {}, leads: [] }))
+    const client = new PhiloClient({ fetch })
+    await client.stages.list(undefined, 4)
+    await client.stages.reorder([1, 2], 4)
+    await client.emailTemplates.list(undefined, 4)
+    await client.emailTemplates.update('new_lead_ack', { subject: 'Hi' }, 4)
+    await client.leads.list({ funnelId: 4 })
+    expect(calls.map((call) => call.url)).toEqual([
+      '/api/v1/stages?funnel=4',
+      '/api/v1/stages/reorder?funnel=4',
+      '/api/v1/settings/email/templates?funnel=4',
+      '/api/v1/settings/email/templates/new_lead_ack?funnel=4',
+      '/api/v1/leads?funnel=4',
+    ])
+  })
+
+  it('manages funnels', async () => {
+    const { calls, fetch } = recorder(() => json({ funnel: { id: 2 }, funnels: [] }))
+    const client = new PhiloClient({ fetch })
+    expect(await client.funnels.create('Sales')).toEqual({ id: 2 })
+    await client.funnels.update(2, { notifyRecipients: [] })
+    await client.funnels.delete(2)
+    expect(calls.map((call) => `${call.init?.method} ${call.url}`)).toEqual([
+      'POST /api/v1/funnels',
+      'PATCH /api/v1/funnels/2',
+      'DELETE /api/v1/funnels/2',
+    ])
+  })
+
   it('looks up the global fetch per call', async () => {
     const client = new PhiloClient()
     const stub = vi.fn(async () => json({ name: 'philo', version: '9.9.9' }))

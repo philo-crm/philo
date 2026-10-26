@@ -2,6 +2,8 @@ import {
   ApiError,
   MAX_API_KEY_NAME_LENGTH,
   MAX_ATTACHMENT_BYTES,
+  MAX_FUNNEL_NAME_LENGTH,
+  MAX_NOTIFY_RECIPIENTS,
   MAX_SETTINGS_NAME_LENGTH,
   MAX_STAGE_NAME_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
@@ -12,6 +14,8 @@ import {
   type EmailTemplate,
   type EmailTemplateDraft,
   type EmailTemplatePreview,
+  type FunnelPatch,
+  type FunnelRecord,
   type LeadDetail,
   type LeadPage,
   type LeadRecord,
@@ -27,6 +31,9 @@ export type {
   EmailTemplate,
   EmailTemplateDraft,
   EmailTemplatePreview,
+  FunnelForm,
+  FunnelPatch,
+  FunnelRecord,
   LeadAttachmentRecord,
   LeadDetail,
   LeadEventRecord,
@@ -38,6 +45,8 @@ export type {
 
 /** The screens always say which view they want and page explicitly. */
 export interface LeadQuery {
+  /** Left out lists every funnel's leads. */
+  funnelId?: number | undefined
   stageId?: number | undefined
   search?: string | undefined
   isSpam: boolean
@@ -59,7 +68,9 @@ export {
   MAX_API_KEY_NAME_LENGTH,
   MAX_ATTACHMENT_BYTES,
   MAX_DETAIL_KEY_LENGTH,
+  MAX_FUNNEL_NAME_LENGTH,
   MAX_NOTE_LENGTH,
+  MAX_NOTIFY_RECIPIENTS,
   MAX_SETTINGS_NAME_LENGTH,
   MAX_STAGE_NAME_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
@@ -95,6 +106,7 @@ const STAGE_MESSAGES: Record<string, string> = {
   last_stage: 'A funnel has to keep at least one stage.',
   too_many_stages: 'That is as many stages as one funnel can hold.',
   no_pipeline: 'The funnel is unavailable. Reload and try again.',
+  funnel_not_found: 'That funnel no longer exists. Reload and try again.',
 }
 
 /**
@@ -117,13 +129,14 @@ export function stageErrorMessage(error: unknown): string {
   return apiErrorMessage(error)
 }
 
-export function fetchStages(signal?: AbortSignal): Promise<StageRecord[]> {
-  return philo.stages.list(signal)
+/** `funnelId` left out means the default funnel. */
+export function fetchStages(signal?: AbortSignal, funnelId?: number): Promise<StageRecord[]> {
+  return philo.stages.list(signal, funnelId)
 }
 
 /** Appended to the end of the funnel — the server decides the position. */
-export function createStage(name: string, isTerminal: boolean): Promise<StageRecord> {
-  return philo.stages.create(name, isTerminal)
+export function createStage(name: string, isTerminal: boolean, funnelId?: number): Promise<StageRecord> {
+  return philo.stages.create(name, isTerminal, funnelId)
 }
 
 export function updateStage(id: number, patch: { name?: string; isTerminal?: boolean }): Promise<StageRecord> {
@@ -134,8 +147,8 @@ export function updateStage(id: number, patch: { name?: string; isTerminal?: boo
  * Takes the complete funnel in its new order; the server refuses a partial one,
  * because a half-applied order leaves two stages claiming the same position.
  */
-export function reorderStages(stageIds: number[]): Promise<StageRecord[]> {
-  return philo.stages.reorder(stageIds)
+export function reorderStages(stageIds: number[], funnelId?: number): Promise<StageRecord[]> {
+  return philo.stages.reorder(stageIds, funnelId)
 }
 
 /** Answers with the remaining funnel, so the board never has to refetch it. */
@@ -159,20 +172,14 @@ export interface BoardColumn {
  * The whole board in one call: the funnel, then a page of cards per stage.
  * N+1 requests, where N is the number of stages a person is willing to read
  * across — the alternative is a board-shaped endpoint the REST surface does
- * not have, and this stays inside the contract #7 shipped.
- */
-/**
- * The whole board in one call: the funnel, then a page of cards per stage.
- * N+1 requests, where N is the number of stages a person is willing to read
- * across — the alternative is a board-shaped endpoint the REST surface does
  * not have.
  */
-export async function fetchBoard(signal?: AbortSignal): Promise<BoardColumn[]> {
-  const stages = await fetchStages(signal)
+export async function fetchBoard(signal?: AbortSignal, funnelId?: number): Promise<BoardColumn[]> {
+  const stages = await fetchStages(signal, funnelId)
   return Promise.all(
     stages.map(async (stage) => {
       const page = await fetchLeads(
-        { stageId: stage.id, isSpam: false, limit: BOARD_COLUMN_SIZE, offset: 0 },
+        { funnelId, stageId: stage.id, isSpam: false, limit: BOARD_COLUMN_SIZE, offset: 0 },
         signal,
       )
       return { stage, leads: page.leads, total: page.total }
@@ -332,23 +339,66 @@ export function revokeApiKey(id: number): Promise<void> {
   return philo.apiKeys.revoke(id)
 }
 
-export function fetchEmailTemplates(signal?: AbortSignal): Promise<EmailTemplate[]> {
-  return philo.emailTemplates.list(signal)
+/** One funnel's templates; `funnelId` left out means the default funnel. */
+export function fetchEmailTemplates(signal?: AbortSignal, funnelId?: number): Promise<EmailTemplate[]> {
+  return philo.emailTemplates.list(signal, funnelId)
 }
 
 /** Refused outright if the source does not render, so nothing saves silently. */
 export function updateEmailTemplate(
   trigger: string,
   patch: { subject?: string; body?: string; enabled?: boolean },
+  funnelId?: number,
 ): Promise<EmailTemplate> {
-  return philo.emailTemplates.update(trigger, patch)
+  return philo.emailTemplates.update(trigger, patch, funnelId)
 }
 
-export function previewEmailTemplate(trigger: string, draft: EmailTemplateDraft): Promise<EmailTemplatePreview> {
-  return philo.emailTemplates.preview(trigger, draft)
+export function previewEmailTemplate(
+  trigger: string,
+  draft: EmailTemplateDraft,
+  funnelId?: number,
+): Promise<EmailTemplatePreview> {
+  return philo.emailTemplates.preview(trigger, draft, funnelId)
 }
 
 /** Goes to the signed-in operator's own address — the server decides, not the screen. */
-export function sendTemplateTestEmail(trigger: string, draft: EmailTemplateDraft): Promise<string> {
-  return philo.emailTemplates.sendTest(trigger, draft)
+export function sendTemplateTestEmail(trigger: string, draft: EmailTemplateDraft, funnelId?: number): Promise<string> {
+  return philo.emailTemplates.sendTest(trigger, draft, funnelId)
+}
+
+/** The same codes once more, read as a funnel — ADR-0009. */
+const FUNNEL_MESSAGES: Record<string, string> = {
+  not_found: 'That funnel no longer exists. Reload to see the current list.',
+  invalid_name: `A funnel needs a name of ${MAX_FUNNEL_NAME_LENGTH} characters or fewer.`,
+  invalid_from_name: `A sender name has to fit within ${MAX_SETTINGS_NAME_LENGTH} characters.`,
+  invalid_reply_to: 'The reply-to address has to be a valid email address.',
+  invalid_notify_recipients: `List up to ${MAX_NOTIFY_RECIPIENTS} valid email addresses, one per line.`,
+  too_many_funnels: 'That is as many funnels as one instance can hold.',
+  funnel_not_empty: 'Move or delete its leads before deleting this funnel.',
+  last_funnel: 'There has to be at least one funnel.',
+}
+
+export function funnelErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    const message = FUNNEL_MESSAGES[error.code]
+    if (message !== undefined) return message
+  }
+  return apiErrorMessage(error)
+}
+
+export function fetchFunnels(signal?: AbortSignal): Promise<FunnelRecord[]> {
+  return philo.funnels.list(signal)
+}
+
+/** Born with the default stages, both templates, and an intake form. */
+export function createFunnel(name: string): Promise<FunnelRecord> {
+  return philo.funnels.create(name)
+}
+
+export function updateFunnel(id: number, patch: FunnelPatch): Promise<FunnelRecord> {
+  return philo.funnels.update(id, patch)
+}
+
+export function deleteFunnel(id: number): Promise<FunnelRecord[]> {
+  return philo.funnels.delete(id)
 }

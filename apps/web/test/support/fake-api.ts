@@ -4,6 +4,7 @@ import type {
   ApiKeyRecord,
   EmailSettings,
   EmailTemplate,
+  FunnelRecord,
   LeadDetail,
   LeadEventRecord,
   LiveNotification,
@@ -28,8 +29,13 @@ export interface FakeApi {
   authorizations: Map<string, { challenge: string; redirectUri: string; nonce: string }>
   /** Every token sent to the revocation endpoint. */
   revoked: string[]
-  stages: StageRecord[]
+  /** Which funnel a stage is in is held beside it; the API's StageRecord does not carry it. */
+  stages: FakeStage[]
   leads: LeadDetail[]
+  /** `leadCount` is derived on the way out, as the server derives it. */
+  funnels: FunnelRecord[]
+  /** Templates of every funnel but the default, whose are `emailTemplates`. */
+  funnelTemplates: Record<number, EmailTemplate[]>
   /** Flip to make every authenticated call answer 401, as an expired session does. */
   expired: boolean
   /** Set to a pending promise to hold every answer until it resolves. */
@@ -142,7 +148,24 @@ function renderFake(source: string): string | undefined {
 /** Matches the server's deliberately loose check — see email/settings.ts. */
 const ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-export const TEST_STAGES: StageRecord[] = [
+/** A stage, and the funnel it belongs to — the default one when left out. */
+export type FakeStage = StageRecord & { funnelId?: number }
+
+export const TEST_FUNNELS: FunnelRecord[] = [
+  {
+    id: 1,
+    name: 'Default',
+    isDefault: true,
+    fromName: '',
+    replyTo: '',
+    notifyRecipients: [],
+    leadCount: 0,
+    forms: [{ id: 1, name: 'Default', formKey: 'form-one', intakeUrl: 'http://localhost:3000/api/intake/form-one' }],
+    createdAt: '2026-07-01T12:00:00.000Z',
+  },
+]
+
+export const TEST_STAGES: FakeStage[] = [
   { id: 1, name: 'New', position: 0, isTerminal: false, leadCount: 2 },
   { id: 2, name: 'Contacted', position: 1, isTerminal: false, leadCount: 0 },
   { id: 3, name: 'Closed', position: 2, isTerminal: true, leadCount: 0 },
@@ -157,6 +180,7 @@ export function makeLead(overrides: Partial<LeadDetail> & { id: number }): LeadD
     phone: null,
     source: 'Driver application',
     formId: 1,
+    funnelId: 1,
     stageId: 1,
     stageName: 'New',
     isSpam: false,
@@ -204,6 +228,7 @@ function pushEvent(lead: LeadDetail, event: Omit<LeadEventRecord, 'id' | 'create
 function listLeads(api: FakeApi, query: URLSearchParams) {
   const isSpam = query.get('spam') === 'true'
   const stage = query.get('stage')
+  const funnel = query.get('funnel')
   const search = query.get('search')?.toLowerCase() ?? ''
   const limit = Number(query.get('limit') ?? '50')
   const offset = Number(query.get('offset') ?? '0')
@@ -212,6 +237,7 @@ function listLeads(api: FakeApi, query: URLSearchParams) {
     (lead) =>
       lead.isSpam === isSpam &&
       (stage === null || lead.stageId === Number(stage)) &&
+      (funnel === null || lead.funnelId === Number(funnel)) &&
       (search === '' || searchable(lead).includes(search)),
   )
   return {
@@ -222,14 +248,31 @@ function listLeads(api: FakeApi, query: URLSearchParams) {
   }
 }
 
+function defaultFunnel(api: FakeApi): number {
+  return api.funnels.reduce((lowest, funnel) => Math.min(lowest, funnel.id), Number.POSITIVE_INFINITY)
+}
+
+function funnelOfStage(stage: FakeStage): number {
+  return stage.funnelId ?? 1
+}
+
+/** `?funnel=`, or the default; undefined when it names no funnel. */
+function scopedFunnel(api: FakeApi, query: URLSearchParams): number | undefined {
+  const raw = query.get('funnel')
+  if (raw === null) return defaultFunnel(api)
+  const id = Number(raw)
+  return api.funnels.some((funnel) => funnel.id === id) ? id : undefined
+}
+
 /**
  * Counts derived from the leads on hand rather than stored, spam included —
  * that is what the server counts, and it is what makes `leadCount === 0` mean
  * "deletable" here too.
  */
-function stagesWithCounts(api: FakeApi): StageRecord[] {
+function stagesWithCounts(api: FakeApi, funnelId: number): StageRecord[] {
   return api.stages
-    .map((stage) => ({
+    .filter((stage) => funnelOfStage(stage) === funnelId)
+    .map(({ funnelId: _funnel, ...stage }) => ({
       ...stage,
       leadCount: api.leads.filter((lead) => lead.stageId === stage.id).length,
     }))
@@ -237,39 +280,50 @@ function stagesWithCounts(api: FakeApi): StageRecord[] {
 }
 
 /** `undefined` when the path is not the funnel's, so `handle` can carry on. */
-function handleStages(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+function handleStages(
+  api: FakeApi,
+  method: string,
+  path: string,
+  query: URLSearchParams,
+  body: unknown,
+): Response | undefined {
   const payload = (body ?? {}) as Record<string, unknown>
   const name = typeof payload['name'] === 'string' ? payload['name'].trim() : undefined
+  const collection = path === '/api/v1/stages' || path === '/api/v1/stages/reorder'
+  const funnelId = scopedFunnel(api, query)
+  if (collection && funnelId === undefined) return jsonResponse(404, { error: 'funnel_not_found' })
 
   if (method === 'GET' && path === '/api/v1/stages') {
-    return jsonResponse(200, { stages: stagesWithCounts(api) })
+    return jsonResponse(200, { stages: stagesWithCounts(api, funnelId!) })
   }
   if (method === 'POST' && path === '/api/v1/stages') {
     if (name === undefined || name === '') return jsonResponse(400, { error: 'invalid_name' })
     const id = api.stages.reduce((next, stage) => Math.max(next, stage.id + 1), 1)
     const position = api.stages.reduce((next, stage) => Math.max(next, stage.position + 1), 0)
-    api.stages.push({ id, name, position, isTerminal: payload['isTerminal'] === true, leadCount: 0 })
-    return jsonResponse(201, { stage: stagesWithCounts(api).find((stage) => stage.id === id) })
+    api.stages.push({ id, name, position, isTerminal: payload['isTerminal'] === true, leadCount: 0, funnelId: funnelId! })
+    return jsonResponse(201, { stage: stagesWithCounts(api, funnelId!).find((stage) => stage.id === id) })
   }
   if (method === 'POST' && path === '/api/v1/stages/reorder') {
     const stageIds = payload['stageIds']
+    const own = api.stages.filter((stage) => funnelOfStage(stage) === funnelId)
     // The server refuses a partial order; so does this, or the client could get
     // away with sending one.
-    if (!Array.isArray(stageIds) || stageIds.length !== api.stages.length) {
+    if (!Array.isArray(stageIds) || stageIds.length !== own.length) {
       return jsonResponse(400, { error: 'invalid_order' })
     }
     for (const [position, id] of stageIds.entries()) {
-      const stage = api.stages.find((row) => row.id === id)
+      const stage = own.find((row) => row.id === id)
       if (stage === undefined) return jsonResponse(400, { error: 'invalid_order' })
       stage.position = position
     }
-    return jsonResponse(200, { stages: stagesWithCounts(api) })
+    return jsonResponse(200, { stages: stagesWithCounts(api, funnelId!) })
   }
 
   const match = /^\/api\/v1\/stages\/(\d+)$/.exec(path)
   if (match === null) return undefined
   const stage = api.stages.find((row) => row.id === Number(match[1]))
   if (stage === undefined) return jsonResponse(404, { error: 'not_found' })
+  const own = funnelOfStage(stage)
 
   if (method === 'PATCH') {
     if (payload['name'] !== undefined) {
@@ -280,15 +334,89 @@ function handleStages(api: FakeApi, method: string, path: string, body: unknown)
       for (const lead of api.leads) if (lead.stageId === stage.id) lead.stageName = name
     }
     if (typeof payload['isTerminal'] === 'boolean') stage.isTerminal = payload['isTerminal']
-    return jsonResponse(200, { stage: stagesWithCounts(api).find((row) => row.id === stage.id) })
+    return jsonResponse(200, { stage: stagesWithCounts(api, own).find((row) => row.id === stage.id) })
   }
   if (method === 'DELETE') {
-    if (api.stages.length <= 1) return jsonResponse(409, { error: 'last_stage' })
+    if (api.stages.filter((row) => funnelOfStage(row) === own).length <= 1) {
+      return jsonResponse(409, { error: 'last_stage' })
+    }
     if (api.leads.some((lead) => lead.stageId === stage.id)) {
       return jsonResponse(409, { error: 'stage_not_empty' })
     }
     api.stages = api.stages.filter((row) => row.id !== stage.id)
-    return jsonResponse(200, { stages: stagesWithCounts(api) })
+    return jsonResponse(200, { stages: stagesWithCounts(api, own) })
+  }
+  return undefined
+}
+
+function funnelsWithCounts(api: FakeApi): FunnelRecord[] {
+  const defaultId = defaultFunnel(api)
+  return api.funnels
+    .map((funnel) => ({
+      ...funnel,
+      isDefault: funnel.id === defaultId,
+      leadCount: api.leads.filter((lead) => lead.funnelId === funnel.id).length,
+    }))
+    .toSorted((a, b) => a.id - b.id)
+}
+
+/** Funnels with the server's refusals — ADR-0009. */
+function handleFunnels(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+  const payload = (body ?? {}) as Record<string, unknown>
+  const name = typeof payload['name'] === 'string' ? payload['name'].trim() : undefined
+  if (path === '/api/v1/funnels' && method === 'GET') return jsonResponse(200, { funnels: funnelsWithCounts(api) })
+  if (path === '/api/v1/funnels' && method === 'POST') {
+    if (name === undefined || name === '') return jsonResponse(400, { error: 'invalid_name' })
+    const id = api.funnels.reduce((next, funnel) => Math.max(next, funnel.id + 1), 1)
+    const formKey = `form-${id}`
+    api.funnels.push({
+      ...structuredClone(TEST_FUNNELS[0]!),
+      id,
+      name,
+      forms: [{ id, name, formKey, intakeUrl: `http://localhost:3000/api/intake/${formKey}` }],
+    })
+    let stageId = api.stages.reduce((next, stage) => Math.max(next, stage.id + 1), 1)
+    for (const [position, stage] of TEST_STAGES.entries()) {
+      api.stages.push({ ...stage, id: stageId, position, funnelId: id })
+      stageId += 1
+    }
+    api.funnelTemplates[id] = structuredClone(TEST_EMAIL_TEMPLATES)
+    return jsonResponse(201, { funnel: funnelsWithCounts(api).find((funnel) => funnel.id === id) })
+  }
+
+  const match = /^\/api\/v1\/funnels\/(\d+)$/.exec(path)
+  if (match === null) return undefined
+  const funnel = api.funnels.find((row) => row.id === Number(match[1]))
+  if (funnel === undefined) return jsonResponse(404, { error: 'not_found' })
+
+  if (method === 'PATCH') {
+    if (payload['name'] !== undefined) {
+      if (name === undefined || name === '') return jsonResponse(400, { error: 'invalid_name' })
+      funnel.name = name
+    }
+    if (typeof payload['fromName'] === 'string') funnel.fromName = payload['fromName'].trim()
+    if (typeof payload['replyTo'] === 'string') {
+      const replyTo = payload['replyTo'].trim().toLowerCase()
+      if (replyTo !== '' && !ADDRESS.test(replyTo)) return jsonResponse(400, { error: 'invalid_reply_to' })
+      funnel.replyTo = replyTo
+    }
+    if (payload['notifyRecipients'] !== undefined) {
+      const recipients = payload['notifyRecipients']
+      if (!Array.isArray(recipients) || !recipients.every((r) => typeof r === 'string' && ADDRESS.test(r))) {
+        return jsonResponse(400, { error: 'invalid_notify_recipients' })
+      }
+      funnel.notifyRecipients = recipients.map((r: string) => r.toLowerCase())
+    }
+    return jsonResponse(200, { funnel: funnelsWithCounts(api).find((row) => row.id === funnel.id) })
+  }
+  if (method === 'DELETE') {
+    if (api.funnels.length <= 1) return jsonResponse(409, { error: 'last_funnel' })
+    if (api.leads.some((lead) => lead.funnelId === funnel.id)) {
+      return jsonResponse(409, { error: 'funnel_not_empty' })
+    }
+    api.funnels = api.funnels.filter((row) => row.id !== funnel.id)
+    api.stages = api.stages.filter((stage) => funnelOfStage(stage) !== funnel.id)
+    return jsonResponse(200, { funnels: funnelsWithCounts(api) })
   }
   return undefined
 }
@@ -366,14 +494,22 @@ function handleEmailTemplates(
   api: FakeApi,
   method: string,
   path: string,
+  query: URLSearchParams,
   body: unknown,
 ): Response | undefined {
   const base = '/api/v1/settings/email/templates'
-  if (method === 'GET' && path === base) return jsonResponse(200, { templates: api.emailTemplates })
+  if (!path.startsWith(base)) return undefined
+  const funnelId = scopedFunnel(api, query)
+  if (funnelId === undefined) return jsonResponse(404, { error: 'funnel_not_found' })
+  const templates =
+    funnelId === defaultFunnel(api)
+      ? api.emailTemplates
+      : (api.funnelTemplates[funnelId] ??= structuredClone(TEST_EMAIL_TEMPLATES))
+  if (method === 'GET' && path === base) return jsonResponse(200, { templates })
 
   const match = new RegExp(`^${base}/([a-z_]+)(/preview|/test)?$`).exec(path)
   if (match === null) return undefined
-  const template = api.emailTemplates.find((row) => row.trigger === match[1])
+  const template = templates.find((row) => row.trigger === match[1])
   if (template === undefined) return jsonResponse(404, { error: 'not_found' })
 
   const payload = (body ?? {}) as Record<string, unknown>
@@ -701,9 +837,11 @@ function handle(
   if (pushAnswer !== undefined) return pushAnswer
   const keyAnswer = handleApiKeys(api, method, path, body)
   if (keyAnswer !== undefined) return keyAnswer
-  const stageAnswer = handleStages(api, method, path, body)
+  const funnelAnswer = handleFunnels(api, method, path, body)
+  if (funnelAnswer !== undefined) return funnelAnswer
+  const stageAnswer = handleStages(api, method, path, query, body)
   if (stageAnswer !== undefined) return stageAnswer
-  const templateAnswer = handleEmailTemplates(api, method, path, body)
+  const templateAnswer = handleEmailTemplates(api, method, path, query, body)
   if (templateAnswer !== undefined) return templateAnswer
   const settingsAnswer = handleEmailSettings(api, method, path, body)
   if (settingsAnswer !== undefined) return settingsAnswer
@@ -748,6 +886,7 @@ function handle(
     })
     lead.stageId = stage.id
     lead.stageName = stage.name
+    lead.funnelId = funnelOfStage(stage)
     return jsonResponse(200, { lead })
   }
   if (method === 'POST' && action === '/not-spam') {
@@ -848,6 +987,8 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     revoked: [],
     stages: TEST_STAGES,
     leads: [],
+    funnels: TEST_FUNNELS,
+    funnelTemplates: {},
     expired: false,
     hold: undefined,
     offline: undefined,
@@ -868,6 +1009,8 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
   // Owned outright: the funnel, settings and template handlers mutate in place,
   // and each default is one object shared by every test in the run.
   api.stages = structuredClone(api.stages)
+  api.funnels = structuredClone(api.funnels)
+  api.funnelTemplates = structuredClone(api.funnelTemplates)
   api.emailSettings = structuredClone(api.emailSettings)
   api.emailTemplates = structuredClone(api.emailTemplates)
   api.apiKeys = structuredClone(api.apiKeys)
@@ -878,6 +1021,7 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     if (tokens === undefined) window.localStorage.removeItem(REFRESH_TOKEN_KEY)
     else window.localStorage.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken)
     window.sessionStorage.clear()
+    window.localStorage.removeItem('philo.funnel')
   } catch {
     // A test that made storage throw gets a browser that remembers nothing.
   }

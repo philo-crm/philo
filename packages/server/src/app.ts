@@ -7,6 +7,7 @@ import { bearerMiddleware, requireAuth, type AuthDeps, type AuthEnv } from './au
 import { createAuthGuards, createAuthRoutes, type AuthTuning } from './auth/routes.ts'
 import type { Db } from './db/index.ts'
 import type { EmailSenderFactory } from './email/transport.ts'
+import { createFunnelRoutes } from './funnels/routes.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
 import { llmsTxt } from './llms-txt.ts'
@@ -144,6 +145,10 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated }),
   )
   app.route(`${API_PREFIX}/stages`, createStageRoutes({ db: options.db }))
+  app.route(
+    `${API_PREFIX}/funnels`,
+    createFunnelRoutes({ db: options.db, publicBaseUrl: options.publicBaseUrl }),
+  )
   app.route(
     `${API_PREFIX}/push`,
     createPushRoutes({

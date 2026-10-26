@@ -64,6 +64,13 @@
       "when": 1792979563484,
       "tag": "0008_leads_fts_details",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792982119057,
+      "tag": "0009_multiple_funnels",
+      "breakpoints": true
     }
   ]
 }

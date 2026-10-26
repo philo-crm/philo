@@ -11,6 +11,8 @@ import {
   type EmailTemplateDraft,
   type EmailTemplatePreview,
 } from './api.ts'
+import { FunnelPicker, useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
+import { firstFailure } from './http.ts'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 /**
@@ -22,7 +24,7 @@ import { useResource, useSessionGuard } from './useResource.ts'
 const TEMPLATE_LABELS: Record<string, { title: string; when: string }> = {
   new_lead_notify: {
     title: 'New lead notification',
-    when: 'Sent to everyone who can sign in, as soon as a lead arrives.',
+    when: "Sent as soon as a lead arrives, to the funnel's notification recipients — everyone who can sign in, unless the funnel names its own.",
   },
   new_lead_ack: {
     title: 'Applicant acknowledgment',
@@ -38,6 +40,7 @@ const VARIABLES = [
   '{{lead.source}}',
   '{{lead.fields.<answer>}}',
   '{{business.name}}',
+  '{{funnel.name}}',
   '{{lead_url}}',
 ]
 
@@ -46,23 +49,30 @@ export interface EmailTemplatesProps {
 }
 
 export function EmailTemplates({ onSessionExpired }: EmailTemplatesProps) {
-  const load = useCallback((signal: AbortSignal) => fetchEmailTemplates(signal), [])
+  const funnels = useFunnels()
+  const [funnelId, selectFunnel] = useSelectedFunnel(funnels.data)
+  const load = useCallback(
+    (signal: AbortSignal) => (funnelId === undefined ? Promise.resolve(undefined) : fetchEmailTemplates(signal, funnelId)),
+    [funnelId],
+  )
   const templates = useResource(load)
-  useSessionGuard(templates.error, onSessionExpired)
+  const error = firstFailure(funnels.error, templates.error)
+  useSessionGuard(error, onSessionExpired)
 
   return (
     <section className="screen">
       {/* h2 rather than h1: this sits under the Settings screen's own heading. */}
       <header className="screen-head">
         <h2>Email templates</h2>
+        <FunnelPicker funnels={funnels.data ?? []} selected={funnelId} onChange={selectFunnel} />
       </header>
 
-      {templates.data === undefined ? (
-        templates.error === undefined ? (
+      {templates.data === undefined || templates.loading ? (
+        error === undefined ? (
           <p className="empty">Loading…</p>
         ) : (
           <p className="notice notice-error" role="alert">
-            {settingsErrorMessage(templates.error)}
+            {settingsErrorMessage(error)}
           </p>
         )
       ) : (
@@ -77,8 +87,9 @@ export function EmailTemplates({ onSessionExpired }: EmailTemplatesProps) {
             ))}
             . A variable that does not exist renders as nothing.
           </p>
+          {/* Keyed by funnel too: each editor reads its template once, at mount. */}
           {templates.data.map((template) => (
-            <TemplateEditor key={template.trigger} template={template} />
+            <TemplateEditor key={`${funnelId}:${template.trigger}`} template={template} funnelId={funnelId} />
           ))}
         </>
       )}
@@ -89,9 +100,10 @@ export function EmailTemplates({ onSessionExpired }: EmailTemplatesProps) {
 interface TemplateEditorProps {
   /** Read once, at mount. Everything after that is the editor's own state. */
   template: EmailTemplate
+  funnelId: number | undefined
 }
 
-function TemplateEditor({ template }: TemplateEditorProps) {
+function TemplateEditor({ template, funnelId }: TemplateEditorProps) {
   const [subject, setSubject] = useState(template.subject)
   const [body, setBody] = useState(template.body)
   const [enabled, setEnabled] = useState(template.enabled)
@@ -131,7 +143,7 @@ function TemplateEditor({ template }: TemplateEditorProps) {
   function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     void run(async () => {
-      const saved = await updateEmailTemplate(template.trigger, { subject, body, enabled })
+      const saved = await updateEmailTemplate(template.trigger, { subject, body, enabled }, funnelId)
       // Answered with what was stored, so the boxes show the trimmed subject the
       // server actually kept rather than what was typed at it.
       setSubject(saved.subject)
@@ -149,13 +161,13 @@ function TemplateEditor({ template }: TemplateEditorProps) {
       // Dropped before the round trip, so a refused draft leaves an error rather
       // than an error next to the output of the source it replaced.
       setPreview(undefined)
-      setPreview(await previewEmailTemplate(template.trigger, draft()))
+      setPreview(await previewEmailTemplate(template.trigger, draft(), funnelId))
       return 'Preview updated.'
     })
   }
 
   function handleTest() {
-    void run(async () => `Test email sent to ${await sendTemplateTestEmail(template.trigger, draft())}.`)
+    void run(async () => `Test email sent to ${await sendTemplateTestEmail(template.trigger, draft(), funnelId)}.`)
   }
 
   return (

@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm'
+import { eq, isNull } from 'drizzle-orm'
 import type { Db } from './index.ts'
-import { emailTemplates, pipelines, settings, stages } from './schema.ts'
+import { emailTemplates, intakeForms, pipelines, settings, stages } from './schema.ts'
 
 export const DEFAULT_PIPELINE_NAME = 'Default'
 
@@ -40,6 +40,30 @@ export const DEFAULT_EMAIL_TEMPLATES = [
   },
 ] as const
 
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
+
+/**
+ * What every funnel starts with: the default stages and the two templates.
+ * Shared by the first-boot seed and by creating a funnel later (ADR-0009), so
+ * a second funnel is born exactly as usable as the first.
+ */
+export function insertFunnelDefaults(tx: Tx, pipelineId: number): void {
+  tx.insert(stages)
+    .values(
+      DEFAULT_STAGES.map((stage, position) => ({
+        pipelineId,
+        name: stage.name,
+        position,
+        isTerminal: stage.isTerminal,
+      })),
+    )
+    .run()
+
+  tx.insert(emailTemplates)
+    .values(DEFAULT_EMAIL_TEMPLATES.map((template) => ({ ...template, pipelineId })))
+    .run()
+}
+
 /** Settings key recording that first-boot seeding has happened. */
 export const SEEDED_AT_KEY = 'seeded_at'
 
@@ -70,20 +94,9 @@ export function seed(db: Db): void {
       .all()
     if (pipeline === undefined) throw new Error('Failed to seed the default pipeline')
 
-    tx.insert(stages)
-      .values(
-        DEFAULT_STAGES.map((stage, position) => ({
-          pipelineId: pipeline.id,
-          name: stage.name,
-          position,
-          isTerminal: stage.isTerminal,
-        })),
-      )
-      .run()
-
-    tx.insert(emailTemplates)
-      .values(DEFAULT_EMAIL_TEMPLATES.map((template) => ({ ...template })))
-      .run()
+    insertFunnelDefaults(tx, pipeline.id)
+    // Migration 0002 inserted the form before there was a funnel to put it in.
+    tx.update(intakeForms).set({ pipelineId: pipeline.id }).where(isNull(intakeForms.pipelineId)).run()
 
     tx.insert(settings).values({ key: SEEDED_AT_KEY, value: new Date().toISOString() }).run()
   })

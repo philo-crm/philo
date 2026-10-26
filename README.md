@@ -55,8 +55,9 @@ submission. A hidden honeypot field and a per-caller rate limit handle bots —
 and a bot's submission is quarantined rather than dropped, so nothing vanishes
 silently.
 
-**A funnel you define.** Rename, reorder, add and remove stages to match how you
-actually work. Every lead carries an append-only timeline: created, moved,
+**Funnels you define.** Rename, reorder, add and remove stages to match how you
+actually work — and run a separate funnel per intake flow, each with its own
+stages, intake form, email templates and notification recipients. Every lead carries an append-only timeline: created, moved,
 noted, emailed.
 
 **Details and files that grow with the lead.** What the form submitted stays as

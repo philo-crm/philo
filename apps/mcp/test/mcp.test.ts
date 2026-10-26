@@ -47,17 +47,20 @@ function createTestApp(options: Parameters<typeof createServerTestApp>[0] = {}):
   return { ...server, app: app as unknown as TestApp['app'] }
 }
 
-/** Every tool DESIGN.md (MCP surface) names for the MVP. */
+/** Every tool DESIGN.md (MCP surface) names, with the funnel tools of ADR-0009. */
 const TOOL_NAMES = [
   'add_lead_attachment',
   'add_lead_note',
+  'create_funnel',
   'create_lead',
   'create_stage',
+  'delete_funnel',
   'delete_stage',
   'get_email_template',
   'get_lead',
   'get_lead_attachment',
   'list_email_templates',
+  'list_funnels',
   'list_leads',
   'list_stages',
   'move_lead_stage',
@@ -65,6 +68,7 @@ const TOOL_NAMES = [
   'remove_lead_attachment',
   'reorder_stages',
   'update_email_template',
+  'update_funnel',
   'update_lead',
   'update_stage',
 ]
@@ -643,6 +647,45 @@ describe('mcp stage tools', () => {
   })
 })
 
+describe('mcp funnel tools', () => {
+  it('creates a funnel and works its stages, templates and leads by funnelId', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+
+    await withMcpClient(testApp, key, async (call) => {
+      const created = await call('create_funnel', { name: 'Owner-operators' })
+      expect(created.isError).toBe(false)
+      const funnel = created.data['funnel'] as { id: number; forms: { intakeUrl: string }[] }
+      expect(funnel.forms).toHaveLength(1)
+
+      const listed = (await call('list_funnels')).data['funnels'] as { id: number; isDefault: boolean }[]
+      expect(listed.map((f) => [f.id, f.isDefault])).toEqual([
+        [1, true],
+        [funnel.id, false],
+      ])
+
+      const stage = await call('create_stage', { funnelId: funnel.id, name: 'Lease review' })
+      expect(stage.isError).toBe(false)
+      const defaults = (await call('list_stages')).data['stages'] as { name: string }[]
+      expect(defaults.map((s) => s.name)).not.toContain('Lease review')
+
+      await call('update_email_template', { funnelId: funnel.id, trigger: 'new_lead_ack', subject: 'Hi from {{funnel.name}}' })
+      const preview = await call('preview_email_template', { funnelId: funnel.id, trigger: 'new_lead_ack' })
+      expect((preview.data['preview'] as { subject: string }).subject).toBe('Hi from Owner-operators')
+      expect(getEmailTemplate(testApp.db, 1, 'new_lead_ack')?.subject).toBe('Thanks for getting in touch')
+
+      const lead = await call('create_lead', { email: 'pat@example.com', funnelId: funnel.id })
+      expect((lead.data['lead'] as { funnelId: number }).funnelId).toBe(funnel.id)
+
+      const updated = await call('update_funnel', { funnelId: funnel.id, notifyRecipients: ['ops@example.com'] })
+      expect((updated.data['funnel'] as { notifyRecipients: string[] }).notifyRecipients).toEqual(['ops@example.com'])
+
+      const refused = await call('delete_funnel', { funnelId: funnel.id })
+      expect(refused.data['error']).toBe('funnel_not_empty')
+    })
+  })
+})
+
 describe('mcp email template tools', () => {
   it('edits a template and previews it without saving', async () => {
     const testApp = createTestApp()
@@ -670,14 +713,14 @@ describe('mcp email template tools', () => {
       const rendered = preview.data['preview'] as { subject: string; leadId: number | null }
       expect(rendered.subject).toBe('Hello Sample Applicant')
       expect(rendered.leadId).toBeNull()
-      expect(getEmailTemplate(testApp.db, 'new_lead_ack')?.subject).toBe('Thanks, {{lead.name}}')
+      expect(getEmailTemplate(testApp.db, 1, 'new_lead_ack')?.subject).toBe('Thanks, {{lead.name}}')
     })
   })
 
   it('refuses source that does not compile, and says what is wrong with it', async () => {
     const testApp = createTestApp()
     const { key } = agentKey(testApp)
-    const before = getEmailTemplate(testApp.db, 'new_lead_notify')?.body
+    const before = getEmailTemplate(testApp.db, 1, 'new_lead_notify')?.body
 
     await withMcpClient(testApp, key, async (call) => {
       const answer = await call('update_email_template', {
@@ -690,7 +733,7 @@ describe('mcp email template tools', () => {
       expect(typeof answer.data['detail']).toBe('string')
     })
 
-    expect(getEmailTemplate(testApp.db, 'new_lead_notify')?.body).toBe(before)
+    expect(getEmailTemplate(testApp.db, 1, 'new_lead_notify')?.body).toBe(before)
   })
 
   it('previews against a real lead when one is named', async () => {

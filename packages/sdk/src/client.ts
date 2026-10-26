@@ -8,6 +8,8 @@ import type {
   EmailTemplateDraft,
   EmailTemplatePatch,
   EmailTemplatePreview,
+  FunnelPatch,
+  FunnelRecord,
   LeadContactPatch,
   LeadDetail,
   LeadPatch,
@@ -25,6 +27,11 @@ export type PhiloClientOptions = TransportOptions
 
 const API = '/api/v1'
 
+/** `?funnel=<id>`, or nothing for the default funnel — ADR-0009. */
+function funnelParam(funnelId: number | undefined): string {
+  return funnelId === undefined ? '' : `?funnel=${funnelId}`
+}
+
 function dateParam(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : value
 }
@@ -32,6 +39,7 @@ function dateParam(value: string | Date): string {
 function leadQueryString(query: LeadQuery): string {
   const params = new URLSearchParams()
   if (query.isSpam !== undefined) params.set('spam', String(query.isSpam))
+  if (query.funnelId !== undefined) params.set('funnel', String(query.funnelId))
   if (query.stageId !== undefined) params.set('stage', String(query.stageId))
   if (query.formId !== undefined) params.set('form', String(query.formId))
   // An empty search is no search; leaving the key off says so in one place.
@@ -134,15 +142,53 @@ export class PhiloClient {
     },
   }
 
+  readonly funnels = {
+    list: async (signal?: AbortSignal): Promise<FunnelRecord[]> => {
+      const body = await this.#http.request<{ funnels: FunnelRecord[] }>('GET', `${API}/funnels`, undefined, signal)
+      return body.funnels
+    },
+
+    get: async (id: number, signal?: AbortSignal): Promise<FunnelRecord> => {
+      const body = await this.#http.request<{ funnel: FunnelRecord }>('GET', `${API}/funnels/${id}`, undefined, signal)
+      return body.funnel
+    },
+
+    /** Born with the default stages, both templates, and an intake form. */
+    create: async (name: string): Promise<FunnelRecord> => {
+      const body = await this.#http.request<{ funnel: FunnelRecord }>('POST', `${API}/funnels`, { name })
+      return body.funnel
+    },
+
+    update: async (id: number, patch: FunnelPatch): Promise<FunnelRecord> => {
+      const body = await this.#http.request<{ funnel: FunnelRecord }>('PATCH', `${API}/funnels/${id}`, patch)
+      return body.funnel
+    },
+
+    /** Only an empty funnel that is not the last one. Answers with the remaining funnels. */
+    delete: async (id: number): Promise<FunnelRecord[]> => {
+      const body = await this.#http.request<{ funnels: FunnelRecord[] }>('DELETE', `${API}/funnels/${id}`)
+      return body.funnels
+    },
+  }
+
+  /** `funnelId` left out means the default funnel, on every method that takes one. */
   readonly stages = {
-    list: async (signal?: AbortSignal): Promise<StageRecord[]> => {
-      const body = await this.#http.request<{ stages: StageRecord[] }>('GET', `${API}/stages`, undefined, signal)
+    list: async (signal?: AbortSignal, funnelId?: number): Promise<StageRecord[]> => {
+      const body = await this.#http.request<{ stages: StageRecord[] }>(
+        'GET',
+        `${API}/stages${funnelParam(funnelId)}`,
+        undefined,
+        signal,
+      )
       return body.stages
     },
 
     /** Appended to the end of the funnel — the server decides the position. */
-    create: async (name: string, isTerminal: boolean): Promise<StageRecord> => {
-      const body = await this.#http.request<{ stage: StageRecord }>('POST', `${API}/stages`, { name, isTerminal })
+    create: async (name: string, isTerminal: boolean, funnelId?: number): Promise<StageRecord> => {
+      const body = await this.#http.request<{ stage: StageRecord }>('POST', `${API}/stages${funnelParam(funnelId)}`, {
+        name,
+        isTerminal,
+      })
       return body.stage
     },
 
@@ -155,8 +201,12 @@ export class PhiloClient {
     },
 
     /** The complete funnel in its new order; the server refuses a partial one. */
-    reorder: async (stageIds: number[]): Promise<StageRecord[]> => {
-      const body = await this.#http.request<{ stages: StageRecord[] }>('POST', `${API}/stages/reorder`, { stageIds })
+    reorder: async (stageIds: number[], funnelId?: number): Promise<StageRecord[]> => {
+      const body = await this.#http.request<{ stages: StageRecord[] }>(
+        'POST',
+        `${API}/stages/reorder${funnelParam(funnelId)}`,
+        { stageIds },
+      )
       return body.stages
     },
 
@@ -189,21 +239,22 @@ export class PhiloClient {
     },
   }
 
+  /** One funnel's templates; `funnelId` left out means the default funnel. */
   readonly emailTemplates = {
-    list: async (signal?: AbortSignal): Promise<EmailTemplate[]> => {
+    list: async (signal?: AbortSignal, funnelId?: number): Promise<EmailTemplate[]> => {
       const body = await this.#http.request<{ templates: EmailTemplate[] }>(
         'GET',
-        `${API}/settings/email/templates`,
+        `${API}/settings/email/templates${funnelParam(funnelId)}`,
         undefined,
         signal,
       )
       return body.templates
     },
 
-    get: async (trigger: string, signal?: AbortSignal): Promise<EmailTemplate> => {
+    get: async (trigger: string, signal?: AbortSignal, funnelId?: number): Promise<EmailTemplate> => {
       const body = await this.#http.request<{ template: EmailTemplate }>(
         'GET',
-        `${API}/settings/email/templates/${encodeURIComponent(trigger)}`,
+        `${API}/settings/email/templates/${encodeURIComponent(trigger)}${funnelParam(funnelId)}`,
         undefined,
         signal,
       )
@@ -211,30 +262,34 @@ export class PhiloClient {
     },
 
     /** Refused outright if the source does not render, so nothing saves silently. */
-    update: async (trigger: string, patch: EmailTemplatePatch): Promise<EmailTemplate> => {
+    update: async (trigger: string, patch: EmailTemplatePatch, funnelId?: number): Promise<EmailTemplate> => {
       const body = await this.#http.request<{ template: EmailTemplate }>(
         'PATCH',
-        `${API}/settings/email/templates/${encodeURIComponent(trigger)}`,
+        `${API}/settings/email/templates/${encodeURIComponent(trigger)}${funnelParam(funnelId)}`,
         patch,
       )
       return body.template
     },
 
     /** Renders and saves nothing. */
-    preview: async (trigger: string, draft: EmailTemplateDraft = {}): Promise<EmailTemplatePreview> => {
+    preview: async (
+      trigger: string,
+      draft: EmailTemplateDraft = {},
+      funnelId?: number,
+    ): Promise<EmailTemplatePreview> => {
       const body = await this.#http.request<{ preview: EmailTemplatePreview }>(
         'POST',
-        `${API}/settings/email/templates/${encodeURIComponent(trigger)}/preview`,
+        `${API}/settings/email/templates/${encodeURIComponent(trigger)}/preview${funnelParam(funnelId)}`,
         draft,
       )
       return body.preview
     },
 
     /** Goes to the signed-in operator's own address; answers with it. */
-    sendTest: async (trigger: string, draft: EmailTemplateDraft = {}): Promise<string> => {
+    sendTest: async (trigger: string, draft: EmailTemplateDraft = {}, funnelId?: number): Promise<string> => {
       const body = await this.#http.request<{ ok: true; to: string }>(
         'POST',
-        `${API}/settings/email/templates/${encodeURIComponent(trigger)}/test`,
+        `${API}/settings/email/templates/${encodeURIComponent(trigger)}/test${funnelParam(funnelId)}`,
         draft,
       )
       return body.to

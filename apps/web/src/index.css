@@ -777,3 +777,19 @@ main {
   width: 100%;
   box-sizing: border-box;
 }
+
+/* Funnels — ADR-0009. */
+.funnel-picker {
+  min-width: 12rem;
+}
+
+/* Beside the count on the right, rather than floating between it and the title. */
+.screen-head .funnel-picker {
+  margin-left: auto;
+}
+
+.intake-url {
+  display: block;
+  overflow-wrap: anywhere;
+  user-select: all;
+}

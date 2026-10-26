@@ -27,6 +27,7 @@ import {
   leadTitle,
 } from './format.ts'
 import { Link } from './router.tsx'
+import { useFunnels } from './FunnelPicker.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface LeadDetailProps {
@@ -44,12 +45,19 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
   const loadLead = useCallback((signal: AbortSignal) => fetchLead(leadId, signal), [leadId])
   const lead = useResource(loadLead)
 
-  const loadStages = useCallback((signal: AbortSignal) => fetchStages(signal), [])
+  // The stages of the lead's own funnel — ADR-0009 — so nothing is fetched until
+  // the lead says which funnel that is.
+  const funnelId = lead.data?.funnelId
+  const loadStages = useCallback(
+    (signal: AbortSignal) => (funnelId === undefined ? Promise.resolve(undefined) : fetchStages(signal, funnelId)),
+    [funnelId],
+  )
   const stages = useResource(loadStages)
+  const funnels = useFunnels()
 
   // A 401 anywhere wins over an earlier non-401, so a blip on the funnel
   // request cannot leave the reader stranded on an authenticated screen.
-  const error = firstFailure(lead.error, stages.error, actionError)
+  const error = firstFailure(lead.error, stages.error, funnels.error, actionError)
   useSessionGuard(error, onSessionExpired)
 
   /** Every mutation answers with the whole lead, so the screen updates from the response. */
@@ -65,6 +73,15 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
     } finally {
       setBusy(false)
     }
+  }
+
+  /** Into another funnel, at its first stage — how a lead that came in the wrong door is corrected. */
+  function handleMoveFunnel(target: number) {
+    void run(async () => {
+      const [first] = await fetchStages(undefined, target)
+      if (first === undefined) throw new Error('that funnel has no stages')
+      return moveLeadStage(leadId, first.id)
+    })
   }
 
   async function handleNote(event: FormEvent<HTMLFormElement>) {
@@ -110,6 +127,22 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
 
       <header className="screen-head">
         <h1>{leadTitle(record)}</h1>
+        {!record.isSpam && (funnels.data?.length ?? 0) > 1 && (
+          <label className="field">
+            <span className="field-label">Funnel</span>
+            <select
+              value={String(record.funnelId)}
+              disabled={busy}
+              onChange={(event) => handleMoveFunnel(Number(event.target.value))}
+            >
+              {(funnels.data ?? []).map((funnel) => (
+                <option key={funnel.id} value={String(funnel.id)}>
+                  {funnel.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {!record.isSpam && (
           <label className="field">
             <span className="field-label">Stage</span>

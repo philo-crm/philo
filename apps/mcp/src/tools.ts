@@ -8,9 +8,12 @@ import {
   MAX_CONTACT_FIELD_LENGTH,
   MAX_DETAIL_KEY_LENGTH,
   MAX_EMAIL_LENGTH,
+  MAX_FUNNEL_NAME_LENGTH,
   MAX_NOTE_LENGTH,
+  MAX_NOTIFY_RECIPIENTS,
   MAX_PAGE_SIZE,
   MAX_SEARCH_LENGTH,
+  MAX_SETTINGS_NAME_LENGTH,
   MAX_STAGE_NAME_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
   MAX_TEMPLATE_SUBJECT_LENGTH,
@@ -24,8 +27,11 @@ import { VERSION } from './version.ts'
  * What the client is told this server is for. Read once, at connect time, so it
  * carries the things every tool description would otherwise have to repeat.
  */
-const INSTRUCTIONS = `Philo is a single-tenant CRM for one business. Leads move through one funnel of
-stages; every lead carries a timeline of what happened to it.
+const INSTRUCTIONS = `Philo is a single-tenant CRM for one business. The business may run several
+funnels — one per intake flow — each with its own stages, intake forms, email
+templates and sender settings; call list_funnels first. Every lead sits in one
+funnel's stage and carries a timeline of what happened to it. Stage and template
+tools take an optional funnelId; left out, they act on the default funnel.
 
 Two things worth knowing before you write anything:
 
@@ -103,6 +109,14 @@ const STAGE_ID = z.number().int().positive().describe('The stage id.')
 
 const ATTACHMENT_ID = z.number().int().positive().describe('The attachment id, from get_lead.')
 
+const FUNNEL_ID = z
+  .number()
+  .int()
+  .positive()
+  .describe('The funnel id, from list_funnels.')
+
+const SCOPE = FUNNEL_ID.optional().describe('Which funnel, from list_funnels. Defaults to the default funnel.')
+
 const STAGE_NAME = z.string().min(1).max(MAX_STAGE_NAME_LENGTH).describe('The stage name, as the board shows it.')
 
 /**
@@ -130,6 +144,7 @@ export function createMcpServer(philo: PhiloClient): McpServer {
         'full-text search over name, email, phone and the values in `fields` and `details`; it matches ' +
         'whole words and word prefixes, and is not a query language — type the words, not operators.',
       inputSchema: {
+        funnelId: FUNNEL_ID.optional().describe('Only leads in this funnel. Defaults to every funnel.'),
         stageId: z.number().int().positive().optional().describe('Only leads in this stage.'),
         formId: z.number().int().positive().optional().describe('Only leads from this intake form.'),
         spam: z
@@ -158,6 +173,7 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       }
       return call(null, () =>
         philo.leads.list({
+          funnelId: args.funnelId,
           stageId: args.stageId,
           formId: args.formId,
           isSpam: args.spam ?? false,
@@ -208,6 +224,9 @@ export function createMcpServer(philo: PhiloClient): McpServer {
           .positive()
           .optional()
           .describe('Stage to file it under. Defaults to the first stage of the funnel.'),
+        funnelId: FUNNEL_ID.optional().describe(
+          'Funnel to file it in, at its first stage, when stageId is left out. Defaults to the default funnel.',
+        ),
         fields: z
           .record(z.string(), z.unknown())
           .optional()
@@ -355,10 +374,10 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       description:
         'The funnel in order, with how many leads sit in each stage. Stage names are the ' +
         'operator\'s and can be anything — read them rather than assuming the defaults.',
-      inputSchema: {},
+      inputSchema: { funnelId: SCOPE },
       annotations: { readOnlyHint: true },
     },
-    () => call('stages', () => philo.stages.list()),
+    (args) => call('stages', () => philo.stages.list(undefined, args.funnelId)),
   )
 
   server.registerTool(
@@ -370,12 +389,13 @@ export function createMcpServer(philo: PhiloClient): McpServer {
         'Names need not be unique. A terminal stage is one a lead finishes in, such as Hired or ' +
         'Rejected. A funnel already at the stage limit refuses with too_many_stages.',
       inputSchema: {
+        funnelId: SCOPE,
         name: STAGE_NAME,
         isTerminal: z.boolean().optional().describe('Whether leads finish here. Defaults to false.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    (args) => call('stage', () => philo.stages.create(args.name, args.isTerminal ?? false)),
+    (args) => call('stage', () => philo.stages.create(args.name, args.isTerminal ?? false, args.funnelId)),
   )
 
   server.registerTool(
@@ -405,12 +425,13 @@ export function createMcpServer(philo: PhiloClient): McpServer {
         'order. A partial list or a repeated id is refused with invalid_order and nothing moves. Call list_stages ' +
         'for the ids.',
       inputSchema: {
-        stageIds: z.array(STAGE_ID).min(1).describe('Every stage id, first stage first.'),
+        funnelId: SCOPE,
+        stageIds: z.array(STAGE_ID).min(1).describe('Every stage id of that funnel, first stage first.'),
       },
       // Replaces the previous order wholesale. Not additive.
       annotations: { readOnlyHint: false, idempotentHint: true },
     },
-    (args) => call('stages', () => philo.stages.reorder(args.stageIds)),
+    (args) => call('stages', () => philo.stages.reorder(args.stageIds, args.funnelId)),
   )
 
   server.registerTool(
@@ -434,10 +455,10 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       description:
         'Both templates with their Handlebars source. Philo sends on lead creation only: ' +
         'new_lead_notify to the business, new_lead_ack to the lead who submitted.',
-      inputSchema: {},
+      inputSchema: { funnelId: SCOPE },
       annotations: { readOnlyHint: true },
     },
-    () => call('templates', () => philo.emailTemplates.list()),
+    (args) => call('templates', () => philo.emailTemplates.list(undefined, args.funnelId)),
   )
 
   server.registerTool(
@@ -445,10 +466,10 @@ export function createMcpServer(philo: PhiloClient): McpServer {
     {
       title: 'Get an email template',
       description: 'One template, with its Handlebars source and whether it is enabled.',
-      inputSchema: { trigger: TRIGGER },
+      inputSchema: { funnelId: SCOPE, trigger: TRIGGER },
       annotations: { readOnlyHint: true },
     },
-    (args) => call('template', () => philo.emailTemplates.get(args.trigger)),
+    (args) => call('template', () => philo.emailTemplates.get(args.trigger, undefined, args.funnelId)),
   )
 
   server.registerTool(
@@ -458,10 +479,11 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       description:
         'Saves a template. A field you leave out is unchanged. Handlebars source, HTML-escaped ' +
         'by default; available variables are {{lead.name}}, {{lead.email}}, {{lead.phone}}, ' +
-        '{{lead.source}}, {{lead.fields.*}}, {{business.name}} and {{lead_url}}. Source that ' +
+        '{{lead.source}}, {{lead.fields.*}}, {{business.name}}, {{funnel.name}} and {{lead_url}}. Source that ' +
         'does not compile is refused with the message Handlebars gave, and nothing is saved. ' +
         'This changes what real leads are sent from the next one onwards — preview first.',
       inputSchema: {
+        funnelId: SCOPE,
         trigger: TRIGGER,
         subject: z.string().min(1).max(MAX_TEMPLATE_SUBJECT_LENGTH).optional(),
         body: z.string().min(1).max(MAX_TEMPLATE_BODY_LENGTH).optional().describe('HTML body.'),
@@ -472,7 +494,8 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       // one. Not additive, so not `destructiveHint: false`.
       annotations: { readOnlyHint: false, idempotentHint: true },
     },
-    ({ trigger, ...patch }) => call('template', () => philo.emailTemplates.update(trigger, patch)),
+    ({ trigger, funnelId, ...patch }) =>
+      call('template', () => philo.emailTemplates.update(trigger, patch, funnelId)),
   )
 
   server.registerTool(
@@ -485,6 +508,7 @@ export function createMcpServer(philo: PhiloClient): McpServer {
         'Without leadId it renders against a built-in sample lead, so it works on an instance ' +
         'that has no leads yet.',
       inputSchema: {
+        funnelId: SCOPE,
         trigger: TRIGGER,
         subject: z.string().min(1).max(MAX_TEMPLATE_SUBJECT_LENGTH).optional(),
         body: z.string().min(1).max(MAX_TEMPLATE_BODY_LENGTH).optional(),
@@ -492,8 +516,89 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       },
       annotations: { readOnlyHint: true },
     },
-    ({ trigger, ...input }) => call('preview', () => philo.emailTemplates.preview(trigger, input)),
+    ({ trigger, funnelId, ...input }) =>
+      call('preview', () => philo.emailTemplates.preview(trigger, input, funnelId)),
   )
 
+  registerFunnelTools(server, philo)
+
   return server
+}
+
+const FUNNEL_SETTINGS = {
+  fromName: z
+    .string()
+    .max(MAX_SETTINGS_NAME_LENGTH)
+    .optional()
+    .describe("Sender display name for this funnel's email. Empty inherits the instance's."),
+  replyTo: z
+    .string()
+    .max(MAX_EMAIL_LENGTH)
+    .optional()
+    .describe("Where replies to this funnel's acknowledgment go. Empty inherits the instance's."),
+  notifyRecipients: z
+    .array(z.string().max(MAX_EMAIL_LENGTH))
+    .max(MAX_NOTIFY_RECIPIENTS)
+    .optional()
+    .describe('Who gets the new-lead notification. Empty: everyone who can sign in.'),
+}
+
+/** Funnels — ADR-0009: each intake flow with its own stages, forms, templates and senders. */
+function registerFunnelTools(server: McpServer, philo: PhiloClient): void {
+  server.registerTool(
+    'list_funnels',
+    {
+      title: 'List funnels',
+      description:
+        "Every funnel: its name, whether it is the default, its sender settings, how many leads it " +
+        "holds, and its intake forms with the URL a website posts to. The mail server, From address " +
+        'and business name are instance-wide; a funnel overrides only what it names.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    () => call('funnels', () => philo.funnels.list()),
+  )
+
+  server.registerTool(
+    'create_funnel',
+    {
+      title: 'Create a funnel',
+      description:
+        'A new intake flow, born with the default stages, both email templates and one intake ' +
+        'form. Rename its stages and edit its templates afterwards.',
+      inputSchema: { name: z.string().min(1).max(MAX_FUNNEL_NAME_LENGTH) },
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    (args) => call('funnel', () => philo.funnels.create(args.name)),
+  )
+
+  server.registerTool(
+    'update_funnel',
+    {
+      title: 'Update a funnel',
+      description:
+        'Renames a funnel or changes its sender settings. A field you leave out is unchanged; an ' +
+        'empty value clears the override so the instance setting applies again.',
+      inputSchema: {
+        funnelId: FUNNEL_ID,
+        name: z.string().min(1).max(MAX_FUNNEL_NAME_LENGTH).optional(),
+        ...FUNNEL_SETTINGS,
+      },
+      annotations: { readOnlyHint: false, idempotentHint: true },
+    },
+    ({ funnelId, ...patch }) => call('funnel', () => philo.funnels.update(funnelId, patch)),
+  )
+
+  server.registerTool(
+    'delete_funnel',
+    {
+      title: 'Delete a funnel',
+      description:
+        'Deletes an empty funnel with its stages, templates and intake forms — its form URLs stop ' +
+        'working. A funnel holding leads is refused with funnel_not_empty; the last funnel with last_funnel.',
+      inputSchema: { funnelId: FUNNEL_ID },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    (args) => call('funnels', () => philo.funnels.delete(args.funnelId)),
+  )
 }
