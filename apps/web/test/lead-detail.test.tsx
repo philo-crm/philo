@@ -206,7 +206,10 @@ describe('LeadDetail', () => {
     await waitFor(() => expect(click).toHaveBeenCalled())
     const anchor = click.mock.contexts[0] as HTMLAnchorElement
     expect(anchor.download).toBe('notes.txt')
-    await expect(createObjectURL.mock.calls[0]![0].text()).resolves.toBe('hello')
+    const saved = createObjectURL.mock.calls[0]![0]
+    await expect(saved.text()).resolves.toBe('hello')
+    // Never the stored type: an object URL carries none of the server's sandboxing.
+    expect(saved.type).toBe('application/octet-stream')
     expect(api.calls.at(-1)?.authorization).toMatch(/^Bearer /)
   })
 

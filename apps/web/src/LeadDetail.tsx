@@ -249,9 +249,16 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
   )
 }
 
-/** Hands a fetched file to the browser as a download, under its stored name. */
+/**
+ * Hands a fetched file to the browser as a download, under its stored name.
+ *
+ * Retyped as octet-stream first: an object URL lives in this app's origin
+ * without the server's sandboxing headers, so an uploaded HTML or SVG file kept
+ * at its own type would run as the app in any browser that navigates to the
+ * link instead of honouring `download`.
+ */
 function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
+  const url = URL.createObjectURL(new Blob([blob], { type: 'application/octet-stream' }))
   const link = document.createElement('a')
   link.href = url
   link.download = filename

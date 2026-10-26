@@ -241,8 +241,8 @@ export function createMcpServer(philo: PhiloClient): McpServer {
           .describe('Keys to set (any JSON value) or remove (null), e.g. {"start_date": "2026-11-02"}.'),
       },
       // Destructive by the spec's meaning, which is "not additive": the old
-      // name, email and phone are overwritten in place and no timeline event
-      // records what they were. A client deciding what to auto-approve is
+      // name, email, phone and detail values are overwritten in place and no
+      // timeline event records what they were. A client deciding what to auto-approve is
       // reading this, so it has to say so. Same at update_email_template.
       annotations: { readOnlyHint: false, idempotentHint: true },
     },
