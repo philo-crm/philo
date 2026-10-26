@@ -134,7 +134,8 @@ architecture, [docs/adr/](docs/adr/) for the contested calls.
 
 Every MVP feature shipped in `v0.1.0`: intake, leads and funnel, the PWA,
 push, email, API keys, MCP, and the OAuth server. `v0.2.0` makes the server
-headless, with `@philo/sdk` as the client the PWA and MCP use. Run the latest
+headless, with `@philo/sdk` as the client the PWA and MCP use, and `v0.3.0`
+lets MCP clients create, update, reorder and delete pipeline stages. Run the latest
 release unless you want `main`, which `:edge` tracks.
 
 ## Naming
