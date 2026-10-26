@@ -286,7 +286,7 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       description:
         'Appends a stage to the end of the funnel; call reorder_stages to place it elsewhere. ' +
         'Names need not be unique. A terminal stage is one a lead finishes in, such as Hired or ' +
-        'Rejected.',
+        'Rejected. A funnel already at the stage limit refuses with too_many_stages.',
       inputSchema: {
         name: STAGE_NAME,
         isTerminal: z.boolean().optional().describe('Whether leads finish here. Defaults to false.'),
@@ -320,7 +320,7 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       title: 'Reorder the funnel',
       description:
         'Sets the order of the whole funnel. Pass every stage id, each exactly once, in the new ' +
-        'order. A partial list is refused with invalid_order and nothing moves. Call list_stages ' +
+        'order. A partial list or a repeated id is refused with invalid_order and nothing moves. Call list_stages ' +
         'for the ids.',
       inputSchema: {
         stageIds: z.array(STAGE_ID).min(1).describe('Every stage id, first stage first.'),
