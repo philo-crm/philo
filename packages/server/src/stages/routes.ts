@@ -2,12 +2,14 @@ import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import type { AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
-import { parseFunnelParam } from '../funnels/service.ts'
+import type { ChangeFeed } from '../events/feed.ts'
+import { parseFunnelParam, resolveFunnelId } from '../funnels/service.ts'
 import { readJsonBody } from '../json-body.ts'
 import type { Result } from '../result.ts'
 import {
   createStage,
   deleteStage,
+  funnelOfStage,
   listStages,
   reorderStages,
   updateStage,
@@ -17,6 +19,8 @@ import {
 
 export interface StageRoutesDeps {
   db: Db
+  /** Told when a funnel's stages change, so an open board redraws — ADR-0010. */
+  changes: ChangeFeed
 }
 
 /**
@@ -47,23 +51,32 @@ function parseId(raw: string | undefined): number | undefined {
   return Number.isSafeInteger(id) && id > 0 ? id : undefined
 }
 
-function respondStage(c: Context, result: Result<StageRecord, StageError>) {
-  return result.ok ? c.json({ stage: result.value }) : fail(c, result.error)
-}
-
-function respondList(c: Context, result: Result<StageRecord[], StageError>) {
-  return result.ok ? c.json({ stages: result.value }) : fail(c, result.error)
-}
-
 export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
+
+  function changed(funnelId: number | undefined): void {
+    if (funnelId !== undefined) deps.changes.publish('funnel.changed', funnelId)
+  }
+
+  function respondStage(c: Context, result: Result<StageRecord, StageError>, funnelId: number | undefined) {
+    if (!result.ok) return fail(c, result.error)
+    changed(funnelId)
+    return c.json({ stage: result.value })
+  }
+
+  function respondList(c: Context, result: Result<StageRecord[], StageError>, funnelId: number | undefined) {
+    if (!result.ok) return fail(c, result.error)
+    changed(funnelId)
+    return c.json({ stages: result.value })
+  }
 
   // `?funnel=<id>` scopes the collection routes — ADR-0009. Absent means the
   // default funnel, which is every route's behavior from before funnels.
   routes.get('/', (c) => {
     const funnel = parseFunnelParam(c.req.query('funnel'))
     if (funnel === null) return c.json({ error: 'invalid_request' }, 400)
-    return respondList(c, listStages(deps.db, funnel))
+    const result = listStages(deps.db, funnel)
+    return result.ok ? c.json({ stages: result.value }) : fail(c, result.error)
   })
 
   routes.post('/', async (c) => {
@@ -72,7 +85,9 @@ export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = createStage(deps.db, body, funnel)
-    return result.ok ? c.json({ stage: result.value }, 201) : fail(c, result.error)
+    if (!result.ok) return fail(c, result.error)
+    changed(resolveFunnelId(deps.db, funnel))
+    return c.json({ stage: result.value }, 201)
   })
 
   /**
@@ -88,7 +103,7 @@ export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
     if (funnel === null) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return respondList(c, reorderStages(deps.db, body['stageIds'], funnel))
+    return respondList(c, reorderStages(deps.db, body['stageIds'], funnel), resolveFunnelId(deps.db, funnel))
   })
 
   routes.patch('/:id', async (c) => {
@@ -96,7 +111,7 @@ export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
     if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return respondStage(c, updateStage(deps.db, id, body))
+    return respondStage(c, updateStage(deps.db, id, body), funnelOfStage(deps.db, id))
   })
 
   /**
@@ -107,7 +122,9 @@ export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
   routes.delete('/:id', (c) => {
     const id = parseId(c.req.param('id'))
     if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return respondList(c, deleteStage(deps.db, id))
+    // Read first: once it is gone, nothing says which funnel it was in.
+    const funnelId = funnelOfStage(deps.db, id)
+    return respondList(c, deleteStage(deps.db, id), funnelId)
   })
 
   return routes

@@ -29,6 +29,7 @@ import {
 } from './format.ts'
 import { useFunnels } from './FunnelPicker.tsx'
 import { Link, navigate } from './router.tsx'
+import { useLiveChanges } from './live.ts'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface LeadDetailProps {
@@ -55,6 +56,19 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
   )
   const stages = useResource(loadStages)
   const funnels = useFunnels()
+  const [deletedElsewhere, setDeletedElsewhere] = useState(false)
+
+  // Somebody else — an agent, a teammate, another tab — changing this lead or
+  // its funnel while it is open.
+  useLiveChanges((events) => {
+    const touched = events.filter((event) => (event.data.lead?.id ?? event.data.leadId) === leadId)
+    if (touched.some((event) => event.type === 'lead.deleted')) setDeletedElsewhere(true)
+    else if (touched.length > 0) lead.refresh()
+    if (events.some((event) => event.type === 'funnel.changed' || event.type === 'lead.stage_changed')) {
+      stages.refresh()
+      funnels.refresh()
+    }
+  })
 
   // A 401 anywhere wins over an earlier non-401, so a blip on the funnel
   // request cannot leave the reader stranded on an authenticated screen.
@@ -112,6 +126,19 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
     return (
       <section className="screen">
         <p className="empty">Loading…</p>
+      </section>
+    )
+  }
+
+  if (deletedElsewhere) {
+    return (
+      <section className="screen">
+        <p className="notice notice-error" role="alert">
+          This lead was just deleted.
+        </p>
+        <p>
+          <Link to="/">Back to leads</Link>
+        </p>
       </section>
     )
   }

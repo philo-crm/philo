@@ -43,7 +43,7 @@ function scope(db: Db, funnelId: number | undefined): Result<number, StageError>
 }
 
 /** The funnel a stage belongs to — what an id-addressed edit is scoped by. */
-function funnelOfStage(db: Db, id: number): number | undefined {
+export function funnelOfStage(db: Db, id: number): number | undefined {
   const [stage] = db.select({ pipelineId: stages.pipelineId }).from(stages).where(eq(stages.id, id)).limit(1).all()
   return stage?.pipelineId
 }

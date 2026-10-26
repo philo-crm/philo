@@ -2,6 +2,7 @@ import { pkceChallenge } from '@philo/sdk'
 import { vi } from 'vitest'
 import type {
   ApiKeyRecord,
+  ChangeEvent,
   EmailSettings,
   EmailTemplate,
   FunnelRecord,
@@ -9,6 +10,8 @@ import type {
   LeadEventRecord,
   LiveNotification,
   StageRecord,
+  WebhookDelivery,
+  WebhookRecord,
 } from '../../src/api.ts'
 import { REFRESH_TOKEN_KEY, type User } from '../../src/auth.ts'
 import { setAccessTokenSource } from '../../src/client.ts'
@@ -73,6 +76,12 @@ export interface FakeApi {
    * until the request is aborted, as the server's does between leads.
    */
   liveNotifications: LiveNotification[]
+  /** Rows in `webhooks`, as the server lists them — no secret among them. */
+  webhooks: WebhookRecord[]
+  /** What a test delivery reports, for every webhook. */
+  webhookTestResult: WebhookDelivery
+  /** Open `GET /api/v1/events` streams, each with the funnel it asked for. */
+  changeStreams: { funnelId: number | undefined; send: (event: ChangeEvent) => void }[]
   /** Every request the app made, in order. */
   calls: {
     method: string
@@ -695,6 +704,118 @@ function liveResponse(api: FakeApi, signal: AbortSignal | undefined): Response {
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
 
+let nextWebhookId = 1
+
+function handleWebhooks(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+  if (path === '/api/v1/webhooks' && method === 'GET') return jsonResponse(200, { webhooks: api.webhooks })
+  if (path === '/api/v1/webhooks' && method === 'POST') {
+    const input = (body ?? {}) as { url?: unknown; funnelId?: number | null; events?: WebhookRecord['events'] }
+    if (typeof input.url !== 'string' || !/^https?:\/\//.test(input.url)) {
+      return jsonResponse(400, { error: 'invalid_url' })
+    }
+    nextWebhookId += 1
+    const webhook: WebhookRecord = {
+      id: nextWebhookId,
+      url: input.url,
+      funnelId: input.funnelId ?? null,
+      events: input.events ?? [],
+      actor: `user:${TEST_USER.id}`,
+      createdAt: new Date().toISOString(),
+      lastDelivery: null,
+    }
+    api.webhooks.push(webhook)
+    return jsonResponse(201, { webhook, secret: `whsec_secret-${nextWebhookId}` })
+  }
+  const match = /^\/api\/v1\/webhooks\/(\d+)(\/test)?$/.exec(path)
+  if (match === null) return undefined
+  const webhook = api.webhooks.find((row) => row.id === Number(match[1]))
+  if (webhook === undefined) return jsonResponse(404, { error: 'not_found' })
+  if (method === 'DELETE' && match[2] === undefined) {
+    api.webhooks = api.webhooks.filter((row) => row !== webhook)
+    return new Response(null, { status: 204 })
+  }
+  if (method === 'POST' && match[2] === '/test') {
+    webhook.lastDelivery = api.webhookTestResult
+    return jsonResponse(200, { delivery: api.webhookTestResult })
+  }
+  return undefined
+}
+
+let nextLeadId = 1_000
+
+/** `POST /api/v1/leads`, as the server files one: the named stage, or the funnel's first. */
+function createLead(api: FakeApi, body: unknown): Response {
+  const input = (body ?? {}) as Record<string, unknown>
+  const email = typeof input['email'] === 'string' ? input['email'].toLowerCase() : null
+  const phone = typeof input['phone'] === 'string' ? input['phone'] : null
+  if (email === null && phone === null) return jsonResponse(422, { error: 'email_or_phone_required' })
+  const funnelId = typeof input['funnelId'] === 'number' ? input['funnelId'] : 1
+  const inFunnel = api.stages.filter((stage) => funnelOfStage(stage) === funnelId).toSorted((a, b) => a.position - b.position)
+  const stage = typeof input['stageId'] === 'number' ? inFunnel.find((row) => row.id === input['stageId']) : inFunnel[0]
+  if (stage === undefined) return jsonResponse(422, { error: 'invalid_stage' })
+  nextLeadId += 1
+  const lead = makeLead({
+    id: nextLeadId,
+    name: typeof input['name'] === 'string' ? input['name'] : null,
+    email,
+    phone,
+    source: typeof input['source'] === 'string' ? input['source'] : null,
+    formId: null,
+    funnelId,
+    stageId: stage.id,
+    stageName: stage.name,
+    events: [],
+  })
+  pushEvent(lead, { type: 'created', payload: { via: 'api' }, actor: `user:${TEST_USER.id}` })
+  api.leads.push(lead)
+  return jsonResponse(201, { lead })
+}
+
+function changeResponse(api: FakeApi, query: URLSearchParams, signal: AbortSignal | undefined): Response {
+  const encoder = new TextEncoder()
+  const funnel = query.get('funnel')
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const stream = {
+        funnelId: funnel === null ? undefined : Number(funnel),
+        send: (event: ChangeEvent) =>
+          controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)),
+      }
+      api.changeStreams.push(stream)
+      signal?.addEventListener(
+        'abort',
+        () => {
+          api.changeStreams = api.changeStreams.filter((open) => open !== stream)
+          controller.error(new DOMException('Aborted', 'AbortError'))
+        },
+        { once: true },
+      )
+    },
+  })
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+
+let nextChangeId = 1
+
+/**
+ * Tells every open change stream that something happened, as the server does
+ * after a commit made by someone else — an agent, a form, another tab.
+ */
+export function emitChange(
+  api: FakeApi,
+  type: ChangeEvent['type'],
+  funnelId: number,
+  data: ChangeEvent['data'] = {},
+): void {
+  nextChangeId += 1
+  const event: ChangeEvent = { id: `change-${nextChangeId}`, type, occurredAt: new Date().toISOString(), funnelId, data }
+  for (const stream of api.changeStreams) {
+    if (stream.funnelId === undefined || stream.funnelId === funnelId || data.from?.funnelId === stream.funnelId) {
+      stream.send(event)
+    }
+  }
+}
+
 export const TEST_ISSUER = 'http://localhost:3000'
 export const TEST_CLIENT_ID = 'philo-web'
 
@@ -833,6 +954,10 @@ function handle(
   }
 
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
+  if (method === 'POST' && path === '/api/v1/leads') return createLead(api, body)
+  if (method === 'GET' && path === '/api/v1/events') return changeResponse(api, query, signal)
+  const webhookAnswer = handleWebhooks(api, method, path, body)
+  if (webhookAnswer !== undefined) return webhookAnswer
   const pushAnswer = handlePush(api, method, path, body, signal)
   if (pushAnswer !== undefined) return pushAnswer
   const keyAnswer = handleApiKeys(api, method, path, body)
@@ -1007,6 +1132,9 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     pushSubscriptions: [],
     files: new Map(),
     liveNotifications: [],
+    changeStreams: [],
+    webhooks: [],
+    webhookTestResult: { at: '2026-07-01T12:00:00.000Z', status: 200, ok: true, error: null },
     calls: [],
     ...rest,
   }

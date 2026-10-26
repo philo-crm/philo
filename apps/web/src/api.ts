@@ -9,6 +9,7 @@ import {
   MAX_TEMPLATE_BODY_LENGTH,
   MAX_TEMPLATE_SUBJECT_LENGTH,
   type ApiKeyRecord,
+  type ChangeEvent,
   type EmailSettings,
   type EmailSettingsPatch,
   type EmailTemplate,
@@ -20,12 +21,23 @@ import {
   type LeadPage,
   type LeadRecord,
   type LiveNotification,
+  type NewLead,
+  type NewWebhook,
+  type NewWebhookResult,
   type StageRecord,
+  type WebhookDelivery,
+  type WebhookRecord,
 } from '@philo/sdk'
 import { philo } from './client.ts'
 
 export type {
   ApiKeyRecord,
+  ChangeEvent,
+  ChangeType,
+  NewLead,
+  NewWebhookResult,
+  WebhookDelivery,
+  WebhookRecord,
   EmailSettings,
   EmailSettingsPatch,
   EmailTemplate,
@@ -65,8 +77,12 @@ export const PAGE_SIZE = 50
 export const BOARD_COLUMN_SIZE = 25
 
 export {
+  CHANGE_TYPES,
+  HONEYPOT_FIELD,
   MAX_API_KEY_NAME_LENGTH,
   MAX_ATTACHMENT_BYTES,
+  MAX_CONTACT_FIELD_LENGTH,
+  MAX_EMAIL_LENGTH,
   MAX_DETAIL_KEY_LENGTH,
   MAX_FUNNEL_NAME_LENGTH,
   MAX_NOTE_LENGTH,
@@ -191,6 +207,11 @@ export function fetchLeads(query: LeadQuery, signal?: AbortSignal): Promise<Lead
   return philo.leads.list(query, signal)
 }
 
+/** Entered by hand: sends no email. */
+export function createLead(lead: NewLead): Promise<LeadDetail> {
+  return philo.leads.create(lead)
+}
+
 export function fetchLead(id: number, signal?: AbortSignal): Promise<LeadDetail> {
   return philo.leads.get(id, signal)
 }
@@ -309,6 +330,15 @@ export function streamLeadNotifications(
   return philo.push.live(onNotification, signal)
 }
 
+/** Every change while open, optionally one funnel's. Settles when the server ends the stream. */
+export function streamChanges(
+  onEvent: (event: ChangeEvent) => void,
+  signal: AbortSignal,
+  funnelId?: number,
+): Promise<void> {
+  return philo.events.stream(onEvent, signal, funnelId)
+}
+
 /**
  * The same codes again, read as a key rather than a lead or a stage —
  * `not_found` here is about a key somebody else already revoked.
@@ -405,4 +435,35 @@ export function updateFunnel(id: number, patch: FunnelPatch): Promise<FunnelReco
 
 export function deleteFunnel(id: number): Promise<FunnelRecord[]> {
   return philo.funnels.delete(id)
+}
+
+const WEBHOOK_MESSAGES: Record<string, string> = {
+  invalid_url: 'That is not a web address Philo can post to. It needs to start with http:// or https://.',
+  invalid_events: 'Pick changes from the list.',
+  invalid_funnel: 'That funnel no longer exists. Reload and try again.',
+  too_many_webhooks: 'That is as many webhooks as Philo keeps. Delete one first.',
+  not_found: 'That webhook has already been deleted. Reload to see the current list.',
+  invalid_request: 'The server could not read that request.',
+}
+
+export function webhookErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) return apiErrorMessage(error)
+  return WEBHOOK_MESSAGES[error.code] ?? apiErrorMessage(error)
+}
+
+export function fetchWebhooks(signal?: AbortSignal): Promise<WebhookRecord[]> {
+  return philo.webhooks.list(signal)
+}
+
+/** The one call that ever sees the signing secret. */
+export function createWebhook(webhook: NewWebhook): Promise<NewWebhookResult> {
+  return philo.webhooks.create(webhook)
+}
+
+export function deleteWebhook(id: number): Promise<void> {
+  return philo.webhooks.delete(id)
+}
+
+export function testWebhook(id: number): Promise<WebhookDelivery> {
+  return philo.webhooks.test(id)
 }

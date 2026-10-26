@@ -2,6 +2,7 @@ import { Transport, type TransportOptions } from './http.ts'
 import type {
   ApiKeyRecord,
   AuthConfig,
+  ChangeEvent,
   EmailSettings,
   EmailSettingsPatch,
   EmailTemplate,
@@ -17,10 +18,14 @@ import type {
   LeadPage,
   LeadQuery,
   NewLead,
+  NewWebhook,
+  NewWebhookResult,
   Principal,
   StageRecord,
   User,
   VersionInfo,
+  WebhookDelivery,
+  WebhookRecord,
 } from './types.ts'
 
 export type PhiloClientOptions = TransportOptions
@@ -343,6 +348,40 @@ export class PhiloClient {
       for await (const event of serverSentEvents(body)) {
         if (event.name === 'lead') onNotification(JSON.parse(event.data) as LiveNotification)
       }
+    },
+  }
+
+  /** Outbound change notifications — ADR-0010. `funnelId` null or left out: every funnel. */
+  readonly webhooks = {
+    list: async (signal?: AbortSignal): Promise<WebhookRecord[]> => {
+      const body = await this.#http.request<{ webhooks: WebhookRecord[] }>('GET', `${API}/webhooks`, undefined, signal)
+      return body.webhooks
+    },
+
+    /** The one call that ever sees the signing secret. */
+    create: (webhook: NewWebhook): Promise<NewWebhookResult> => this.#http.request('POST', `${API}/webhooks`, webhook),
+
+    delete: async (id: number): Promise<void> => {
+      await this.#http.request('DELETE', `${API}/webhooks/${id}`)
+    },
+
+    /** Sends a `ping` now; a receiver that refused it is a result, not an error. */
+    test: async (id: number): Promise<WebhookDelivery> => {
+      const body = await this.#http.request<{ delivery: WebhookDelivery }>('POST', `${API}/webhooks/${id}/test`)
+      return body.delivery
+    },
+  }
+
+  readonly events = {
+    /**
+     * Every change while the stream is open, optionally narrowed to one funnel.
+     * Settles when the server ends the stream — every few minutes, so the
+     * caller reconnects with a fresh token — and rejects on abort or a dropped
+     * connection.
+     */
+    stream: async (onEvent: (event: ChangeEvent) => void, signal?: AbortSignal, funnelId?: number): Promise<void> => {
+      const body = await this.#http.stream(`${API}/events${funnelParam(funnelId)}`, signal)
+      for await (const event of serverSentEvents(body)) onEvent(JSON.parse(event.data) as ChangeEvent)
     },
   }
 

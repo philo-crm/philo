@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import type { AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
+import type { ChangeFeed } from '../events/feed.ts'
 import { readJsonBody } from '../json-body.ts'
 import type { Result } from '../result.ts'
 import {
@@ -19,6 +20,8 @@ export interface FunnelRoutesDeps {
   db: Db
   /** Where intake is served, so each form can be listed with the URL a website posts to. */
   publicBaseUrl: string
+  /** Told when a funnel is renamed, created or deleted — ADR-0010. */
+  changes: ChangeFeed
 }
 
 const FUNNEL_STATUS: Record<FunnelError, ContentfulStatusCode> = {
@@ -66,7 +69,9 @@ export function createFunnelRoutes(deps: FunnelRoutesDeps): Hono<AuthEnv> {
   routes.post('/', async (c) => {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return one(c, createFunnel(deps.db, body), 201)
+    const result = createFunnel(deps.db, body)
+    if (result.ok) deps.changes.publish('funnel.changed', result.value.id)
+    return one(c, result, 201)
   })
 
   routes.get('/:id', (c) => {
@@ -82,7 +87,9 @@ export function createFunnelRoutes(deps: FunnelRoutesDeps): Hono<AuthEnv> {
     if (id === null || id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return one(c, updateFunnel(deps.db, id, body))
+    const result = updateFunnel(deps.db, id, body)
+    if (result.ok) deps.changes.publish('funnel.changed', id)
+    return one(c, result)
   })
 
   /** Answers with the remaining funnels — the default may have changed with it. */
@@ -90,6 +97,7 @@ export function createFunnelRoutes(deps: FunnelRoutesDeps): Hono<AuthEnv> {
     const id = parseFunnelParam(c.req.param('id'))
     if (id === null || id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = deleteFunnel(deps.db, id)
+    if (result.ok) deps.changes.publish('funnel.changed', id)
     return result.ok ? all(c, result.value) : fail(c, result.error)
   })
 

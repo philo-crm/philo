@@ -13,7 +13,10 @@
 import type { Db } from '../db/index.ts'
 import { getLead } from '../leads/service.ts'
 import type { LeadCreatedHook } from '../notify.ts'
+import { eventStream, type LiveTuning } from '../sse.ts'
 import { buildLeadNotification, type DeclarativeNotification } from './service.ts'
+
+export type { LiveTuning } from '../sse.ts'
 
 /** What a stream event carries: the push payload's notification, unchanged. */
 export type LiveNotification = DeclarativeNotification['notification']
@@ -64,66 +67,6 @@ export function createLiveLeadHook(deps: LiveHookDeps): LeadCreatedHook {
   }
 }
 
-export interface LiveTuning {
-  /** A comment line this often, so an idle proxy does not drop the connection. */
-  heartbeatMs?: number
-  /**
-   * The stream ends after this long and the client reconnects. The credential
-   * is checked once, at connect; this bounds how long a revoked or expired one
-   * keeps receiving — well inside the access token's own hour.
-   */
-  maxDurationMs?: number
-}
-
-const HEARTBEAT_MS = 25_000
-const MAX_DURATION_MS = 15 * 60 * 1000
-
-function noop(): void {}
-
 export function liveStream(feed: LiveFeed, tuning: LiveTuning = {}): Response {
-  const encoder = new TextEncoder()
-  let cleanup: () => void = noop
-
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const send = (text: string): void => {
-        try {
-          controller.enqueue(encoder.encode(text))
-        } catch {
-          cleanup()
-        }
-      }
-      const unlisten = feed.listen((notification) => {
-        send(`event: lead\ndata: ${JSON.stringify(notification)}\n\n`)
-      })
-      const heartbeat = setInterval(() => send(': keep-alive\n\n'), tuning.heartbeatMs ?? HEARTBEAT_MS)
-      const deadline = setTimeout(() => {
-        cleanup()
-        try {
-          controller.close()
-        } catch {
-          // Already cancelled by the client.
-        }
-      }, tuning.maxDurationMs ?? MAX_DURATION_MS)
-      cleanup = () => {
-        unlisten()
-        clearInterval(heartbeat)
-        clearTimeout(deadline)
-      }
-      // Something on the wire at once, so the headers make it through any proxy
-      // that waits for a first byte.
-      send(': connected\n\n')
-    },
-    cancel() {
-      cleanup()
-    },
-  })
-
-  return new Response(body, {
-    headers: {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      // nginx buffers proxied responses by default, which would hold every event.
-      'X-Accel-Buffering': 'no',
-    },
-  })
+  return eventStream((send) => feed.listen((notification) => send('lead', notification)), tuning)
 }

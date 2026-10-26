@@ -3,6 +3,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
+import type { ChangeFeed } from '../events/feed.ts'
 import { intakeForms, leadEvents, leads, stages } from '../db/schema.ts'
 import { defaultFunnelId } from '../funnels/service.ts'
 import { notifyLeadCreated, type CreatedLead, type LeadCreatedHook } from '../notify.ts'
@@ -48,6 +49,8 @@ export interface IntakeDeps {
    * Spam submissions are not announced.
    */
   onLeadCreated?: LeadCreatedHook | undefined
+  /** Told about each accepted non-spam lead — ADR-0010. */
+  changes: ChangeFeed
   /**
    * Reverse proxies in front of this process, from the config of the same name.
    * Without it every submission behind a proxy shares one bucket, and one
@@ -328,7 +331,10 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
     if (created === undefined) return c.json({ error: 'no_stage_configured' }, 503)
     dedupe.record(hash, created.id)
 
-    if (!created.isSpam) notifyLeadCreated(deps.onLeadCreated, created)
+    if (!created.isSpam) {
+      notifyLeadCreated(deps.onLeadCreated, created)
+      deps.changes.publishLead(deps.db, 'lead.created', created.id)
+    }
     return accepted(c)
   })
 

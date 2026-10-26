@@ -143,6 +143,10 @@ Full rationale for the generality decision:
 - **`email_templates`** — `id`, `pipeline_id`, `trigger` (`new_lead_notify` |
   `new_lead_ack`; enum grows to `stage_changed:<stage>` post-MVP),
   `subject`, `body`, `enabled`, `updated_at`. One per trigger per funnel.
+- **`webhooks`** — `id`, `url`, `pipeline_id` (null: every funnel), `events`
+  (JSON list of change types; empty: all), `secret`, `actor`, `created_at`,
+  and the last delivery's `last_attempt_at`, `last_status`, `last_error`
+  ([ADR-0010](adr/0010-change-feed-and-webhooks.md)).
 - **`push_subscriptions`**, **`users`**, **`api_keys`**, **`oauth_clients`**,
   **`authorization_codes`**, **`access_tokens`**, **`refresh_tokens`**,
   **`settings`** — supporting tables per the sections below. (`sessions` is a
@@ -201,6 +205,10 @@ DEPLOYMENT.md (Backup).
 `POST /api/intake/{form_key}` — accepts both `application/json` and
 `application/x-www-form-urlencoded` (a plain no-JS HTML form works).
 
+- **One URL per funnel.** Every funnel is born with its own intake form, so a
+  website needs only the form's URL to file into the right funnel — no funnel
+  field in the payload. The app shows each funnel's URL with a copyable sample
+  form; `GET /api/v1/funnels` lists every form's `intakeUrl`.
 - **Identification, not authentication.** The form POSTs from a visitor's
   browser, so any embedded secret is public. The unguessable `form_key`
   routes and is revocable (leak it → rotate it). Server-side proxying with a
@@ -262,6 +270,25 @@ Full rationale: [ADR-0004](adr/0004-push-best-effort-email-guaranteed.md).
   subscription never opens it.
 - **Trigger: new lead only.** No stage-transition push in MVP — the person
   moving the card is the person who'd be notified.
+
+## Changes and webhooks
+
+Full rationale: [ADR-0010](adr/0010-change-feed-and-webhooks.md).
+
+- **One in-process change feed.** Every route that commits a change publishes
+  one event after the commit: `lead.created`, `lead.updated`,
+  `lead.stage_changed` (with the stage it left), `lead.deleted` (the id
+  only — see Erasure) and `funnel.changed`. Quarantined leads publish nothing.
+- **The PWA stays current.** `GET /api/v1/events` (optional `?funnel=`) streams
+  the feed as SSE, read with `fetch` like `/push/live`. The board, the lead list
+  and an open lead refetch what an event touches.
+- **Webhooks** carry the same events to a URL, scoped to one funnel or all of
+  them and to chosen types. Each POST is signed — `X-Philo-Signature:
+  sha256=HMAC(secret, "<timestamp>.<body>")` — with a secret shown once at
+  creation. A failure is retried twice (10 s, 60 s); delivery is best-effort and
+  in memory, so a receiver that must not miss a change reconciles against the API.
+- These are an integration surface, not a third notification channel: email
+  stays the guaranteed path for a new lead (ADR-0004).
 
 ## Email
 
@@ -348,6 +375,8 @@ MVP tool set:
   attachments get add, fetch and remove tools — `get_lead` lists them (ADR-0008)
 - **Funnels:** `list_funnels`, `create_funnel`, `update_funnel` (name and
   sender overrides), `delete_funnel` (empty, non-last funnels only)
+- **Webhooks:** `list_webhooks`, `create_webhook`, `test_webhook`,
+  `delete_webhook` (ADR-0010)
 - **Stages:** `list_stages`, `create_stage`, `update_stage` (rename,
   terminal flag), `reorder_stages` (whole funnel), `delete_stage` (empty,
   non-last stages only) — scoped by an optional `funnelId`
@@ -367,7 +396,7 @@ an agent-oriented tour of every surface (a convention carried from Ollie).
 | Stage-transition emails/push | `trigger` enum is the door; fast-follow after MVP. |
 | Vector/semantic search | FTS5 suffices at MVP corpus size; sqlite-vec in the same file when a corpus worth embedding exists. |
 | Custom-field engine | JSON `fields` + form-level convention; backfill path documented in ADR-0003. |
-| ntfy / webhook third notification channel | Email is the guaranteed channel; add if push+email proves insufficient. |
+| ntfy third notification channel | Email is the guaranteed channel; add if push+email proves insufficient. Webhooks exist as an integration surface (ADR-0010), not as this. |
 | Repeat-applicant hint (email match on old lead) | Nice-to-have UI affordance, post-MVP. |
 | Passkeys / 2FA | argon2id + rate limiting + single-tenant blast radius is the MVP line. |
 | Delivery webhooks (bounce/open tracking) | Lost by choosing SMTP-generic; revisit only if deliverability becomes a real problem. |

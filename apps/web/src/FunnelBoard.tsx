@@ -1,16 +1,20 @@
-import { useCallback, useState, type FormEvent } from 'react'
+import { useCallback, useRef, useState, type FormEvent } from 'react'
 import {
   createStage,
   deleteStage,
   fetchBoard,
   moveLeadStage,
+  type BoardColumn,
   reorderStages,
   stageErrorMessage,
   updateStage,
   MAX_STAGE_NAME_LENGTH,
 } from './api.ts'
 import { FunnelPicker, useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
+import { IntakeDetails } from './IntakeDetails.tsx'
 import { firstFailure } from './http.ts'
+import { useLiveChanges } from './live.ts'
+import { Link } from './router.tsx'
 import { StageColumn } from './StageColumn.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
@@ -32,13 +36,25 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
   const [actionError, setActionError] = useState<unknown>(undefined)
   const [pending, setPending] = useState(false)
   const [draggingId, setDraggingId] = useState<number | undefined>(undefined)
+  const [touchOverId, setTouchOverId] = useState<number | undefined>(undefined)
   const [newName, setNewName] = useState('')
   const [newTerminal, setNewTerminal] = useState(false)
+
+  // Somebody else's change. Skipped while this screen's own action is in flight:
+  // that action refetches when it settles, and a refetch landing mid-move would
+  // put the card back where it was for a moment.
+  const pendingRef = useRef(false)
+  pendingRef.current = pending
+  useLiveChanges((events) => {
+    if (!pendingRef.current) board.refresh()
+    if (events.some((event) => event.type === 'funnel.changed')) funnels.refresh()
+  }, funnelId)
 
   const error = firstFailure(funnels.error, board.error, actionError)
   useSessionGuard(error, onSessionExpired)
 
   const columns = board.data ?? []
+  const intakeForms = funnels.data?.find((funnel) => funnel.id === funnelId)?.forms ?? []
   const stages = columns.map((column) => column.stage)
   // Still busy while the refetch below is in flight: re-enabling the controls
   // over stale counts invites a second edit against a funnel that just moved.
@@ -67,10 +83,16 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
 
   function handleMoveLead(leadId: number, stageId: number) {
     setDraggingId(undefined)
+    setTouchOverId(undefined)
     // The empty option of a card's "Move to…" select, chosen by a keyboard
     // walking the list. Nothing to do, and Number('') is not a stage.
     if (!Number.isSafeInteger(stageId) || stageId <= 0) return
-    void run(() => moveLeadStage(leadId, stageId))
+    // The card lands where it was dropped at once; the refetch after confirms
+    // it, and a refused move refetches too, which puts it back.
+    if (board.data !== undefined) board.set(withCardMoved(board.data, leadId, stageId))
+    void run(() => moveLeadStage(leadId, stageId)).then((moved) => {
+      if (!moved) board.reload()
+    })
   }
 
   function handleReorderStage(id: number, offset: -1 | 1) {
@@ -103,6 +125,9 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
       <header className="screen-head">
         <h1>Funnel</h1>
         <FunnelPicker funnels={funnels.data ?? []} selected={funnelId} onChange={selectFunnel} disabled={busy} />
+        <Link to="/leads/new" className="button-link">
+          New lead
+        </Link>
         <p className="count" aria-live="polite">
           {board.loading && board.data === undefined ? 'Loading…' : `${stages.length} stages`}
         </p>
@@ -112,6 +137,16 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
         <p className="notice notice-error" role="alert">
           {stageErrorMessage(error)}
         </p>
+      )}
+
+      {/* Where this funnel's leads come from, for whoever is wiring up the website. */}
+      {intakeForms.length > 0 && (
+        <details className="panel board-intake">
+          <summary>Connect a website form</summary>
+          {intakeForms.map((form) => (
+            <IntakeDetails key={form.id} form={form} />
+          ))}
+        </details>
       )}
 
       <div className="board">
@@ -124,7 +159,9 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
             columnCount={columns.length}
             busy={busy}
             draggingId={draggingId}
+            touchOverId={touchOverId}
             onDragLead={setDraggingId}
+            onTouchOver={setTouchOverId}
             onMoveLead={handleMoveLead}
             onEditStage={(id, patch) => run(() => updateStage(id, patch))}
             onReorderStage={handleReorderStage}
@@ -163,4 +200,19 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
       </div>
     </section>
   )
+}
+
+/** The board as it will be once the move lands: the card on top of its new column. */
+export function withCardMoved(columns: BoardColumn[], leadId: number, stageId: number): BoardColumn[] {
+  const lead = columns.flatMap((column) => column.leads).find((card) => card.id === leadId)
+  const target = columns.find((column) => column.stage.id === stageId)
+  if (lead === undefined || target === undefined || lead.stageId === stageId) return columns
+  const moved = { ...lead, stageId, stageName: target.stage.name }
+  return columns.map((column) => {
+    if (column.stage.id === lead.stageId) {
+      return { ...column, leads: column.leads.filter((card) => card.id !== leadId), total: column.total - 1 }
+    }
+    if (column.stage.id === stageId) return { ...column, leads: [moved, ...column.leads], total: column.total + 1 }
+    return column
+  })
 }

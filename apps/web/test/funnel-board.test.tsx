@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { FunnelBoard } from '../src/FunnelBoard.tsx'
+import { FunnelBoard, withCardMoved } from '../src/FunnelBoard.tsx'
+import { LIFT_DELAY_MS } from '../src/touchDrag.ts'
 import { installFakeApi, makeLead, type FakeApi } from './support/fake-api.ts'
 
 /** New holds two, Contacted and Closed are empty — see TEST_STAGES. */
@@ -24,6 +25,93 @@ function stageOf(api: FakeApi, id: number): string | undefined {
 function dragStart(card: HTMLElement) {
   fireEvent.dragStart(card, { dataTransfer: { setData: vi.fn(), effectAllowed: 'none' } })
 }
+
+function cardOf(name: string): HTMLElement {
+  return screen.getByText(name).closest('li')!
+}
+
+/** jsdom does no layout, so "what is under the finger" is answered by the test. */
+function fingerOver(element: Element | null) {
+  document.elementFromPoint = () => element
+  document.elementsFromPoint = () => (element === null ? [] : [element])
+}
+
+const lift = () => new Promise((resolve) => setTimeout(resolve, LIFT_DELAY_MS + 50))
+
+describe('dragging with a finger', () => {
+  it('lifts a held card and drops it on the column under the finger', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+    const dana = cardOf('Dana Okafor')
+
+    fireEvent.pointerDown(dana, { pointerType: 'touch', pointerId: 1, clientX: 10, clientY: 10 })
+    await lift()
+    expect(dana.classList.contains('is-lifted')).toBe(true)
+
+    fingerOver(column('Closed'))
+    fireEvent.pointerMove(dana, { pointerType: 'touch', pointerId: 1, clientX: 300, clientY: 40 })
+    await waitFor(() => expect(column('Closed').classList.contains('is-over')).toBe(true))
+    fireEvent.pointerUp(dana, { pointerType: 'touch', pointerId: 1, clientX: 300, clientY: 40 })
+
+    await waitFor(() => expect(within(column('Closed')).getByText('Dana Okafor')).toBeDefined())
+    await waitFor(() => expect(stageOf(api, 1)).toBe('Closed'))
+  })
+
+  it('treats a finger that moves before the lift as a scroll', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+    const dana = cardOf('Dana Okafor')
+
+    fireEvent.pointerDown(dana, { pointerType: 'touch', pointerId: 1, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(dana, { pointerType: 'touch', pointerId: 1, clientX: 10, clientY: 80 })
+    await lift()
+
+    expect(dana.classList.contains('is-lifted')).toBe(false)
+    fingerOver(column('Closed'))
+    fireEvent.pointerUp(dana, { pointerType: 'touch', pointerId: 1, clientX: 300, clientY: 40 })
+    expect(api.calls.some((call) => call.path === '/api/v1/leads/1/stage')).toBe(false)
+  })
+
+  it('puts the card back when it is let go over no column', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+    const dana = cardOf('Dana Okafor')
+
+    fireEvent.pointerDown(dana, { pointerType: 'touch', pointerId: 1, clientX: 10, clientY: 10 })
+    await lift()
+    fingerOver(document.body)
+    fireEvent.pointerUp(dana, { pointerType: 'touch', pointerId: 1, clientX: 5, clientY: 900 })
+
+    expect(dana.classList.contains('is-lifted')).toBe(false)
+    expect(dana.style.transform).toBe('')
+    expect(api.calls.some((call) => call.path === '/api/v1/leads/1/stage')).toBe(false)
+  })
+})
+
+function stageRecord(id: number, name: string) {
+  return { id, name, position: id, isTerminal: false, leadCount: 0 }
+}
+
+describe('withCardMoved', () => {
+  it('moves the card to the top of its new column and fixes both counts', () => {
+    const [dana, sam] = leads()
+    const columns = [
+      { stage: stageRecord(1, 'New'), leads: [dana!, sam!], total: 2 },
+      { stage: stageRecord(2, 'Contacted'), leads: [], total: 0 },
+    ]
+
+    const moved = withCardMoved(columns, 2, 2)
+
+    expect(moved[0]!.leads.map((lead) => lead.id)).toEqual([1])
+    expect(moved[0]!.total).toBe(1)
+    expect(moved[1]!.leads.map((lead) => [lead.id, lead.stageName])).toEqual([[2, 'Contacted']])
+    expect(moved[1]!.total).toBe(1)
+    expect(withCardMoved(columns, 2, 1)).toBe(columns)
+  })
+})
 
 describe('FunnelBoard', () => {
   it('shows a column per stage with its cards and its non-spam count', async () => {

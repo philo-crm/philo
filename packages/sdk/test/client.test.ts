@@ -209,3 +209,49 @@ describe('push.live', () => {
     await expect(failure).rejects.toSatisfy(isUnauthorized)
   })
 })
+
+describe('events.stream', () => {
+  const CHANGE = { id: 'e1', type: 'lead.deleted', occurredAt: '2026-10-25T00:00:00.000Z', funnelId: 2, data: { leadId: 4 } }
+
+  it('hands over every change, scoped to a funnel when asked', async () => {
+    const event = `event: lead.deleted\ndata: ${JSON.stringify(CHANGE)}\n\n`
+    const { calls, fetch } = recorder(() => chunked([': connected\n\n', event.slice(0, 9), event.slice(9)]))
+    const received: unknown[] = []
+
+    await new PhiloClient({ fetch, accessToken: () => 'tok' }).events.stream((change) => received.push(change), undefined, 2)
+
+    expect(received).toEqual([CHANGE])
+    expect(calls[0]?.url).toBe('/api/v1/events?funnel=2')
+    expect(header(calls[0], 'authorization')).toBe('Bearer tok')
+  })
+})
+
+describe('webhooks', () => {
+  it('creates with the url, scope and types given, and answers the secret', async () => {
+    const answer = { webhook: { id: 1 }, secret: 'whsec_x' }
+    const { calls, fetch } = recorder(() => json(answer, 201))
+
+    const created = await new PhiloClient({ fetch }).webhooks.create({
+      url: 'https://hooks.example.com/',
+      funnelId: 2,
+      events: ['lead.created'],
+    })
+
+    expect(created).toEqual(answer)
+    expect(calls[0]?.url).toBe('/api/v1/webhooks')
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      url: 'https://hooks.example.com/',
+      funnelId: 2,
+      events: ['lead.created'],
+    })
+  })
+
+  it('answers the outcome of a test', async () => {
+    const delivery = { at: 'now', status: 500, ok: false, error: 'HTTP 500' }
+    const { calls, fetch } = recorder(() => json({ delivery }))
+
+    expect(await new PhiloClient({ fetch }).webhooks.test(3)).toEqual(delivery)
+    expect(calls[0]?.url).toBe('/api/v1/webhooks/3/test')
+    expect(calls[0]?.init?.method).toBe('POST')
+  })
+})

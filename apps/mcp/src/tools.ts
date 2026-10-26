@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import {
   ApiError,
+  CHANGE_TYPES,
   DEFAULT_PAGE_SIZE,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_FILENAME_LENGTH,
@@ -17,6 +18,7 @@ import {
   MAX_STAGE_NAME_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
   MAX_TEMPLATE_SUBJECT_LENGTH,
+  MAX_WEBHOOK_URL_LENGTH,
   TEMPLATE_TRIGGERS,
   type PhiloClient,
 } from '@philo/sdk'
@@ -541,6 +543,7 @@ export function createMcpServer(philo: PhiloClient): McpServer {
   )
 
   registerFunnelTools(server, philo)
+  registerWebhookTools(server, philo)
 
   return server
 }
@@ -620,5 +623,67 @@ function registerFunnelTools(server: McpServer, philo: PhiloClient): void {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },
     (args) => call('funnels', () => philo.funnels.delete(args.funnelId)),
+  )
+}
+
+/** Webhooks — ADR-0010: changes posted to a URL as they happen, signed with a secret. */
+function registerWebhookTools(server: McpServer, philo: PhiloClient): void {
+  server.registerTool(
+    'list_webhooks',
+    {
+      title: 'List webhooks',
+      description:
+        'Every registered webhook: its URL, the funnel it is scoped to (null for every funnel), the ' +
+        'event types it receives (empty for all) and how its last delivery went. Secrets are never listed.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    () => call('webhooks', () => philo.webhooks.list()),
+  )
+
+  server.registerTool(
+    'create_webhook',
+    {
+      title: 'Register a webhook',
+      description:
+        'Posts each change to `url` as JSON while Philo runs: lead.created, lead.updated, ' +
+        'lead.stage_changed, lead.deleted (id only), funnel.changed. Each POST carries ' +
+        'X-Philo-Signature: sha256=HMAC-SHA256(secret, "<X-Philo-Timestamp>.<body>"). ' +
+        'The secret is in this answer and nowhere else — hand it to the receiver now. ' +
+        'Failures are retried twice; deliveries are best-effort, so reconcile with list_leads if ' +
+        'missing one matters.',
+      inputSchema: {
+        url: z.string().min(1).max(MAX_WEBHOOK_URL_LENGTH).describe('An http or https URL.'),
+        funnelId: FUNNEL_ID.optional().describe('Only changes in this funnel. Left out: every funnel.'),
+        events: z.array(z.enum(CHANGE_TYPES)).optional().describe('Only these types. Left out: every type.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    (args) => call(null, () => philo.webhooks.create(args)),
+  )
+
+  server.registerTool(
+    'test_webhook',
+    {
+      title: 'Test a webhook',
+      description: 'Sends a signed `ping` now and answers with the HTTP status the receiver gave.',
+      inputSchema: { webhookId: z.number().int().positive().describe('The webhook id, from list_webhooks.') },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    (args) => call('delivery', () => philo.webhooks.test(args.webhookId)),
+  )
+
+  server.registerTool(
+    'delete_webhook',
+    {
+      title: 'Delete a webhook',
+      description: 'Stops deliveries to it. Register it again to resume — with a new secret.',
+      inputSchema: { webhookId: z.number().int().positive().describe('The webhook id, from list_webhooks.') },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    },
+    (args) => call('deleted', async () => {
+      await philo.webhooks.delete(args.webhookId)
+      return args.webhookId
+    }),
   )
 }
