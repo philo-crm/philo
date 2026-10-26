@@ -376,7 +376,8 @@ export function createMcpServer(philo: PhiloClient): McpServer {
       description:
         'Permanently erases a lead and everything held about it: contact, answers, details, ' +
         'timeline and files. This cannot be undone. Nothing about the lead is kept apart from its id in ' +
-        'the server log, though backups taken before now still hold it. ' +
+        'the server log, though backups taken before now still hold it, and so does any webhook ' +
+        'receiver that was sent the lead before. ' +
         'Only call it when the user has explicitly asked for this lead to be deleted. To take a ' +
         'lead out of the funnel without erasing it, move it to a terminal stage instead.',
       inputSchema: { leadId: LEAD_ID },

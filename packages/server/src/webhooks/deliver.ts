@@ -5,8 +5,9 @@ import { request as httpsRequest } from 'node:https'
 import { BlockList, isIP, type LookupFunction } from 'node:net'
 import type { Db } from '../db/index.ts'
 import type { ChangeEvent, ChangeFeed } from '../events/feed.ts'
+import { findLead } from '../leads/service.ts'
 import { VERSION } from '../version.ts'
-import { recordDelivery, webhooksFor, type WebhookDelivery, type WebhookTarget } from './service.ts'
+import { findWebhookTarget, recordDelivery, webhooksFor, type WebhookDelivery, type WebhookTarget } from './service.ts'
 
 export interface DeliveryTuning {
   timeoutMs?: number | undefined
@@ -132,13 +133,31 @@ async function attempt(db: Db, target: WebhookTarget, payload: Payload, tuning: 
   return { at: new Date().toISOString(), status, ok: error === null, error }
 }
 
-function deliver(db: Db, target: WebhookTarget, payload: Payload, tuning: DeliveryTuning, retry = 0): void {
+/**
+ * The event as a retry may still send it: only to a registration that still
+ * wants it, and with the lead as it now stands. A lead deleted or quarantined
+ * since is not sent again — its erasure must not be undone by a retry.
+ */
+function refreshed(db: Db, event: ChangeEvent, targetId: number): ChangeEvent | undefined {
+  if (!webhooksFor(db, event).some((target) => target.id === targetId)) return undefined
+  const { lead } = event.data
+  if (lead === undefined) return event
+  const current = findLead(db, lead.id)
+  if (current === undefined || current.isSpam) return undefined
+  return { ...event, data: { ...event.data, lead: current } }
+}
+
+function deliver(db: Db, target: WebhookTarget, event: ChangeEvent, tuning: DeliveryTuning, retry = 0): void {
+  const payload = { id: event.id, type: event.type, body: JSON.stringify(event) }
   void attempt(db, target, payload, tuning).then((outcome) => {
     const delays = tuning.retryDelaysMs ?? RETRY_DELAYS_MS
     const delay = delays[retry]
     if (outcome.ok || delay === undefined) return
     setTimeout(() => {
-      if (db.$client.open) deliver(db, target, payload, tuning, retry + 1)
+      if (!db.$client.open) return
+      const current = findWebhookTarget(db, target.id)
+      const again = current && refreshed(db, event, target.id)
+      if (current && again) deliver(db, current, again, tuning, retry + 1)
     }, delay).unref()
   })
 }
@@ -146,8 +165,7 @@ function deliver(db: Db, target: WebhookTarget, payload: Payload, tuning: Delive
 /** Posts each change to every registration that wants it. Returns the stop. */
 export function startWebhookDelivery(db: Db, feed: ChangeFeed, tuning: DeliveryTuning = {}): () => void {
   return feed.listen((event: ChangeEvent) => {
-    const body = JSON.stringify(event)
-    for (const target of webhooksFor(db, event)) deliver(db, target, { id: event.id, type: event.type, body }, tuning)
+    for (const target of webhooksFor(db, event)) deliver(db, target, event, tuning)
   })
 }
 

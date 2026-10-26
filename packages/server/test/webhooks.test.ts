@@ -57,10 +57,10 @@ interface Harness {
 /** Every name is the loopback receiver, so no test touches real DNS — except the one that must be refused. */
 const resolveHost = async (host: string) => (host === 'metadata.example.com' ? ['169.254.169.254'] : ['127.0.0.1'])
 
-async function harness(): Promise<Harness> {
+async function harness(retryDelaysMs: number[] = [1, 1]): Promise<Harness> {
   const feed = new ChangeFeed()
   const testApp = createTestApp({ changeFeed: feed, webhookTuning: { resolve: resolveHost } })
-  startWebhookDelivery(testApp.db, feed, { resolve: resolveHost, retryDelaysMs: [1, 1] })
+  startWebhookDelivery(testApp.db, feed, { resolve: resolveHost, retryDelaysMs })
   const authorization = await setupAdmin(testApp)
   const api = (path: string, init: RequestInit = {}) =>
     testApp.app.request(`/api/v1${path}`, {
@@ -233,6 +233,54 @@ describe('delivery', () => {
     expect(received).toHaveLength(2)
     const listed = (await (await h.api('/webhooks')).json()) as { webhooks: { lastDelivery: unknown }[] }
     expect(listed.webhooks[0]!.lastDelivery).toMatchObject({ ok: true, status: 204, error: null })
+  })
+
+  it('does not resend a lead deleted while its retry waits', async () => {
+    const { received, at } = await receiver([500, 204])
+    const h = await harness([100])
+    await register(h, { url: at(), events: ['lead.created'] })
+
+    await submit(h.testApp, 'dana@example.com')
+    await settle(() => received.length > 0)
+    const { data } = JSON.parse(received[0]!.body) as { data: { lead: { id: number } } }
+    expect((await h.api(`/leads/${data.lead.id}`, { method: 'DELETE' })).status).toBe(204)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(received).toHaveLength(1)
+  })
+
+  it('does not retry to a registration deleted in between', async () => {
+    const { received, at } = await receiver([500, 204])
+    const h = await harness([100])
+    const { body } = await register(h, { url: at(), events: ['lead.created'] })
+
+    await submit(h.testApp, 'dana@example.com')
+    await settle(() => received.length > 0)
+    expect((await h.api(`/webhooks/${body.webhook.id}`, { method: 'DELETE' })).status).toBe(204)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(received).toHaveLength(1)
+  })
+
+  it('retries with the lead as it now stands', async () => {
+    const { received, at } = await receiver([500, 204])
+    const h = await harness([100])
+    await register(h, { url: at(), events: ['lead.created'] })
+
+    await submit(h.testApp, 'dana@example.com')
+    await settle(() => received.length > 0)
+    const { data } = JSON.parse(received[0]!.body) as { data: { lead: { id: number } } }
+    const patched = await h.api(`/leads/${data.lead.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'dana@example.org' }),
+    })
+    expect(patched.status).toBe(200)
+    await settle(() => received.length >= 2)
+
+    expect(received).toHaveLength(2)
+    expect(received[1]!.headers.get('x-philo-delivery')).toBe(received[0]!.headers.get('x-philo-delivery'))
+    expect(received[1]!.body).toContain('dana@example.org')
   })
 
   it('does not follow a redirect', async () => {
