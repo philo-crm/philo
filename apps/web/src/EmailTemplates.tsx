@@ -11,8 +11,7 @@ import {
   type EmailTemplateDraft,
   type EmailTemplatePreview,
 } from './api.ts'
-import { FunnelPicker, useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
-import { firstFailure } from './http.ts'
+import { SettingsSection } from './SettingsLayout.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 /**
@@ -45,28 +44,19 @@ const VARIABLES = [
 ]
 
 export interface EmailTemplatesProps {
+  /** Whose templates. Omitted, the server answers for the default funnel. */
+  funnelId?: number
   onSessionExpired: () => void
 }
 
-export function EmailTemplates({ onSessionExpired }: EmailTemplatesProps) {
-  const funnels = useFunnels()
-  const [funnelId, selectFunnel] = useSelectedFunnel(funnels.data)
-  const load = useCallback(
-    (signal: AbortSignal) => (funnelId === undefined ? Promise.resolve(undefined) : fetchEmailTemplates(signal, funnelId)),
-    [funnelId],
-  )
+export function EmailTemplates({ funnelId, onSessionExpired }: EmailTemplatesProps) {
+  const load = useCallback((signal: AbortSignal) => fetchEmailTemplates(signal, funnelId), [funnelId])
   const templates = useResource(load)
-  const error = firstFailure(funnels.error, templates.error)
+  const error = templates.error
   useSessionGuard(error, onSessionExpired)
 
   return (
-    <section className="screen">
-      {/* h2 rather than h1: this sits under the Settings screen's own heading. */}
-      <header className="screen-head">
-        <h2>Email templates</h2>
-        <FunnelPicker funnels={funnels.data ?? []} selected={funnelId} onChange={selectFunnel} />
-      </header>
-
+    <SettingsSection title="Email templates">
       {templates.data === undefined || templates.loading ? (
         error === undefined ? (
           <p className="empty">Loading…</p>
@@ -77,7 +67,7 @@ export function EmailTemplates({ onSessionExpired }: EmailTemplatesProps) {
         )
       ) : (
         <>
-          <p className="hint">
+          <p className="hint templates-help">
             Handlebars, rendered per lead. Available variables:{' '}
             {VARIABLES.map((variable, index) => (
               <span key={variable}>
@@ -93,7 +83,7 @@ export function EmailTemplates({ onSessionExpired }: EmailTemplatesProps) {
           ))}
         </>
       )}
-    </section>
+    </SettingsSection>
   )
 }
 

@@ -8,6 +8,7 @@ import {
   type ApiKeyRecord,
 } from './api.ts'
 import { formatDateTime } from './format.ts'
+import { SettingsSection } from './SettingsLayout.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface ApiKeysProps {
@@ -83,20 +84,18 @@ export function ApiKeys({ onSessionExpired }: ApiKeysProps) {
   }
 
   return (
-    <section className="screen">
-      {/* h2 rather than h1: this sits under the Settings screen's own heading. */}
-      <header className="screen-head">
-        <h2>API keys</h2>
-      </header>
-
-      <p className="hint">
-        For scripts, cron jobs and AI agents. Send one as{' '}
-        <code>Authorization: Bearer philo_…</code>. A key acts as you, with everything you can do
-        here — leads, the funnel, email templates, mail server settings, and other keys. Its actions
-        are recorded under the key&rsquo;s name. Give one only to something you would trust with your
-        account.
-      </p>
-
+    <SettingsSection
+      title="API keys"
+      description={
+        <>
+          For scripts, cron jobs and AI agents. Send one as{' '}
+          <code>Authorization: Bearer philo_…</code>. A key acts as you, with everything you can do
+          here — leads, the funnel, email templates, mail server settings, and other keys. Its actions
+          are recorded under the key&rsquo;s name. Give one only to something you would trust with your
+          account.
+        </>
+      }
+    >
       {error !== undefined && (
         <p className="notice notice-error" role="alert">
           {apiKeyErrorMessage(error)}
@@ -173,7 +172,7 @@ export function ApiKeys({ onSessionExpired }: ApiKeysProps) {
           </table>
         </div>
       )}
-    </section>
+    </SettingsSection>
   )
 }
 

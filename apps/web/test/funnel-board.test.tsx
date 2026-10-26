@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { FunnelBoard, withCardMoved } from '../src/FunnelBoard.tsx'
+import { FunnelBoard, withCardMoved, withStagePlaced } from '../src/FunnelBoard.tsx'
 import { LIFT_DELAY_MS } from '../src/touchDrag.ts'
 import { installFakeApi, makeLead, type FakeApi } from './support/fake-api.ts'
 
@@ -21,9 +21,19 @@ function stageOf(api: FakeApi, id: number): string | undefined {
   return api.leads.find((lead) => lead.id === id)?.stageName
 }
 
+/** Opens a column's options menu, where rename, reorder and delete live. */
+function openOptions(name: string) {
+  fireEvent.click(screen.getByRole('button', { name: `${name} options` }))
+}
+
+/** A column's drag handle: decorative to a screen reader, which reorders from the menu. */
+function gripOf(name: string): HTMLElement {
+  return column(name).querySelector('.column-grip') as HTMLElement
+}
+
 /** jsdom builds no DataTransfer, and dragstart writes to one. */
 function dragStart(card: HTMLElement) {
-  fireEvent.dragStart(card, { dataTransfer: { setData: vi.fn(), effectAllowed: 'none' } })
+  fireEvent.dragStart(card, { dataTransfer: { setData: vi.fn(), setDragImage: vi.fn(), effectAllowed: 'none' } })
 }
 
 function cardOf(name: string): HTMLElement {
@@ -110,6 +120,16 @@ describe('withCardMoved', () => {
     expect(moved[1]!.leads.map((lead) => [lead.id, lead.stageName])).toEqual([[2, 'Contacted']])
     expect(moved[1]!.total).toBe(1)
     expect(withCardMoved(columns, 2, 1)).toBe(columns)
+  })
+})
+
+describe('withStagePlaced', () => {
+  it('lands after a column to the right and before one to the left', () => {
+    expect(withStagePlaced([1, 2, 3], 1, 3)).toEqual([2, 3, 1])
+    expect(withStagePlaced([1, 2, 3], 3, 1)).toEqual([3, 1, 2])
+    expect(withStagePlaced([1, 2, 3], 2, 1)).toEqual([2, 1, 3])
+    expect(withStagePlaced([1, 2, 3], 2, 2)).toBeUndefined()
+    expect(withStagePlaced([1, 2, 3], 4, 1)).toBeUndefined()
   })
 })
 
@@ -206,13 +226,78 @@ describe('FunnelBoard', () => {
     render(<FunnelBoard onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
+    fireEvent.click(screen.getByRole('button', { name: 'New stage' }))
     fireEvent.change(screen.getByPlaceholderText('Stage name'), { target: { value: 'Screening' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add stage' }))
 
     expect(await screen.findByRole('region', { name: 'Screening' })).toBeDefined()
     expect(api.stages.at(-1)?.name).toBe('Screening')
-    // Cleared on success, so the next stage does not start from the last name.
+    // Folded away on success, and the next one starts from an empty name.
+    expect(screen.queryByPlaceholderText('Stage name')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'New stage' }))
     expect((screen.getByPlaceholderText('Stage name') as HTMLInputElement).value).toBe('')
+  })
+
+  it('adds a lead straight into the column it was started from', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add a lead to Contacted' }))
+    const form = screen.getByRole('form', { name: 'New lead in Contacted' })
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'Riley Moss' } })
+    fireEvent.change(within(form).getByLabelText('Phone'), { target: { value: '555-0100' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add lead' }))
+
+    await waitFor(() => expect(within(column('Contacted')).getByText('Riley Moss')).toBeDefined())
+    const created = api.calls.find((call) => call.method === 'POST' && call.path === '/api/v1/leads')
+    expect(created?.body).toEqual({ name: 'Riley Moss', phone: '555-0100', funnelId: 1, stageId: 2 })
+    expect(screen.queryByRole('form', { name: 'New lead in Contacted' })).toBeNull()
+  })
+
+  it('asks the column form for a way to reach the lead before sending anything', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add a lead to New' }))
+    const form = screen.getByRole('form', { name: 'New lead in New' })
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'Nobody' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add lead' }))
+
+    expect((await within(form).findByRole('alert')).textContent).toContain('email or a phone number')
+    expect(api.calls.some((call) => call.method === 'POST' && call.path === '/api/v1/leads')).toBe(false)
+  })
+
+  it('reorders the board by dragging a column by its grip', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+
+    dragStart(gripOf('Closed'))
+    fireEvent.dragOver(column('New'))
+    expect(column('New').className).toContain('is-place-before')
+    fireEvent.drop(column('New'))
+
+    await waitFor(() => {
+      const labels = screen.getAllByRole('region').map((region) => region.getAttribute('aria-label'))
+      expect(labels).toEqual(['Closed', 'New', 'Contacted', 'Add a stage'])
+    })
+    const reorder = api.calls.find((call) => call.path === '/api/v1/stages/reorder')
+    expect(reorder?.body).toEqual({ stageIds: [3, 1, 2] })
+  })
+
+  it('does not treat a dragged card as a column', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+    dragStart(cardOf('Dana Okafor'))
+    fireEvent.dragOver(column('Closed'))
+    expect(column('Closed').className).not.toContain('is-place')
+    fireEvent.drop(column('Closed'))
+
+    await waitFor(() => expect(stageOf(api, 1)).toBe('Closed'))
+    expect(api.calls.some((call) => call.path === '/api/v1/stages/reorder')).toBe(false)
   })
 
   it('renames a stage, and the leads in it follow', async () => {
@@ -220,7 +305,8 @@ describe('FunnelBoard', () => {
     render(<FunnelBoard onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
-    fireEvent.click(within(column('New')).getByRole('button', { name: 'Rename' }))
+    openOptions('New')
+    fireEvent.click(screen.getByRole('button', { name: 'Rename or change type' }))
     fireEvent.change(screen.getByLabelText('Stage name'), { target: { value: 'Applied' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -235,7 +321,8 @@ describe('FunnelBoard', () => {
     await screen.findByText('Dana Okafor')
 
     const contacted = column('Contacted')
-    fireEvent.click(within(contacted).getByRole('button', { name: 'Rename' }))
+    openOptions('Contacted')
+    fireEvent.click(within(contacted).getByRole('button', { name: 'Rename or change type' }))
     // Scoped: the add-stage form carries a checkbox by the same name.
     fireEvent.click(within(contacted).getByLabelText('Terminal stage'))
     fireEvent.click(within(contacted).getByRole('button', { name: 'Save' }))
@@ -249,6 +336,7 @@ describe('FunnelBoard', () => {
     render(<FunnelBoard onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
+    openOptions('Contacted')
     fireEvent.click(screen.getByRole('button', { name: 'Move Contacted earlier' }))
 
     await waitFor(() => {
@@ -266,6 +354,8 @@ describe('FunnelBoard', () => {
     render(<FunnelBoard onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
+    openOptions('New')
+    openOptions('Closed')
     expect(screen.getByRole('button', { name: 'Move New earlier' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: 'Move Closed later' }).hasAttribute('disabled')).toBe(true)
   })
@@ -276,8 +366,11 @@ describe('FunnelBoard', () => {
     await screen.findByText('Dana Okafor')
 
     // New holds two leads, so its delete is not offered at all.
+    openOptions('New')
     expect(screen.getByRole('button', { name: 'Delete New' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText('Only an empty stage can be deleted.')).toBeDefined()
 
+    openOptions('Contacted')
     fireEvent.click(screen.getByRole('button', { name: 'Delete Contacted' }))
 
     await waitForElementToBeRemoved(() => screen.queryByRole('region', { name: 'Contacted' }))
@@ -297,6 +390,7 @@ describe('FunnelBoard', () => {
     // on the disabled button would never be shown.
     expect(within(contacted).getByText('0')).toBeDefined()
     expect(within(contacted).getByText('Holds 1 quarantined lead.')).toBeDefined()
+    openOptions('Contacted')
     expect(screen.getByRole('button', { name: 'Delete Contacted' }).hasAttribute('disabled')).toBe(true)
   })
 
@@ -309,6 +403,7 @@ describe('FunnelBoard', () => {
 
     const only = await screen.findByRole('region', { name: 'New' })
     expect(within(only).getByText('A funnel keeps its last stage.')).toBeDefined()
+    openOptions('New')
     expect(screen.getByRole('button', { name: 'Delete New' }).hasAttribute('disabled')).toBe(true)
   })
 
@@ -320,7 +415,8 @@ describe('FunnelBoard', () => {
     // The stage is gone by the time the rename lands — the message has to be
     // about a stage, not about the lead code of the same name.
     api.stages = api.stages.filter((stage) => stage.id !== 2)
-    fireEvent.click(within(column('Contacted')).getByRole('button', { name: 'Rename' }))
+    openOptions('Contacted')
+    fireEvent.click(screen.getByRole('button', { name: 'Rename or change type' }))
     fireEvent.change(screen.getByLabelText('Stage name'), { target: { value: 'Reached' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 

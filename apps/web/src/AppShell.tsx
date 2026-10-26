@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
+import { AccountMenu } from './AccountMenu.tsx'
 import type { User } from './auth.ts'
 import { FunnelBoard } from './FunnelBoard.tsx'
+import { FUNNEL_SECTIONS, FunnelSettings, type FunnelSection } from './FunnelSettings.tsx'
+import { FunnelSwitcher } from './FunnelSwitcher.tsx'
+import { PlusIcon } from './icons.tsx'
 import { dismissInstallPrompt, isInstallPromptDismissed, shouldOfferInstall } from './install.ts'
 import { InstallHelper } from './InstallHelper.tsx'
 import { LeadDetail } from './LeadDetail.tsx'
@@ -8,7 +12,7 @@ import { LeadList } from './LeadList.tsx'
 import { NewLead } from './NewLead.tsx'
 import { isInAppNotificationsOn, onInAppNotificationsChange, runInAppNotifications } from './push.ts'
 import { Link, usePath } from './router.tsx'
-import { Settings } from './Settings.tsx'
+import { SETTINGS_SECTIONS, Settings, type SettingsSection } from './Settings.tsx'
 
 export interface AppShellProps {
   user: User
@@ -18,13 +22,26 @@ export interface AppShellProps {
 }
 
 const LEAD_PATH = /^\/leads\/(\d+)$/
+const SETTINGS_PATH = /^\/settings(?:\/([\w-]+))?$/
+const FUNNEL_PATH = /^\/funnel(?:\/([\w-]+))?$/
+
+/** A path's section, or undefined for one the area does not have. */
+function sectionOf<T extends string>(match: RegExpExecArray | null, sections: Record<T, unknown>, fallback: T): T | undefined {
+  if (match === null) return undefined
+  const named = match[1] ?? fallback
+  return Object.hasOwn(sections, named) ? (named as T) : undefined
+}
 
 /**
- * Sections with a nav entry of their own. A lead has none, and is opened from
- * both the list and the board, so its detail screen keeps Leads lit either way
- * — which is what makes this the set to check rather than the path itself.
+ * Which top-bar tab a path lights. A lead has no tab of its own and is opened
+ * from both the list and the board, so its screen keeps Leads lit; the
+ * settings areas belong to the menus, not to a tab, and light none.
  */
-const SECTION_PATHS: ReadonlySet<string> = new Set(['/board', '/spam', '/settings'])
+function tabFor(path: string): string | undefined {
+  if (path === '/board' || path === '/spam') return path
+  if (path === '/' || path.startsWith('/leads')) return '/'
+  return undefined
+}
 
 function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   const { user, onSessionExpired } = props
@@ -40,8 +57,13 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   if (path === '/board') {
     return <FunnelBoard onSessionExpired={onSessionExpired} />
   }
-  if (path === '/settings') {
-    return <Settings onSessionExpired={onSessionExpired} />
+  const settingsSection = sectionOf<SettingsSection>(SETTINGS_PATH.exec(path), SETTINGS_SECTIONS, 'email')
+  if (settingsSection !== undefined) {
+    return <Settings section={settingsSection} onSessionExpired={onSessionExpired} />
+  }
+  const funnelSection = sectionOf<FunnelSection>(FUNNEL_PATH.exec(path), FUNNEL_SECTIONS, 'general')
+  if (funnelSection !== undefined) {
+    return <FunnelSettings section={funnelSection} onSessionExpired={onSessionExpired} />
   }
   if (path === '/leads/new') {
     return <NewLead onSessionExpired={onSessionExpired} />
@@ -108,31 +130,32 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
     setOfferInstall(false)
   }
 
+  const tab = tabFor(path)
+
   return (
     <div className="app">
       <header className="topbar">
         <Link to="/" className="wordmark">
           Philo
         </Link>
-        <nav aria-label="Sections">
-          <Link to="/" aria-current={SECTION_PATHS.has(path) ? undefined : 'page'}>
+        <nav className="topnav" aria-label="Sections">
+          <Link to="/" aria-current={tab === '/' ? 'page' : undefined}>
             Leads
           </Link>
-          <Link to="/board" aria-current={path === '/board' ? 'page' : undefined}>
-            Funnel
+          <Link to="/board" aria-current={tab === '/board' ? 'page' : undefined}>
+            Board
           </Link>
-          <Link to="/spam" aria-current={path === '/spam' ? 'page' : undefined}>
+          <Link to="/spam" aria-current={tab === '/spam' ? 'page' : undefined}>
             Spam
           </Link>
-          <Link to="/settings" aria-current={path === '/settings' ? 'page' : undefined}>
-            Settings
-          </Link>
         </nav>
-        <div className="session">
-          <span className="muted">{user.name ?? user.email}</span>
-          <button type="button" onClick={onSignOut}>
-            Sign out
-          </button>
+        <div className="topbar-actions">
+          <FunnelSwitcher />
+          <Link to="/leads/new" className="button-link new-lead" aria-label="New lead">
+            <PlusIcon />
+            <span className="new-lead-text">New lead</span>
+          </Link>
+          <AccountMenu user={user} onSignOut={onSignOut} />
         </div>
       </header>
       <main>

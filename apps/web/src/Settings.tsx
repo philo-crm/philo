@@ -9,8 +9,7 @@ import {
   type EmailSettingsPatch,
 } from './api.ts'
 import { ApiKeys } from './ApiKeys.tsx'
-import { EmailTemplates } from './EmailTemplates.tsx'
-import { FunnelSettings } from './FunnelSettings.tsx'
+import { FunnelList } from './FunnelSettings.tsx'
 import { isStandalone, isIosSafari } from './install.ts'
 import {
   disablePush,
@@ -19,42 +18,65 @@ import {
   syncPushSubscription,
   type PushState,
 } from './push.ts'
+import { SettingsCard, SettingsLayout, SettingsSection } from './SettingsLayout.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 import { Webhooks } from './Webhooks.tsx'
 
+/** The server's own settings, as opposed to a funnel's — each one a page of the area. */
+export const SETTINGS_SECTIONS = {
+  email: 'Email & business',
+  funnels: 'Funnels',
+  notifications: 'Notifications',
+  'api-keys': 'API keys',
+  webhooks: 'Webhooks',
+} as const
+
+export type SettingsSection = keyof typeof SETTINGS_SECTIONS
+
+const SETTINGS_NAV = Object.entries(SETTINGS_SECTIONS).map(([key, label]) => ({ to: `/settings/${key}`, label }))
+
 export interface SettingsProps {
+  section?: SettingsSection
   onSessionExpired: () => void
 }
 
-export function Settings({ onSessionExpired }: SettingsProps) {
+export function Settings({ section = 'email', onSessionExpired }: SettingsProps) {
+  return (
+    <SettingsLayout
+      title="Server settings"
+      description="Shared by every funnel and everyone who signs in."
+      nav={SETTINGS_NAV}
+      current={`/settings/${section}`}
+    >
+      {section === 'email' && <EmailSettings onSessionExpired={onSessionExpired} />}
+      {section === 'funnels' && <FunnelList onSessionExpired={onSessionExpired} />}
+      {section === 'notifications' && <PushNotifications onSessionExpired={onSessionExpired} />}
+      {section === 'api-keys' && <ApiKeys onSessionExpired={onSessionExpired} />}
+      {section === 'webhooks' && <Webhooks onSessionExpired={onSessionExpired} />}
+    </SettingsLayout>
+  )
+}
+
+interface SectionProps {
+  onSessionExpired: () => void
+}
+
+function EmailSettings({ onSessionExpired }: SectionProps) {
   const load = useCallback((signal: AbortSignal) => fetchEmailSettings(signal), [])
   const settings = useResource(load)
   useSessionGuard(settings.error, onSessionExpired)
 
+  if (settings.data !== undefined) return <EmailSettingsForm initial={settings.data} onSaved={settings.set} />
   return (
-    <>
-      {settings.data === undefined ? (
-        <section className="screen">
-          <h1>Settings</h1>
-          {settings.error === undefined ? (
-            <p className="empty">Loading…</p>
-          ) : (
-            <p className="notice notice-error" role="alert">
-              {settingsErrorMessage(settings.error)}
-            </p>
-          )}
-        </section>
+    <SettingsSection title="Email & business">
+      {settings.error === undefined ? (
+        <p className="empty">Loading…</p>
       ) : (
-        <EmailSettingsForm initial={settings.data} onSaved={settings.set} />
+        <p className="notice notice-error" role="alert">
+          {settingsErrorMessage(settings.error)}
+        </p>
       )}
-      {/* Outside the branch above: a template is editable whether or not the
-          SMTP settings loaded, and the two fail independently. */}
-      <PushNotifications onSessionExpired={onSessionExpired} />
-      <FunnelSettings onSessionExpired={onSessionExpired} />
-      <EmailTemplates onSessionExpired={onSessionExpired} />
-      <ApiKeys onSessionExpired={onSessionExpired} />
-      <Webhooks onSessionExpired={onSessionExpired} />
-    </>
+    </SettingsSection>
   )
 }
 
@@ -63,7 +85,7 @@ export function Settings({ onSessionExpired }: SettingsProps) {
  * to the browser it was made in, so this switch says something about *this*
  * phone and nothing about the instance.
  */
-function PushNotifications({ onSessionExpired }: SettingsProps) {
+function PushNotifications({ onSessionExpired }: SectionProps) {
   const [state, setState] = useState<PushState | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(undefined)
@@ -107,12 +129,10 @@ function PushNotifications({ onSessionExpired }: SettingsProps) {
   }
 
   return (
-    <section className="screen">
-      {/* h2 rather than h1: this sits under the Settings screen's own heading. */}
-      <header className="screen-head">
-        <h2>Notifications on this device</h2>
-      </header>
-
+    <SettingsSection
+      title="Notifications"
+      description="For this device only. Each phone or browser that should be told about new leads turns this on for itself."
+    >
       {error !== undefined && (
         <p className="notice notice-error" role="alert">
           {settingsErrorMessage(error)}
@@ -136,7 +156,7 @@ function PushNotifications({ onSessionExpired }: SettingsProps) {
           </div>
         </div>
       )}
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -277,11 +297,10 @@ function EmailSettingsForm({ initial, onSaved }: EmailSettingsFormProps) {
   }
 
   return (
-    <section className="screen">
-      <header className="screen-head">
-        <h1>Settings</h1>
-      </header>
-
+    <SettingsSection
+      title="Email & business"
+      description="New leads are emailed to everyone who can sign in, unless their funnel names its own recipients, and acknowledged to the applicant."
+    >
       {error !== undefined && (
         <p className="notice notice-error" role="alert">
           {settingsErrorMessage(error)}
@@ -293,151 +312,143 @@ function EmailSettingsForm({ initial, onSaved }: EmailSettingsFormProps) {
         </p>
       )}
 
-      <form className="settings-form" onSubmit={handleSave}>
-        <div className="panels">
-          <div className="panel">
-            <h2>Mail server</h2>
-            <div className="fields">
-              <label className="field">
-                <span className="field-label">SMTP host</span>
-                <input
-                  value={form.smtpHost}
-                  autoComplete="off"
-                  placeholder="smtp.example.com"
-                  onChange={(event) => set('smtpHost', event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">Port</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={65535}
-                  value={form.smtpPort}
-                  onChange={(event) => set('smtpPort', event.target.value)}
-                />
-              </label>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={form.smtpSecure}
-                  onChange={(event) => set('smtpSecure', event.target.checked)}
-                />
-                <span>TLS from the start (port 465). Leave off for STARTTLS on 587.</span>
-              </label>
-              <label className="field">
-                <span className="field-label">Username</span>
-                <input
-                  value={form.smtpUsername}
-                  autoComplete="off"
-                  onChange={(event) => set('smtpUsername', event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">Password</span>
-                <input
-                  type="password"
-                  value={password}
-                  autoComplete="new-password"
-                  placeholder={passwordSet && !passwordEdited ? 'Stored — leave blank to keep' : ''}
-                  onChange={(event) => {
-                    setPassword(event.target.value)
-                    setPasswordEdited(true)
-                  }}
-                />
-              </label>
-              {passwordSet && passwordEdited && password === '' && (
-                <p className="hint">Saving now removes the stored password.</p>
-              )}
-            </div>
-          </div>
+      <form className="panel settings-cards" aria-label="Email settings" onSubmit={handleSave}>
+        <SettingsCard
+          title="Business"
+          description={
+            <>
+              Used wherever a template writes <code>{'{{business.name}}'}</code>.
+            </>
+          }
+        >
+          <label className="field">
+            <span className="field-label">Business name</span>
+            <input
+              value={form.businessName}
+              maxLength={MAX_SETTINGS_NAME_LENGTH}
+              onChange={(event) => set('businessName', event.target.value)}
+            />
+          </label>
+        </SettingsCard>
 
-          <div className="panel">
-            <h2>Sender</h2>
-            <div className="fields">
-              <label className="field">
-                <span className="field-label">From name</span>
-                <input
-                  value={form.fromName}
-                  maxLength={MAX_SETTINGS_NAME_LENGTH}
-                  onChange={(event) => set('fromName', event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">From address</span>
-                <input
-                  type="email"
-                  value={form.fromAddress}
-                  autoComplete="off"
-                  placeholder="no-reply@example.com"
-                  onChange={(event) => set('fromAddress', event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">Reply-to</span>
-                <input
-                  type="email"
-                  value={form.replyTo}
-                  autoComplete="off"
-                  placeholder="hello@example.com"
-                  onChange={(event) => set('replyTo', event.target.value)}
-                />
-              </label>
-              <p className="hint">
-                Where a reply to the acknowledgment lands. Philo never receives email, so make this
-                a real inbox. A funnel can override the from name and reply-to below.
-              </p>
-            </div>
-          </div>
+        <SettingsCard
+          title="Sender"
+          description="Who email from Philo appears to come from. Philo never receives email, so make the reply-to a real inbox. A funnel can override the name and reply-to."
+        >
+          <label className="field">
+            <span className="field-label">From name</span>
+            <input
+              value={form.fromName}
+              maxLength={MAX_SETTINGS_NAME_LENGTH}
+              onChange={(event) => set('fromName', event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">From address</span>
+            <input
+              type="email"
+              value={form.fromAddress}
+              autoComplete="off"
+              placeholder="no-reply@example.com"
+              onChange={(event) => set('fromAddress', event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Reply-to</span>
+            <input
+              type="email"
+              value={form.replyTo}
+              autoComplete="off"
+              placeholder="hello@example.com"
+              onChange={(event) => set('replyTo', event.target.value)}
+            />
+          </label>
+        </SettingsCard>
 
-          <div className="panel">
-            <h2>Business</h2>
-            <div className="fields">
-              <label className="field">
-                <span className="field-label">Business name</span>
-                <input
-                  value={form.businessName}
-                  maxLength={MAX_SETTINGS_NAME_LENGTH}
-                  onChange={(event) => set('businessName', event.target.value)}
-                />
-              </label>
-              <p className="hint">
-                Used wherever a template writes <code>{'{{business.name}}'}</code>.
-              </p>
-            </div>
+        <SettingsCard title="Mail server" description="The SMTP server Philo sends through.">
+          <div className="field-row">
+            <label className="field field-grow">
+              <span className="field-label">SMTP host</span>
+              <input
+                value={form.smtpHost}
+                autoComplete="off"
+                placeholder="smtp.example.com"
+                onChange={(event) => set('smtpHost', event.target.value)}
+              />
+            </label>
+            <label className="field field-port">
+              <span className="field-label">Port</span>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={form.smtpPort}
+                onChange={(event) => set('smtpPort', event.target.value)}
+              />
+            </label>
           </div>
-        </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={form.smtpSecure}
+              onChange={(event) => set('smtpSecure', event.target.checked)}
+            />
+            <span>TLS from the start (port 465). Leave off for STARTTLS on 587.</span>
+          </label>
+          <div className="field-row">
+            <label className="field field-grow">
+              <span className="field-label">Username</span>
+              <input
+                value={form.smtpUsername}
+                autoComplete="off"
+                onChange={(event) => set('smtpUsername', event.target.value)}
+              />
+            </label>
+            <label className="field field-grow">
+              <span className="field-label">Password</span>
+              <input
+                type="password"
+                value={password}
+                autoComplete="new-password"
+                placeholder={passwordSet && !passwordEdited ? 'Stored — leave blank to keep' : ''}
+                onChange={(event) => {
+                  setPassword(event.target.value)
+                  setPasswordEdited(true)
+                }}
+              />
+            </label>
+          </div>
+          {passwordSet && passwordEdited && password === '' && (
+            <p className="hint">Saving now removes the stored password.</p>
+          )}
+        </SettingsCard>
 
-        <div className="settings-actions">
+        <div className="form-footer">
           <button type="submit" disabled={busy}>
             {busy ? 'Saving…' : 'Save settings'}
           </button>
-          <span className="hint">
-            New leads are emailed to everyone who can sign in, unless their funnel names its own
-            recipients, and acknowledged to the applicant.
-          </span>
         </div>
       </form>
 
-      <form className="panel test-form" onSubmit={handleTest}>
-        <h2>Test</h2>
-        <label className="field">
-          <span className="field-label">Send a test email to</span>
-          <input
-            type="email"
-            value={testTo}
-            autoComplete="off"
-            placeholder="you@example.com"
-            onChange={(event) => setTestTo(event.target.value)}
-          />
-        </label>
-        <p className="hint">Saves the settings above first, then sends with them.</p>
-        <div className="settings-actions">
-          <button type="submit" disabled={busy || testTo.trim() === ''}>
-            {busy ? 'Sending…' : 'Send test email'}
-          </button>
-        </div>
+      <form className="panel settings-cards" aria-label="Send a test email" onSubmit={handleTest}>
+        <SettingsCard title="Test" description="Saves the settings above first, then sends with them.">
+          <div className="field-row field-row-end">
+            <label className="field field-grow">
+              <span className="field-label">Send a test email to</span>
+              <input
+                type="email"
+                value={testTo}
+                autoComplete="off"
+                placeholder="you@example.com"
+                onChange={(event) => setTestTo(event.target.value)}
+              />
+            </label>
+            <button type="submit" className="secondary" disabled={busy || testTo.trim() === ''}>
+              {busy ? 'Sending…' : 'Send test email'}
+            </button>
+          </div>
+        </SettingsCard>
       </form>
-    </section>
+    </SettingsSection>
   )
 }
