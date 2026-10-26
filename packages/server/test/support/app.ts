@@ -21,6 +21,7 @@ import { FIRST_PARTY_CLIENT_ID } from '../../src/oauth/first-party.ts'
 import { loadOrCreateSigningKey, type SigningKey } from '../../src/oauth/signing-key.ts'
 import { issueTokens, MCP_SCOPE } from '../../src/oauth/tokens.ts'
 import { loadOrCreateVapidKeys } from '../../src/push/keys.ts'
+import type { LiveFeed, LiveTuning } from '../../src/push/live.ts'
 
 export interface TestApp {
   app: ReturnType<typeof createApp>
@@ -62,6 +63,8 @@ export function createTestApp(
     onLeadCreated?: ((lead: CreatedLead) => void) | undefined
     createEmailSender?: EmailSenderFactory | undefined
     trustProxy?: boolean
+    liveFeed?: LiveFeed | undefined
+    liveTuning?: LiveTuning | undefined
   } = {},
 ): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
@@ -85,6 +88,8 @@ export function createTestApp(
     intakeTuning: options.intakeTuning,
     onLeadCreated: options.onLeadCreated,
     createEmailSender: options.createEmailSender,
+    liveFeed: options.liveFeed,
+    liveTuning: options.liveTuning,
   })
   return { app, db, dataDir, vapidPublicKey, signingKey }
 }

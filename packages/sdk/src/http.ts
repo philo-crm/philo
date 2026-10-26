@@ -87,14 +87,22 @@ export class Transport {
     return (await res.json()) as T
   }
 
+  /** A GET whose body is read as it arrives rather than parsed whole. */
+  async stream(path: string, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+    const res = await this.send('GET', path, undefined, signal, 'text/event-stream')
+    if (res.body === null) throw new ApiError(res.status, '')
+    return res.body
+  }
+
   /** The response itself, for a body that is not JSON either way. Throws on a non-2xx. */
   async send(
     method: Method,
     path: string,
     body?: { data: NonNullable<RequestInit['body']>; contentType: string },
     signal?: AbortSignal,
+    accept = 'application/json',
   ): Promise<Response> {
-    const headers: Record<string, string> = { accept: 'application/json' }
+    const headers: Record<string, string> = { accept }
     const token = await this.#options.accessToken?.()
     if (token !== undefined) headers['authorization'] = `Bearer ${token}`
     const init: RequestInit = { method, headers }

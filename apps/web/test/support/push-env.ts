@@ -26,6 +26,8 @@ export interface PushEnv {
   subscribeCalls: { userVisibleOnly?: boolean; applicationServerKey?: unknown }[]
   /** Set to make `subscribe()` reject, as a browser with no push service does. */
   subscribeFailure: Error | undefined
+  /** Every notification the page asked the worker to show — the in-app path. */
+  shown: { title: string; options: NotificationOptions | undefined }[]
 }
 
 export interface FakeRegistration {
@@ -33,6 +35,7 @@ export interface FakeRegistration {
     getSubscription: () => Promise<FakeSubscription | null>
     subscribe: (options: Record<string, unknown>) => Promise<FakeSubscription>
   }
+  showNotification: (title: string, options?: NotificationOptions) => Promise<void>
 }
 
 export const TEST_ENDPOINT = 'https://push.example.com/subscription/abc123'
@@ -81,6 +84,7 @@ export function installPushEnv(
     registration: undefined,
     subscribeCalls: [],
     subscribeFailure: undefined,
+    shown: [],
   }
 
   if (!supported) {
@@ -106,6 +110,9 @@ export function installPushEnv(
         current = makeSubscription(subscribeEndpoint)
         return current
       },
+    },
+    showNotification: async (title, notificationOptions) => {
+      env.shown.push({ title, options: notificationOptions })
     },
   }
   if (hasRegistration) env.registration = registration

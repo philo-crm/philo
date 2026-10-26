@@ -90,7 +90,7 @@ function PushNotifications({ onSessionExpired }: SettingsProps) {
     if (busy || state === undefined) return
     setBusy(true)
     setError(undefined)
-    const change = state === 'on' ? disablePush() : enablePush()
+    const change = isEnabled(state) ? disablePush() : enablePush()
     void change
       .then(setState)
       .catch((caught: unknown) => {
@@ -122,7 +122,7 @@ function PushNotifications({ onSessionExpired }: SettingsProps) {
             <label className="check">
               <input
                 type="checkbox"
-                checked={state === 'on'}
+                checked={isEnabled(state)}
                 disabled={busy || state === 'unsupported' || state === 'blocked'}
                 onChange={toggle}
               />
@@ -151,7 +151,14 @@ function pushHint(state: PushState): string {
     }
     return 'This browser cannot receive push notifications. New leads are still emailed to everyone who can sign in.'
   }
+  if (state === 'in-app') {
+    return 'This browser has no push service, so Philo shows notifications only while it is open in a tab. In Brave, turn on "Use Google services for push messaging" in its privacy settings, restart it, then turn this off and on again. Email always goes out as well.'
+  }
   return 'Email always goes out as well, so a missed push never means a missed lead.'
+}
+
+function isEnabled(state: PushState): boolean {
+  return state === 'on' || state === 'in-app'
 }
 
 /** The editable copy. Strings throughout — the port is parsed on the way out. */

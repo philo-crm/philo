@@ -124,3 +124,51 @@ describe('PhiloClient', () => {
     expect(stub).toHaveBeenCalledOnce()
   })
 })
+
+/** A response whose body arrives in exactly these chunks. */
+function chunked(chunks: string[], status = 200): Response {
+  const encoder = new TextEncoder()
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk))
+      controller.close()
+    },
+  })
+  return new Response(body, { status, headers: { 'content-type': 'text/event-stream' } })
+}
+
+describe('push.live', () => {
+  const NOTIFICATION = { title: 'New lead: Dana', body: 'dana@example.com', navigate: 'https://philo.example.com/leads/4', tag: 'philo-lead-4' }
+
+  it('hands over each lead event, however the bytes are split, and skips comments', async () => {
+    const event = `event: lead\ndata: ${JSON.stringify(NOTIFICATION)}\n\n`
+    const { calls, fetch } = recorder(() =>
+      chunked([': connected\n\n', event.slice(0, 17), event.slice(17), ': keep-alive\r\n\r\n', event]),
+    )
+    const received: unknown[] = []
+
+    await new PhiloClient({ fetch, accessToken: () => 'tok' }).push.live((notification) => received.push(notification))
+
+    expect(received).toEqual([NOTIFICATION, NOTIFICATION])
+    expect(calls[0]?.url).toBe('/api/v1/push/live')
+    expect(header(calls[0], 'authorization')).toBe('Bearer tok')
+    expect(header(calls[0], 'accept')).toBe('text/event-stream')
+  })
+
+  it('ignores events it does not know', async () => {
+    const { fetch } = recorder(() => chunked(['event: something-new\ndata: {}\n\n']))
+    const received: unknown[] = []
+
+    await new PhiloClient({ fetch }).push.live((notification) => received.push(notification))
+
+    expect(received).toEqual([])
+  })
+
+  it('throws the API error for a refused stream', async () => {
+    const { fetch } = recorder(() => json({ error: 'unauthorized' }, 401))
+
+    const failure = new PhiloClient({ fetch }).push.live(() => undefined)
+
+    await expect(failure).rejects.toSatisfy(isUnauthorized)
+  })
+})

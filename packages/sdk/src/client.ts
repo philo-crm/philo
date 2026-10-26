@@ -11,6 +11,7 @@ import type {
   LeadContactPatch,
   LeadDetail,
   LeadPatch,
+  LiveNotification,
   LeadPage,
   LeadQuery,
   NewLead,
@@ -270,6 +271,19 @@ export class PhiloClient {
     unsubscribe: async (endpoint: string): Promise<void> => {
       await this.#http.request('DELETE', `${API}/push/subscriptions`, { endpoint })
     },
+
+    /**
+     * New leads while the stream is open, for a browser that cannot subscribe to
+     * push. Settles when the server ends the stream — it does, every few minutes,
+     * so the caller reconnects with a fresh token — and rejects on abort or a
+     * dropped connection.
+     */
+    live: async (onNotification: (notification: LiveNotification) => void, signal?: AbortSignal): Promise<void> => {
+      const body = await this.#http.stream(`${API}/push/live`, signal)
+      for await (const event of serverSentEvents(body)) {
+        if (event.name === 'lead') onNotification(JSON.parse(event.data) as LiveNotification)
+      }
+    },
   }
 
   /** Every lead mutation answers with the whole lead, so a caller never has to refetch. */
@@ -277,6 +291,44 @@ export class PhiloClient {
     const answer = await this.#http.request<{ lead: LeadDetail }>(method, `${API}/leads${suffix}`, body, signal)
     return answer.lead
   }
+}
+
+interface ServerSentEvent {
+  name: string
+  data: string
+}
+
+/** The subset of the SSE format the server writes: `event`, `data`, and comments. */
+async function* serverSentEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<ServerSentEvent> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) return
+      buffer = (buffer + decoder.decode(value, { stream: true })).replaceAll('\r\n', '\n')
+      let end = buffer.indexOf('\n\n')
+      while (end !== -1) {
+        const event = parseEvent(buffer.slice(0, end))
+        buffer = buffer.slice(end + 2)
+        if (event !== undefined) yield event
+        end = buffer.indexOf('\n\n')
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+function parseEvent(block: string): ServerSentEvent | undefined {
+  let name = 'message'
+  const data: string[] = []
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event:')) name = line.slice(6).trim()
+    else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''))
+  }
+  return data.length === 0 ? undefined : { name, data: data.join('\n') }
 }
 
 export function createPhiloClient(options: PhiloClientOptions = {}): PhiloClient {

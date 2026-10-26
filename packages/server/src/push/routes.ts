@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { currentUser, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { readJsonBody } from '../json-body.ts'
+import { liveStream, type LiveFeed, type LiveTuning } from './live.ts'
 import { deleteSubscription, saveSubscription, validateSubscription } from './subscriptions.ts'
 
 export interface PushRoutesDeps {
@@ -11,6 +12,8 @@ export interface PushRoutesDeps {
    * construction — it is what the push service verifies our signature against.
    */
   vapidPublicKey: string
+  liveFeed: LiveFeed
+  liveTuning?: LiveTuning | undefined
 }
 
 export function createPushRoutes(deps: PushRoutesDeps): Hono<AuthEnv> {
@@ -26,6 +29,13 @@ export function createPushRoutes(deps: PushRoutesDeps): Hono<AuthEnv> {
    * nothing on this instance is readable without signing in.
    */
   routes.get('/key', (c) => c.json({ publicKey: deps.vapidPublicKey }))
+
+  /**
+   * New leads as Server-Sent Events, for a browser that cannot subscribe to push
+   * — see live.ts. Read with `fetch` rather than `EventSource`, which cannot
+   * send the bearer token.
+   */
+  routes.get('/live', () => liveStream(deps.liveFeed, deps.liveTuning))
 
   routes.post('/subscriptions', async (c) => {
     const body = await readJsonBody(c)

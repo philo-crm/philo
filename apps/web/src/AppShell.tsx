@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { User } from './auth.ts'
 import { FunnelBoard } from './FunnelBoard.tsx'
 import { dismissInstallPrompt, isInstallPromptDismissed, shouldOfferInstall } from './install.ts'
 import { InstallHelper } from './InstallHelper.tsx'
 import { LeadDetail } from './LeadDetail.tsx'
 import { LeadList } from './LeadList.tsx'
+import { isInAppNotificationsOn, onInAppNotificationsChange, runInAppNotifications } from './push.ts'
 import { Link, usePath } from './router.tsx'
 import { Settings } from './Settings.tsx'
 
@@ -72,8 +73,26 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   )
 }
 
+/**
+ * The in-app stand-in for push (push.ts): the live stream is held for as long as
+ * the signed-in app is open, whichever screen is showing.
+ */
+function useInAppNotifications(): void {
+  const [on, setOn] = useState(isInAppNotificationsOn)
+
+  useEffect(() => onInAppNotificationsChange(() => setOn(isInAppNotificationsOn())), [])
+
+  useEffect(() => {
+    if (!on) return
+    const controller = new AbortController()
+    void runInAppNotifications(controller.signal)
+    return () => controller.abort()
+  }, [on])
+}
+
 export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
   const path = usePath()
+  useInAppNotifications()
   // Read once per mount: neither the browser nor the dismissal changes under us,
   // and re-checking on every render would re-run the user-agent sniffing.
   const [offerInstall, setOfferInstall] = useState(

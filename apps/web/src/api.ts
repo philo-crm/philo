@@ -15,10 +15,10 @@ import {
   type LeadDetail,
   type LeadPage,
   type LeadRecord,
+  type LiveNotification,
   type StageRecord,
 } from '@philo/sdk'
 import { philo } from './client.ts'
-import { PushSubscribeError } from './http.ts'
 
 export type {
   ApiKeyRecord,
@@ -32,6 +32,7 @@ export type {
   LeadEventRecord,
   LeadPage,
   LeadRecord,
+  LiveNotification,
   StageRecord,
 } from '@philo/sdk'
 
@@ -251,9 +252,6 @@ const SETTINGS_MESSAGES: Record<string, string> = {
  * in order to fix their configuration.
  */
 export function settingsErrorMessage(error: unknown): string {
-  if (error instanceof PushSubscribeError) {
-    return `This browser couldn't register for push (${error.reason}: ${error.message}).`
-  }
   if (error instanceof ApiError) {
     const message = SETTINGS_MESSAGES[error.code]
     if (message !== undefined) {
@@ -290,6 +288,14 @@ export function storePushSubscription(subscription: unknown): Promise<void> {
 
 export function forgetPushSubscription(endpoint: string): Promise<void> {
   return philo.push.unsubscribe(endpoint)
+}
+
+/** Settles when the server ends the stream; rejects on abort or a dropped connection. */
+export function streamLeadNotifications(
+  onNotification: (notification: LiveNotification) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  return philo.push.live(onNotification, signal)
 }
 
 /**

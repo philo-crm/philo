@@ -7,9 +7,20 @@
  * web app, and permission has to be asked from a tap. `enablePush` is therefore
  * written to be called straight out of a click handler, with nothing awaited
  * before `requestPermission` — Safari drops the user gesture otherwise.
+ *
+ * A browser that grants permission but has no push service to subscribe to —
+ * Brave with Google's push messaging off, a de-Googled Chromium — gets in-app
+ * notifications instead: while Philo is open, the app holds the server's live
+ * stream and shows each new lead itself.
  */
 
-import { fetchVapidPublicKey, storePushSubscription, forgetPushSubscription } from './api.ts'
+import {
+  fetchVapidPublicKey,
+  forgetPushSubscription,
+  storePushSubscription,
+  streamLeadNotifications,
+  type LiveNotification,
+} from './api.ts'
 import { isUnauthorized, PushSubscribeError } from './http.ts'
 
 export type PushState =
@@ -19,6 +30,8 @@ export type PushState =
   | 'blocked'
   | 'off'
   | 'on'
+  /** No push service, so Philo shows notifications itself while it is open. */
+  | 'in-app'
 
 export function isPushSupported(): boolean {
   return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
@@ -43,7 +56,8 @@ export async function readPushState(): Promise<PushState> {
     const registration = await activeRegistration()
     if (registration === undefined) return 'unsupported'
     const subscription = await registration.pushManager.getSubscription()
-    return subscription === null ? 'off' : 'on'
+    if (subscription !== null) return 'on'
+    return isInAppNotificationsOn() ? 'in-app' : 'off'
   } catch {
     return 'unsupported'
   }
@@ -105,8 +119,18 @@ export async function enablePush(): Promise<PushState> {
 
   // Reused when there is one: a browser hands back the same endpoint, and
   // re-subscribing over the top would only rotate keys the server already has.
-  const existing = await registration.pushManager.getSubscription()
-  const subscription = existing ?? (await subscribe(registration))
+  let subscription = await registration.pushManager.getSubscription()
+  if (subscription === null) {
+    try {
+      subscription = await subscribe(registration)
+    } catch (error) {
+      // The browser's refusal, not the server's: permission is granted, so the
+      // app can still show a notification itself while it is open.
+      if (!(error instanceof PushSubscribeError)) throw error
+      setInAppNotifications(true)
+      return 'in-app'
+    }
+  }
 
   try {
     await storePushSubscription(subscription.toJSON())
@@ -121,6 +145,8 @@ export async function enablePush(): Promise<PushState> {
     if (!isUnauthorized(error)) await subscription.unsubscribe().catch(() => undefined)
     throw error
   }
+  // Real push from here on; the stream would only notify about each lead twice.
+  setInAppNotifications(false)
   return 'on'
 }
 
@@ -158,6 +184,7 @@ export async function syncPushSubscription(): Promise<PushState> {
  */
 export async function disablePush(): Promise<PushState> {
   if (!isPushSupported()) return 'unsupported'
+  setInAppNotifications(false)
   const registration = await activeRegistration()
   if (registration === undefined) return 'unsupported'
 
@@ -167,4 +194,97 @@ export async function disablePush(): Promise<PushState> {
   await forgetPushSubscription(subscription.endpoint)
   await subscription.unsubscribe()
   return 'off'
+}
+
+const IN_APP_KEY = 'philo.in-app-notifications'
+
+/** Same-tab changes; other tabs hear about it through the `storage` event. */
+const inAppChanges = new EventTarget()
+
+/** On for this device, with the permission to show anything. Storage can throw (Safari private mode). */
+export function isInAppNotificationsOn(): boolean {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return false
+  try {
+    return window.localStorage.getItem(IN_APP_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function setInAppNotifications(on: boolean): void {
+  try {
+    if (on) window.localStorage.setItem(IN_APP_KEY, '1')
+    else window.localStorage.removeItem(IN_APP_KEY)
+  } catch {
+    // Lasts for this page load regardless: the shell is told below.
+  }
+  inAppChanges.dispatchEvent(new Event('change'))
+}
+
+/** Calls `listener` whenever in-app notifications may have been switched, in this tab or another. */
+export function onInAppNotificationsChange(listener: () => void): () => void {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === IN_APP_KEY) listener()
+  }
+  inAppChanges.addEventListener('change', listener)
+  window.addEventListener('storage', onStorage)
+  return () => {
+    inAppChanges.removeEventListener('change', listener)
+    window.removeEventListener('storage', onStorage)
+  }
+}
+
+const RECONNECT_MIN_MS = 1_000
+const RECONNECT_MAX_MS = 60_000
+
+/**
+ * Holds the live stream open until `signal` aborts, showing each new lead. The
+ * server ends the stream every few minutes so the next connect carries a fresh
+ * token; a dropped connection backs off rather than hammering a server that is
+ * down.
+ */
+export async function runInAppNotifications(signal: AbortSignal): Promise<void> {
+  let delay = RECONNECT_MIN_MS
+  while (!signal.aborted) {
+    try {
+      await streamLeadNotifications(showInAppNotification, signal)
+      delay = RECONNECT_MIN_MS
+    } catch {
+      delay = Math.min(delay * 2, RECONNECT_MAX_MS)
+    }
+    await wait(delay, signal)
+  }
+}
+
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      { once: true },
+    )
+  })
+}
+
+/**
+ * Through the service worker, as a push would be, so a tap lands the same way
+ * (sw.js `notificationclick`) — and because Android will not construct a page
+ * `Notification` at all.
+ */
+function showInAppNotification(notification: LiveNotification): void {
+  void activeRegistration()
+    .then((registration) =>
+      registration?.showNotification(notification.title, {
+        body: notification.body,
+        tag: notification.tag,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        data: { navigate: notification.navigate },
+      }),
+    )
+    .catch((error: unknown) => console.error('showNotification() failed', error))
 }
