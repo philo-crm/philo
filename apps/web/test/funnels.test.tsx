@@ -60,6 +60,21 @@ describe('the funnel switcher', () => {
     expect(screen.getByRole('link', { name: 'Add or remove funnels' }).getAttribute('href')).toBe('/settings/funnels')
   })
 
+  it('still opens, with a retry, when the funnels fail to load', async () => {
+    const api = installFakeApi()
+    api.offline = /^\/api\/v1\/funnels$/
+    render(<FunnelSwitcher />)
+
+    const trigger = await screen.findByRole('button', { name: 'Funnel' })
+    await waitFor(() => expect((trigger as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(trigger)
+    expect(screen.getByRole('link', { name: 'Funnel settings' })).toBeDefined()
+
+    api.offline = undefined
+    fireEvent.click(screen.getByRole('button', { name: /Retry/ }))
+    expect(await screen.findByRole('button', { name: /^Default/ })).toBeDefined()
+  })
+
   it('switches the board to another funnel’s stages, where stages are added', async () => {
     const api = twoFunnels()
     render(

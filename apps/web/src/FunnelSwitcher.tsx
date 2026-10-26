@@ -18,7 +18,8 @@ export function FunnelSwitcher() {
       className="funnel-switcher"
       triggerClassName="switcher-trigger"
       ariaLabel={selected === undefined ? 'Funnel' : `Funnel: ${selected.name}`}
-      disabled={funnels.data === undefined}
+      // Only while loading: after a failure the menu still leads to the settings.
+      disabled={funnels.data === undefined && funnels.error === undefined}
       align="end"
       label={
         <>
@@ -31,6 +32,12 @@ export function FunnelSwitcher() {
       {(close) => (
         <>
           <p className="menu-heading">Switch funnel</p>
+          {funnels.error !== undefined && (
+            <button type="button" className="menu-item" onClick={funnels.reload}>
+              <span className="menu-check" />
+              <span className="menu-item-text">Could not load funnels. Retry</span>
+            </button>
+          )}
           <ul className="menu-list">
             {list.map((funnel) => (
               <li key={funnel.id}>

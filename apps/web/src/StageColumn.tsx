@@ -74,6 +74,8 @@ export function StageColumn({
   const [over, setOver] = useState(false)
 
   // The whole column follows the finger, though only the grip starts the drag.
+  // Ref and pointer handlers share the <section>, as a card's share its <li>,
+  // so the pointer captured at the lift keeps reaching the handlers.
   const touch = useTouchDrag<HTMLElement>({
     disabled: busy,
     onLift: () => onDragStage(stage.id),
@@ -168,6 +170,17 @@ export function StageColumn({
         setOver(false)
       }}
       onDrop={handleDrop}
+      // On the column rather than the grip: a lifted column captures the
+      // pointer on itself, and the moves, the drop and the cancel arrive here.
+      // Only a press that starts on the grip lifts it; a card's own press
+      // bubbles through and is ignored, the hook matching on pointer id.
+      onPointerDown={(event) => {
+        if ((event.target as Element).closest('.column-grip') !== null) touch.onPointerDown(event)
+      }}
+      onPointerMove={touch.onPointerMove}
+      onPointerUp={touch.onPointerUp}
+      onPointerCancel={touch.onPointerCancel}
+      onContextMenu={touch.onContextMenu}
     >
       <header className="board-column-head">
         {editing ? (
@@ -213,11 +226,6 @@ export function StageColumn({
                 onDragStage(stage.id)
               }}
               onDragEnd={() => onDragStage(undefined)}
-              onPointerDown={touch.onPointerDown}
-              onPointerMove={touch.onPointerMove}
-              onPointerUp={touch.onPointerUp}
-              onPointerCancel={touch.onPointerCancel}
-              onContextMenu={touch.onContextMenu}
             >
               <GripIcon />
             </span>

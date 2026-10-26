@@ -287,6 +287,46 @@ describe('FunnelBoard', () => {
     expect(reorder?.body).toEqual({ stageIds: [3, 1, 2] })
   })
 
+  it('reorders the board by holding a column’s grip with a finger', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+    const closed = column('Closed')
+
+    fireEvent.pointerDown(gripOf('Closed'), { pointerType: 'touch', pointerId: 7, clientX: 600, clientY: 20 })
+    await lift()
+    expect(closed.classList.contains('is-lifted')).toBe(true)
+
+    // Captured on the column at the lift, so the moves and the drop land on it, not the grip.
+    fingerOver(column('New'))
+    fireEvent.pointerMove(closed, { pointerType: 'touch', pointerId: 7, clientX: 40, clientY: 40 })
+    await waitFor(() => expect(column('New').className).toContain('is-place-before'))
+    fireEvent.pointerUp(closed, { pointerType: 'touch', pointerId: 7, clientX: 40, clientY: 40 })
+
+    await waitFor(() => {
+      const labels = screen.getAllByRole('region').map((region) => region.getAttribute('aria-label'))
+      expect(labels).toEqual(['Closed', 'New', 'Contacted', 'Add a stage'])
+    })
+    expect(api.calls.find((call) => call.path === '/api/v1/stages/reorder')?.body).toEqual({ stageIds: [3, 1, 2] })
+    expect(column('Closed').classList.contains('is-lifted')).toBe(false)
+    expect(column('New').className).not.toContain('is-place')
+  })
+
+  it('lifts no column for a finger held on a card in it', async () => {
+    const api = installFakeApi({ leads: leads() })
+    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    await screen.findByText('Dana Okafor')
+
+    fireEvent.pointerDown(cardOf('Dana Okafor'), { pointerType: 'touch', pointerId: 8, clientX: 10, clientY: 10 })
+    await lift()
+
+    expect(column('New').classList.contains('is-lifted')).toBe(false)
+    expect(cardOf('Dana Okafor').classList.contains('is-lifted')).toBe(true)
+    fingerOver(document.body)
+    fireEvent.pointerUp(cardOf('Dana Okafor'), { pointerType: 'touch', pointerId: 8, clientX: 5, clientY: 900 })
+    expect(api.calls.some((call) => call.path === '/api/v1/stages/reorder')).toBe(false)
+  })
+
   it('does not treat a dragged card as a column', async () => {
     const api = installFakeApi({ leads: leads() })
     render(<FunnelBoard onSessionExpired={vi.fn()} />)
