@@ -103,13 +103,13 @@ function onListening(config: Config, db: Db, emailDeps: EmailDeps): void {
   if (isEmailConfigured(emailSettings)) {
     console.log(`  email:           ${emailSettings.smtpHost}:${emailSettings.smtpPort} as ${emailSettings.fromAddress}`)
   } else {
-    console.warn('  note: SMTP is not configured, so no lead notifications or acknowledgments are sent. Set it up in Settings.')
+    console.warn('  note: SMTP is not configured, so no lead notifications or acknowledgments are sent. Set it up in Server settings, from the account menu.')
   }
   // Push is best-effort by design (ADR-0004), but a browser will not subscribe
   // at all outside a secure context — so on a plain-http base URL the toggle in
   // Settings simply never works, with nothing on screen saying why.
   if (config.publicBaseUrl.startsWith('https://')) {
-    console.log('  push:            enabled (turn it on per device in Settings)')
+    console.log('  push:            enabled (turn it on per device in Server settings → Notifications)')
   } else {
     console.warn(
       '  note: browsers only allow push notifications over https, so the Settings toggle will not ' +

@@ -13,6 +13,7 @@ import {
 import { formatDateTime } from './format.ts'
 import { useFunnels } from './FunnelPicker.tsx'
 import { CopyButton } from './IntakeDetails.tsx'
+import { SettingsSection } from './SettingsLayout.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface WebhooksProps {
@@ -119,21 +120,19 @@ export function Webhooks({ onSessionExpired }: WebhooksProps) {
   }
 
   return (
-    <section className="screen">
-      <header className="screen-head">
-        <h2>Webhooks</h2>
-      </header>
-      <p className="hint">
-        Philo posts each change to these addresses as it happens, as JSON — for an automation tool or an
-        agent that should react without polling. Every request carries{' '}
-        <code>X-Philo-Signature: sha256=…</code>, an HMAC of <code>X-Philo-Timestamp</code>, a dot and
-        the body, keyed with the webhook&rsquo;s secret. A failed delivery is retried twice.
-      </p>
-      <p className="hint">
-        A receiver that only takes a fixed key can get one in a header of its own as well, such as{' '}
-        <code>Authorization: Bearer …</code>. Philo sends it with every request and never shows it again.
-      </p>
-
+    <SettingsSection
+      title="Webhooks"
+      description={
+        <>
+          Philo posts each change to these addresses as it happens, as JSON — for an automation tool or an
+          agent that should react without polling. Every request carries{' '}
+          <code>X-Philo-Signature: sha256=…</code>, an HMAC of <code>X-Philo-Timestamp</code>, a dot and
+          the body, keyed with the webhook&rsquo;s secret. A failed delivery is retried twice. A receiver
+          that only takes a fixed key can get one in a header of its own as well, such as{' '}
+          <code>Authorization: Bearer …</code>; Philo sends it with every request and never shows it again.
+        </>
+      }
+    >
       {error !== undefined && (
         <p className="notice notice-error" role="alert">
           {webhookErrorMessage(error)}
@@ -283,6 +282,6 @@ export function Webhooks({ onSessionExpired }: WebhooksProps) {
           </table>
         </div>
       )}
-    </section>
+    </SettingsSection>
   )
 }

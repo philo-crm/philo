@@ -376,7 +376,7 @@ describe('the Settings notifications panel', () => {
 
   function renderSettings(onSessionExpired = vi.fn()) {
     useBrowser()
-    render(<Settings onSessionExpired={onSessionExpired} />)
+    render(<Settings section="notifications" onSessionExpired={onSessionExpired} />)
     return onSessionExpired
   }
 
@@ -441,7 +441,7 @@ describe('the Settings notifications panel', () => {
     installFakeApi()
     installPushEnv({ hasRegistration: false })
     useBrowser(IPHONE_SAFARI)
-    render(<Settings onSessionExpired={vi.fn()} />)
+    render(<Settings section="notifications" onSessionExpired={vi.fn()} />)
 
     const checkbox = await toggle()
     expect(checkbox.disabled).toBe(true)
