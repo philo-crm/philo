@@ -3,11 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   disablePush,
   enablePush,
+  isInAppNotificationsOn,
   isPushSupported,
   readPushState,
+  runInAppNotifications,
   syncPushSubscription,
 } from '../src/push.ts'
-import { PushSubscribeError } from '../src/http.ts'
 import { Settings } from '../src/Settings.tsx'
 import { installFakeApi, TEST_VAPID_PUBLIC_KEY } from './support/fake-api.ts'
 import { installPushEnv, makeSubscription, TEST_ENDPOINT } from './support/push-env.ts'
@@ -15,7 +16,11 @@ import { installPushEnv, makeSubscription, TEST_ENDPOINT } from './support/push-
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  localStorage.clear()
 })
+
+/** Brave with Google's push messaging off — the browser this fallback exists for. */
+const NO_PUSH_SERVICE = () => new DOMException('Registration failed - push service error', 'AbortError')
 
 describe('isPushSupported', () => {
   it('is false in a browser missing the APIs', () => {
@@ -160,22 +165,45 @@ describe('enablePush', () => {
     expect(subscription.unsubscribed).toBe(true)
   })
 
-  // The browser's refusal, not the server's: kept typed so the screen can say
-  // which, with the name and message the browser gave.
-  it('wraps a subscribe rejection with what the browser said', async () => {
-    installFakeApi()
+  // The browser's refusal, not the server's. Permission is granted, so the app
+  // can still notify while it is open — and what the browser said is logged.
+  it('falls back to in-app notifications when the browser has no push service', async () => {
+    const api = installFakeApi()
     const env = installPushEnv()
-    env.subscribeFailure = new DOMException('Registration failed - push service error', 'AbortError')
+    env.subscribeFailure = NO_PUSH_SERVICE()
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
-    const failure = await enablePush().catch((error: unknown) => error)
+    await expect(enablePush()).resolves.toBe('in-app')
 
-    expect(failure).toBeInstanceOf(PushSubscribeError)
-    expect(failure).toMatchObject({
-      reason: 'AbortError',
-      message: 'Registration failed - push service error',
-    })
+    expect(isInAppNotificationsOn()).toBe(true)
+    expect(api.pushSubscriptions).toEqual([])
     expect(console.error).toHaveBeenCalledWith('pushManager.subscribe() failed', env.subscribeFailure)
+    await expect(readPushState()).resolves.toBe('in-app')
+  })
+
+  // Once the browser can subscribe after all, the stream would only say
+  // everything twice.
+  it('turns in-app notifications off once real push works', async () => {
+    installFakeApi()
+    const env = installPushEnv()
+    env.subscribeFailure = NO_PUSH_SERVICE()
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    await enablePush()
+
+    env.subscribeFailure = undefined
+    await expect(enablePush()).resolves.toBe('on')
+
+    expect(isInAppNotificationsOn()).toBe(false)
+  })
+
+  it('still reports a server failure fetching the key rather than falling back', async () => {
+    const api = installFakeApi()
+    installPushEnv()
+    api.offline = /^\/api\/v1\/push\/key$/
+
+    await expect(enablePush()).rejects.toThrow()
+
+    expect(isInAppNotificationsOn()).toBe(false)
   })
 
   /**
@@ -230,6 +258,58 @@ describe('syncPushSubscription', () => {
     api.expired = true
 
     await expect(syncPushSubscription()).resolves.toBe('on')
+  })
+})
+
+describe('in-app notifications', () => {
+  async function inAppOn() {
+    const api = installFakeApi()
+    const env = installPushEnv()
+    env.subscribeFailure = NO_PUSH_SERVICE()
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    await enablePush()
+    return { api, env }
+  }
+
+  it('is off for a browser whose permission was since revoked', async () => {
+    const { env } = await inAppOn()
+    env.permission = 'default'
+
+    expect(isInAppNotificationsOn()).toBe(false)
+    await expect(readPushState()).resolves.toBe('off')
+  })
+
+  it('shows each lead on the stream through the service worker, as a push would', async () => {
+    const { api, env } = await inAppOn()
+    api.liveNotifications = [
+      { title: 'New lead: Dana', body: 'dana@example.com', navigate: 'http://localhost:3000/leads/4', tag: 'philo-lead-4' },
+    ]
+    const controller = new AbortController()
+
+    const running = runInAppNotifications(controller.signal)
+    await waitFor(() => expect(env.shown).toHaveLength(1))
+    controller.abort()
+    await running
+
+    expect(env.shown[0]).toEqual({
+      title: 'New lead: Dana',
+      options: {
+        body: 'dana@example.com',
+        tag: 'philo-lead-4',
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        data: { navigate: 'http://localhost:3000/leads/4' },
+      },
+    })
+    expect(api.calls.filter((call) => call.path === '/api/v1/push/live')[0]?.authorization).toMatch(/^Bearer /)
+  })
+
+  it('switches off with the toggle', async () => {
+    await inAppOn()
+
+    await expect(disablePush()).resolves.toBe('off')
+
+    expect(isInAppNotificationsOn()).toBe(false)
   })
 })
 
@@ -393,18 +473,18 @@ describe('the Settings notifications panel', () => {
     await waitFor(async () => expect((await toggle()).checked).toBe(false))
   })
 
-  it('says the browser refused, rather than blaming the connection', async () => {
+  it('switches on in-app notifications, and says what that means, when the browser has no push service', async () => {
     installFakeApi()
     const env = installPushEnv()
-    env.subscribeFailure = new DOMException('Registration failed - permission denied', 'NotAllowedError')
+    env.subscribeFailure = NO_PUSH_SERVICE()
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     renderSettings()
 
     fireEvent.click(await toggle())
 
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      "This browser couldn't register for push (NotAllowedError: Registration failed - permission denied).",
-    )
+    await waitFor(async () => expect((await toggle()).checked).toBe(true))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText(/only while it is open in a tab/i)).toBeDefined()
   })
 
   it('still blames the connection when the server cannot be reached', async () => {

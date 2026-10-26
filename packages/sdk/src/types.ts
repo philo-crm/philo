@@ -171,3 +171,13 @@ export interface VersionInfo {
   name: string
   version: string
 }
+
+/** A new lead on the in-app stream — `GET /api/v1/push/live`. The push payload's notification. */
+export interface LiveNotification {
+  title: string
+  body: string
+  /** Where a tap lands: the lead in the app. */
+  navigate: string
+  /** One per lead, so a repeat replaces the banner rather than stacking. */
+  tag: string
+}

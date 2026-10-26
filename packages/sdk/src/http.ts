@@ -80,7 +80,20 @@ export class Transport {
   }
 
   async request<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    const headers: Record<string, string> = { accept: 'application/json' }
+    const res = await this.#send(method, path, 'application/json', body, signal)
+    if (res.status === 204) return undefined as T
+    return (await res.json()) as T
+  }
+
+  /** A GET whose body is read as it arrives rather than parsed whole. */
+  async stream(path: string, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+    const res = await this.#send('GET', path, 'text/event-stream', undefined, signal)
+    if (res.body === null) throw new ApiError(res.status, '')
+    return res.body
+  }
+
+  async #send(method: Method, path: string, accept: string, body: unknown, signal: AbortSignal | undefined): Promise<Response> {
+    const headers: Record<string, string> = { accept }
     const token = await this.#options.accessToken?.()
     if (token !== undefined) headers['authorization'] = `Bearer ${token}`
     const init: RequestInit = { method, headers }
@@ -93,7 +106,6 @@ export class Transport {
     const fetchImpl = this.#options.fetch ?? ((input, requestInit) => fetch(input, requestInit))
     const res = await fetchImpl(`${this.baseUrl}${path}`, init)
     if (!res.ok) throw await toApiError(res)
-    if (res.status === 204) return undefined as T
-    return (await res.json()) as T
+    return res
   }
 }

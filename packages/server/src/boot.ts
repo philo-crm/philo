@@ -10,6 +10,7 @@ import { intakeUrls } from './intake/routes.ts'
 import { combineLeadCreatedHooks } from './notify.ts'
 import { loadOrCreateSigningKey } from './oauth/signing-key.ts'
 import { loadOrCreateVapidKeys } from './push/keys.ts'
+import { createLiveLeadHook, LiveFeed } from './push/live.ts'
 import { createLeadPushHook, resetSubscriptionsForNewKeys } from './push/service.ts'
 
 export { loadConfig, type Config } from './config.ts'
@@ -46,6 +47,7 @@ export function bootServer(config: Config): BootedServer {
   resetSubscriptionsForNewKeys(db, vapid)
 
   const pushDeps = { db, appUrl: config.appUrl, vapidKeys: vapid.keys }
+  const liveFeed = new LiveFeed()
 
   const app = createApp({
     db,
@@ -55,11 +57,17 @@ export function bootServer(config: Config): BootedServer {
     signingKey,
     externalIdp: config.externalIdp === undefined ? undefined : createExternalIdp(config.externalIdp),
     vapidPublicKey: vapid.keys.publicKey,
+    liveFeed,
     trustProxy: config.trustProxy,
     createEmailSender: createSender,
     // Email is the guaranteed notification channel and push is the fast one —
-    // ADR-0004. Independent by construction: each is isolated from the other.
-    onLeadCreated: combineLeadCreatedHooks(createLeadEmailHook(emailDeps), createLeadPushHook(pushDeps)),
+    // ADR-0004 — with the live stream standing in for push in a browser that
+    // cannot subscribe. Independent by construction: each is isolated from the others.
+    onLeadCreated: combineLeadCreatedHooks(
+      createLeadEmailHook(emailDeps),
+      createLeadPushHook(pushDeps),
+      createLiveLeadHook({ db, appUrl: config.appUrl, feed: liveFeed }),
+    ),
   })
 
   return { app, onListening: () => onListening(config, db, emailDeps) }

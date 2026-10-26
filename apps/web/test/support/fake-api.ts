@@ -6,6 +6,7 @@ import type {
   EmailTemplate,
   LeadDetail,
   LeadEventRecord,
+  LiveNotification,
   StageRecord,
 } from '../../src/api.ts'
 import { REFRESH_TOKEN_KEY, type User } from '../../src/auth.ts'
@@ -59,6 +60,11 @@ export interface FakeApi {
   vapidPublicKey: string
   /** Rows in `push_subscriptions`, as the server would hold them. */
   pushSubscriptions: { endpoint: string; p256dh: string; auth: string }[]
+  /**
+   * What `GET /api/v1/push/live` sends on connect. The stream then stays open
+   * until the request is aborted, as the server's does between leads.
+   */
+  liveNotifications: LiveNotification[]
   /** Every request the app made, in order. */
   calls: {
     method: string
@@ -483,10 +489,17 @@ export const TEST_VAPID_PUBLIC_KEY =
 /** Matches the server's validation in push/subscriptions.ts, so the client cannot drift. */
 const BASE64URL = /^[A-Za-z0-9_-]+$/
 
-function handlePush(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+function handlePush(
+  api: FakeApi,
+  method: string,
+  path: string,
+  body: unknown,
+  signal: AbortSignal | undefined,
+): Response | undefined {
   if (method === 'GET' && path === '/api/v1/push/key') {
     return jsonResponse(200, { publicKey: api.vapidPublicKey })
   }
+  if (method === 'GET' && path === '/api/v1/push/live') return liveResponse(api, signal)
   if (path !== '/api/v1/push/subscriptions') return undefined
 
   const payload = (body ?? {}) as Record<string, unknown>
@@ -524,6 +537,22 @@ function handlePush(api: FakeApi, method: string, path: string, body: unknown): 
     return jsonResponse(200, { ok: true })
   }
   return undefined
+}
+
+function liveResponse(api: FakeApi, signal: AbortSignal | undefined): Response {
+  const encoder = new TextEncoder()
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const notification of api.liveNotifications) {
+        controller.enqueue(encoder.encode(`event: lead\ndata: ${JSON.stringify(notification)}\n\n`))
+      }
+      // A real fetch errors the body on abort; this is that.
+      signal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), {
+        once: true,
+      })
+    },
+  })
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
 
 export const TEST_ISSUER = 'http://localhost:3000'
@@ -647,6 +676,7 @@ function handle(
   query: URLSearchParams,
   body: unknown,
   authorization: string | undefined,
+  signal?: AbortSignal,
 ): Response | Promise<Response> {
   const idpAnswer = handleIdp(api, method, path, body)
   if (idpAnswer !== undefined) return idpAnswer
@@ -663,7 +693,7 @@ function handle(
   }
 
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
-  const pushAnswer = handlePush(api, method, path, body)
+  const pushAnswer = handlePush(api, method, path, body, signal)
   if (pushAnswer !== undefined) return pushAnswer
   const keyAnswer = handleApiKeys(api, method, path, body)
   if (keyAnswer !== undefined) return keyAnswer
@@ -756,6 +786,7 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     apiKeySecrets: [],
     vapidPublicKey: TEST_VAPID_PUBLIC_KEY,
     pushSubscriptions: [],
+    liveNotifications: [],
     calls: [],
     ...rest,
   }
@@ -791,7 +822,7 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     if (api.offline?.test(url.pathname) === true) throw new TypeError('Failed to fetch')
     if (api.hold !== undefined) await api.hold
     const call = api.calls.at(-1)
-    return handle(api, method, url.pathname, url.searchParams, call?.body, call?.authorization)
+    return handle(api, method, url.pathname, url.searchParams, call?.body, call?.authorization, init?.signal ?? undefined)
   })
 
   return api
