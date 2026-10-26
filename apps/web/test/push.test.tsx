@@ -7,12 +7,14 @@ import {
   readPushState,
   syncPushSubscription,
 } from '../src/push.ts'
+import { PushSubscribeError } from '../src/http.ts'
 import { Settings } from '../src/Settings.tsx'
 import { installFakeApi, TEST_VAPID_PUBLIC_KEY } from './support/fake-api.ts'
 import { installPushEnv, makeSubscription, TEST_ENDPOINT } from './support/push-env.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('isPushSupported', () => {
@@ -156,6 +158,24 @@ describe('enablePush', () => {
 
     expect(api.pushSubscriptions).toEqual([])
     expect(subscription.unsubscribed).toBe(true)
+  })
+
+  // The browser's refusal, not the server's: kept typed so the screen can say
+  // which, with the name and message the browser gave.
+  it('wraps a subscribe rejection with what the browser said', async () => {
+    installFakeApi()
+    const env = installPushEnv()
+    env.subscribeFailure = new DOMException('Registration failed - push service error', 'AbortError')
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const failure = await enablePush().catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PushSubscribeError)
+    expect(failure).toMatchObject({
+      reason: 'AbortError',
+      message: 'Registration failed - push service error',
+    })
+    expect(console.error).toHaveBeenCalledWith('pushManager.subscribe() failed', env.subscribeFailure)
   })
 
   /**
@@ -371,6 +391,46 @@ describe('the Settings notifications panel', () => {
     expect(api.pushSubscriptions).toEqual([])
     // And the switch is back where the browser actually is.
     await waitFor(async () => expect((await toggle()).checked).toBe(false))
+  })
+
+  it('says the browser refused, rather than blaming the connection', async () => {
+    installFakeApi()
+    const env = installPushEnv()
+    env.subscribeFailure = new DOMException('Registration failed - permission denied', 'NotAllowedError')
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    renderSettings()
+
+    fireEvent.click(await toggle())
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      "This browser couldn't register for push (NotAllowedError: Registration failed - permission denied).",
+    )
+  })
+
+  it('still blames the connection when the server cannot be reached', async () => {
+    const api = installFakeApi()
+    installPushEnv()
+    renderSettings()
+    await toggle()
+    api.offline = /^\/api\/v1\/push\//
+
+    fireEvent.click(await toggle())
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Could not reach the server. Check your connection and try again.',
+    )
+  })
+
+  it('reports what the server said when it refuses the subscription', async () => {
+    installFakeApi()
+    installPushEnv({ subscribeEndpoint: 'http://push.example.com/insecure' })
+    renderSettings()
+
+    fireEvent.click(await toggle())
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'This browser gave out a push subscription the server could not use.',
+    )
   })
 
   /**

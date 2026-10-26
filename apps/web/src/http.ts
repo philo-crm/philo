@@ -10,3 +10,21 @@ export { ApiError, isUnauthorized }
 export function firstFailure(...errors: unknown[]): unknown {
   return errors.find(isUnauthorized) ?? errors.find((error) => error !== undefined)
 }
+
+/**
+ * The browser, not the server, refused to subscribe — no push service, a
+ * profile that blocks it, a key it would not take. `name` and `message` are the
+ * browser's own, because they are the only clue to which of those it was.
+ */
+export class PushSubscribeError extends Error {
+  readonly reason: string
+
+  constructor(cause: unknown) {
+    // Read off the object rather than gated on `instanceof Error`: a
+    // `DOMException` is not one everywhere, and it is the usual cause.
+    const { name, message } = (cause ?? {}) as { name?: unknown; message?: unknown }
+    super(typeof message === 'string' ? message : String(cause), { cause })
+    this.name = 'PushSubscribeError'
+    this.reason = typeof name === 'string' ? name : 'Error'
+  }
+}
