@@ -197,6 +197,19 @@ Full rationale: [ADR-0004](adr/0004-push-best-effort-email-guaranteed.md).
   The PWA ships an install-helper screen (detect iOS Safari, walk through
   Add to Home Screen, request permission from a tap).
 - Subscriptions stored in `push_subscriptions`; pruned on 404/410.
+- **In-app fallback.** The push service is the browser vendor's choice, and
+  some browsers grant notification permission with none to subscribe to
+  (Brave with Google's push messaging off, de-Googled Chromium). When
+  `pushManager.subscribe()` refuses, the toggle switches to in-app
+  notifications instead: while Philo is open, the app holds
+  `GET /api/v1/push/live` — Server-Sent Events, read with `fetch` because
+  `EventSource` cannot send the bearer token — and shows each lead through
+  the service worker. The stream is fed by the same lead-created hook as
+  email and push, so it fires for exactly the same leads, and carries the
+  push payload's `notification` object unchanged. In memory (one process per
+  instance); the server ends each stream after 15 minutes so the client
+  reconnects with a current credential. A browser with a working
+  subscription never opens it.
 - **Trigger: new lead only.** No stage-transition push in MVP — the person
   moving the card is the person who'd be notified.
 

@@ -15,6 +15,7 @@ import { ensureFirstPartyClient, FIRST_PARTY_CLIENT_ID } from './oauth/first-par
 import { createOAuthRoutes, createWellKnownRoutes } from './oauth/routes.ts'
 import type { SigningKey } from './oauth/signing-key.ts'
 import { OPENID_SCOPE, OPERATOR_SCOPE } from './oauth/tokens.ts'
+import { LiveFeed, type LiveTuning } from './push/live.ts'
 import { createPushRoutes } from './push/routes.ts'
 import { createSettingsRoutes } from './settings/routes.ts'
 import { createStageRoutes } from './stages/routes.ts'
@@ -60,6 +61,12 @@ export interface AppOptions {
    * into the data dir at first boot — ADR-0004, zero operator setup.
    */
   vapidPublicKey: string
+  /**
+   * Where the in-app notification stream hears about new leads. Must be the
+   * feed `onLeadCreated` publishes to; unset, the stream never says anything.
+   */
+  liveFeed?: LiveFeed | undefined
+  liveTuning?: LiveTuning | undefined
   /** Login throttle and hash-concurrency limits. Defaults are the production ones. */
   authTuning?: AuthTuning
   /** Intake rate limit and dedupe window. Defaults are the production ones. */
@@ -136,7 +143,12 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   app.route(`${API_PREFIX}/stages`, createStageRoutes({ db: options.db }))
   app.route(
     `${API_PREFIX}/push`,
-    createPushRoutes({ db: options.db, vapidPublicKey: options.vapidPublicKey }),
+    createPushRoutes({
+      db: options.db,
+      vapidPublicKey: options.vapidPublicKey,
+      liveFeed: options.liveFeed ?? new LiveFeed(),
+      liveTuning: options.liveTuning,
+    }),
   )
   app.route(
     `${API_PREFIX}/settings`,
