@@ -1,4 +1,4 @@
-import { useCallback, useState, type FormEvent } from 'react'
+import { useCallback, useRef, useState, type FormEvent } from 'react'
 import {
   createStage,
   deleteStage,
@@ -11,6 +11,7 @@ import {
 } from './api.ts'
 import { FunnelPicker, useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
 import { firstFailure } from './http.ts'
+import { useLiveChanges } from './live.ts'
 import { StageColumn } from './StageColumn.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
@@ -34,6 +35,16 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
   const [draggingId, setDraggingId] = useState<number | undefined>(undefined)
   const [newName, setNewName] = useState('')
   const [newTerminal, setNewTerminal] = useState(false)
+
+  // Somebody else's change. Skipped while this screen's own action is in flight:
+  // that action refetches when it settles, and a refetch landing mid-move would
+  // put the card back where it was for a moment.
+  const pendingRef = useRef(false)
+  pendingRef.current = pending
+  useLiveChanges((events) => {
+    if (!pendingRef.current) board.refresh()
+    if (events.some((event) => event.type === 'funnel.changed')) funnels.refresh()
+  }, funnelId)
 
   const error = firstFailure(funnels.error, board.error, actionError)
   useSessionGuard(error, onSessionExpired)

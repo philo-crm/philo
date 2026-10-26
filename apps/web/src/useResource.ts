@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { isUnauthorized } from './http.ts'
 
 export interface Resource<T> {
@@ -7,6 +7,11 @@ export interface Resource<T> {
   /** True while a load is in flight. `data` keeps the previous value throughout. */
   loading: boolean
   reload: () => void
+  /**
+   * Refetch without marking the load in flight: for a change somebody else made,
+   * which should land on screen without disabling every control while it does.
+   */
+  refresh: () => void
   /**
    * Replace the loaded value without a round trip. Every mutating lead endpoint
    * answers with the whole record, so a screen that just moved a stage already
@@ -29,12 +34,14 @@ interface State<T> {
 export function useResource<T>(load: (signal: AbortSignal) => Promise<T>): Resource<T> {
   const [state, setState] = useState<State<T>>({ loading: true })
   const [nonce, setNonce] = useState(0)
+  const quiet = useRef(false)
 
   useEffect(() => {
     const controller = new AbortController()
     // Keep whatever is on screen and mark it stale, rather than blanking the
     // list on every keystroke of a search.
-    setState((previous) => ({ ...previous, loading: true }))
+    if (quiet.current) quiet.current = false
+    else setState((previous) => ({ ...previous, loading: true }))
     load(controller.signal).then(
       (data) => {
         if (!controller.signal.aborted) setState({ data, loading: false })
@@ -57,9 +64,13 @@ export function useResource<T>(load: (signal: AbortSignal) => Promise<T>): Resou
     setState((previous) => ({ ...previous, loading: true }))
     setNonce((value) => value + 1)
   }, [])
+  const refresh = useCallback(() => {
+    quiet.current = true
+    setNonce((value) => value + 1)
+  }, [])
   const set = useCallback((value: T) => setState({ data: value, loading: false }), [])
 
-  return { data: state.data, error: state.error, loading: state.loading, reload, set }
+  return { data: state.data, error: state.error, loading: state.loading, reload, refresh, set }
 }
 
 /**

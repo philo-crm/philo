@@ -8,6 +8,7 @@ import {
 } from './api.ts'
 import { formatDateTime, leadContact, leadTitle } from './format.ts'
 import { useFunnels } from './FunnelPicker.tsx'
+import { useLiveChanges } from './live.ts'
 import { firstFailure } from './http.ts'
 import { Link } from './router.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
@@ -74,6 +75,15 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
     [showStageFilter, funnelId],
   )
   const stages = useResource(loadStages)
+  // Anything that changes a lead can change which page it is on, so the page is
+  // refetched; a funnel renamed or restaged changes the labels and the filter.
+  useLiveChanges((events) => {
+    page.refresh()
+    if (events.some((event) => event.type === 'funnel.changed')) {
+      funnels.refresh()
+      stages.refresh()
+    }
+  }, funnelId)
   const funnelNames = new Map((funnels.data ?? []).map((funnel) => [funnel.id, funnel.name]))
 
   // One error for the screen. A failed funnel load counts: it leaves the stage

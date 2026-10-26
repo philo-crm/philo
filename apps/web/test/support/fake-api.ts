@@ -2,6 +2,7 @@ import { pkceChallenge } from '@philo/sdk'
 import { vi } from 'vitest'
 import type {
   ApiKeyRecord,
+  ChangeEvent,
   EmailSettings,
   EmailTemplate,
   FunnelRecord,
@@ -73,6 +74,8 @@ export interface FakeApi {
    * until the request is aborted, as the server's does between leads.
    */
   liveNotifications: LiveNotification[]
+  /** Open `GET /api/v1/events` streams, each with the funnel it asked for. */
+  changeStreams: { funnelId: number | undefined; send: (event: ChangeEvent) => void }[]
   /** Every request the app made, in order. */
   calls: {
     method: string
@@ -695,6 +698,51 @@ function liveResponse(api: FakeApi, signal: AbortSignal | undefined): Response {
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
 
+function changeResponse(api: FakeApi, query: URLSearchParams, signal: AbortSignal | undefined): Response {
+  const encoder = new TextEncoder()
+  const funnel = query.get('funnel')
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const stream = {
+        funnelId: funnel === null ? undefined : Number(funnel),
+        send: (event: ChangeEvent) =>
+          controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)),
+      }
+      api.changeStreams.push(stream)
+      signal?.addEventListener(
+        'abort',
+        () => {
+          api.changeStreams = api.changeStreams.filter((open) => open !== stream)
+          controller.error(new DOMException('Aborted', 'AbortError'))
+        },
+        { once: true },
+      )
+    },
+  })
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+
+let nextChangeId = 1
+
+/**
+ * Tells every open change stream that something happened, as the server does
+ * after a commit made by someone else — an agent, a form, another tab.
+ */
+export function emitChange(
+  api: FakeApi,
+  type: ChangeEvent['type'],
+  funnelId: number,
+  data: ChangeEvent['data'] = {},
+): void {
+  nextChangeId += 1
+  const event: ChangeEvent = { id: `change-${nextChangeId}`, type, occurredAt: new Date().toISOString(), funnelId, data }
+  for (const stream of api.changeStreams) {
+    if (stream.funnelId === undefined || stream.funnelId === funnelId || data.from?.funnelId === stream.funnelId) {
+      stream.send(event)
+    }
+  }
+}
+
 export const TEST_ISSUER = 'http://localhost:3000'
 export const TEST_CLIENT_ID = 'philo-web'
 
@@ -833,6 +881,7 @@ function handle(
   }
 
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
+  if (method === 'GET' && path === '/api/v1/events') return changeResponse(api, query, signal)
   const pushAnswer = handlePush(api, method, path, body, signal)
   if (pushAnswer !== undefined) return pushAnswer
   const keyAnswer = handleApiKeys(api, method, path, body)
@@ -1007,6 +1056,7 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     pushSubscriptions: [],
     files: new Map(),
     liveNotifications: [],
+    changeStreams: [],
     calls: [],
     ...rest,
   }

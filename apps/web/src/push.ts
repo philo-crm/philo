@@ -22,6 +22,7 @@ import {
   type LiveNotification,
 } from './api.ts'
 import { isUnauthorized, PushSubscribeError } from './http.ts'
+import { holdStream } from './live.ts'
 
 export type PushState =
   /** No Push API here, or no service worker to hang a subscription off. */
@@ -234,40 +235,9 @@ export function onInAppNotificationsChange(listener: () => void): () => void {
   }
 }
 
-const RECONNECT_MIN_MS = 1_000
-const RECONNECT_MAX_MS = 60_000
-
-/**
- * Holds the live stream open until `signal` aborts, showing each new lead. The
- * server ends the stream every few minutes so the next connect carries a fresh
- * token; a dropped connection backs off rather than hammering a server that is
- * down.
- */
-export async function runInAppNotifications(signal: AbortSignal): Promise<void> {
-  let delay = RECONNECT_MIN_MS
-  while (!signal.aborted) {
-    try {
-      await streamLeadNotifications(showInAppNotification, signal)
-      delay = RECONNECT_MIN_MS
-    } catch {
-      delay = Math.min(delay * 2, RECONNECT_MAX_MS)
-    }
-    await wait(delay, signal)
-  }
-}
-
-function wait(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        resolve()
-      },
-      { once: true },
-    )
-  })
+/** Holds the live stream open until `signal` aborts, showing each new lead. */
+export function runInAppNotifications(signal: AbortSignal): Promise<void> {
+  return holdStream((stream) => streamLeadNotifications(showInAppNotification, stream), signal)
 }
 
 /**

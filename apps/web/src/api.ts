@@ -9,6 +9,7 @@ import {
   MAX_TEMPLATE_BODY_LENGTH,
   MAX_TEMPLATE_SUBJECT_LENGTH,
   type ApiKeyRecord,
+  type ChangeEvent,
   type EmailSettings,
   type EmailSettingsPatch,
   type EmailTemplate,
@@ -26,6 +27,12 @@ import { philo } from './client.ts'
 
 export type {
   ApiKeyRecord,
+  ChangeEvent,
+  ChangeType,
+  NewLead,
+  NewWebhookResult,
+  WebhookDelivery,
+  WebhookRecord,
   EmailSettings,
   EmailSettingsPatch,
   EmailTemplate,
@@ -307,6 +314,15 @@ export function streamLeadNotifications(
   signal: AbortSignal,
 ): Promise<void> {
   return philo.push.live(onNotification, signal)
+}
+
+/** Every change while open, optionally one funnel's. Settles when the server ends the stream. */
+export function streamChanges(
+  onEvent: (event: ChangeEvent) => void,
+  signal: AbortSignal,
+  funnelId?: number,
+): Promise<void> {
+  return philo.events.stream(onEvent, signal, funnelId)
 }
 
 /**
