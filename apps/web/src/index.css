@@ -487,6 +487,27 @@ main {
   cursor: grab;
 }
 
+.board-card.is-dragging {
+  opacity: 0.5;
+}
+
+/* Held by a finger — touchDrag.ts moves it with a transform. */
+.board-card.is-lifted {
+  position: relative;
+  z-index: 10;
+  opacity: 0.9;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.25);
+  cursor: grabbing;
+}
+
+.board-card,
+.board-card a {
+  /* A long press is how a finger lifts a card, not a request for the link menu or a text selection. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .board-card p {
   margin: 0;
   overflow-wrap: anywhere;

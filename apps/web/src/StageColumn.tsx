@@ -1,7 +1,8 @@
 import { useState, type DragEvent, type FormEvent } from 'react'
-import { MAX_STAGE_NAME_LENGTH, type BoardColumn, type StageRecord } from './api.ts'
+import { MAX_STAGE_NAME_LENGTH, type BoardColumn, type LeadRecord, type StageRecord } from './api.ts'
 import { formatDateTime, leadContact, leadTitle } from './format.ts'
 import { Link } from './router.tsx'
+import { STAGE_ATTRIBUTE, useTouchDrag } from './touchDrag.ts'
 
 export interface StageColumnProps {
   column: BoardColumn
@@ -14,7 +15,10 @@ export interface StageColumnProps {
   busy: boolean
   /** The card being dragged, so a column knows whether a drop is worth taking. */
   draggingId: number | undefined
+  /** The column a finger is holding a card over — a touch drag has no dragover. */
+  touchOverId: number | undefined
   onDragLead: (leadId: number | undefined) => void
+  onTouchOver: (stageId: number | undefined) => void
   onMoveLead: (leadId: number, stageId: number) => void
   onEditStage: (id: number, patch: { name: string; isTerminal: boolean }) => Promise<boolean>
   onReorderStage: (id: number, offset: -1 | 1) => void
@@ -28,7 +32,9 @@ export function StageColumn({
   columnCount,
   busy,
   draggingId,
+  touchOverId,
   onDragLead,
+  onTouchOver,
   onMoveLead,
   onEditStage,
   onReorderStage,
@@ -79,11 +85,13 @@ export function StageColumn({
    * which is the non-spam number the board actually shows.
    */
   const deletable = stage.leadCount === 0 && columnCount > 1
+  const highlighted = over || (touchOverId === stage.id && accepts(draggingId))
 
   return (
     <section
-      className={`board-column${stage.isTerminal ? ' is-terminal' : ''}${over ? ' is-over' : ''}`}
+      className={`board-column${stage.isTerminal ? ' is-terminal' : ''}${highlighted ? ' is-over' : ''}`}
       aria-label={stage.name}
+      {...{ [STAGE_ATTRIBUTE]: stage.id }}
       onDragOver={(event) => {
         if (!accepts(draggingId)) return
         // Without this the browser refuses the drop and animates the card home.
@@ -188,46 +196,17 @@ export function StageColumn({
       ) : (
         <ol className="board-cards">
           {column.leads.map((lead) => (
-            <li
+            <BoardCard
               key={lead.id}
-              className="board-card"
-              draggable={!busy}
-              onDragStart={(event) => {
-                // Which card is moving is React state, not payload — but Firefox
-                // refuses to start a drag whose dragstart carried no data at all.
-                event.dataTransfer.setData('text/plain', String(lead.id))
-                event.dataTransfer.effectAllowed = 'move'
-                onDragLead(lead.id)
-              }}
-              onDragEnd={() => onDragLead(undefined)}
-            >
-              <Link to={`/leads/${lead.id}`} className="board-card-title">
-                {leadTitle(lead)}
-              </Link>
-              <p className="muted">{leadContact(lead)}</p>
-              <p className="muted numeric board-card-meta">{formatDateTime(lead.createdAt)}</p>
-              {/*
-                What makes the board work without a pointer. Value stays empty so
-                the control always reads "Move to…" rather than claiming to be a
-                stage picker whose current stage is the column it already sits in.
-              */}
-              <select
-                className="board-card-move"
-                aria-label={`Move ${leadTitle(lead)} to another stage`}
-                value=""
-                disabled={busy}
-                onChange={(event) => onMoveLead(lead.id, Number(event.target.value))}
-              >
-                <option value="">Move to…</option>
-                {stages
-                  .filter((option) => option.id !== stage.id)
-                  .map((option) => (
-                    <option key={option.id} value={String(option.id)}>
-                      {option.name}
-                    </option>
-                  ))}
-              </select>
-            </li>
+              lead={lead}
+              stage={stage}
+              stages={stages}
+              busy={busy}
+              dragging={draggingId === lead.id}
+              onDragLead={onDragLead}
+              onTouchOver={onTouchOver}
+              onMoveLead={onMoveLead}
+            />
           ))}
         </ol>
       )}
@@ -238,5 +217,85 @@ export function StageColumn({
         </p>
       )}
     </section>
+  )
+}
+
+interface BoardCardProps {
+  lead: LeadRecord
+  /** The column it sits in. */
+  stage: StageRecord
+  stages: StageRecord[]
+  busy: boolean
+  dragging: boolean
+  onDragLead: (leadId: number | undefined) => void
+  onTouchOver: (stageId: number | undefined) => void
+  onMoveLead: (leadId: number, stageId: number) => void
+}
+
+/**
+ * One card. A mouse drags it with HTML5 drag and drop; a finger holds it still
+ * to lift it and drags from there — see touchDrag.ts. Both end in the same
+ * `onMoveLead`, and so does the select, which is what keeps it usable with
+ * neither.
+ */
+function BoardCard({ lead, stage, stages, busy, dragging, onDragLead, onTouchOver, onMoveLead }: BoardCardProps) {
+  const touch = useTouchDrag<HTMLLIElement>({
+    disabled: busy,
+    onLift: () => onDragLead(lead.id),
+    onOver: onTouchOver,
+    onDrop: (stageId) => {
+      onTouchOver(undefined)
+      if (stageId === undefined || stageId === stage.id) onDragLead(undefined)
+      else onMoveLead(lead.id, stageId)
+    },
+  })
+
+  return (
+    <li
+      ref={touch.ref}
+      className={`board-card${dragging ? ' is-dragging' : ''}${touch.lifted ? ' is-lifted' : ''}`}
+      draggable={!busy}
+      onDragStart={(event) => {
+        // Which card is moving is React state, not payload — but Firefox
+        // refuses to start a drag whose dragstart carried no data at all.
+        event.dataTransfer.setData('text/plain', String(lead.id))
+        event.dataTransfer.effectAllowed = 'move'
+        onDragLead(lead.id)
+      }}
+      onDragEnd={() => onDragLead(undefined)}
+      onPointerDown={touch.onPointerDown}
+      onPointerMove={touch.onPointerMove}
+      onPointerUp={touch.onPointerUp}
+      onPointerCancel={touch.onPointerCancel}
+      onContextMenu={touch.onContextMenu}
+      onClickCapture={touch.onClickCapture}
+    >
+      <Link to={`/leads/${lead.id}`} className="board-card-title" draggable={false}>
+        {leadTitle(lead)}
+      </Link>
+      <p className="muted">{leadContact(lead)}</p>
+      <p className="muted numeric board-card-meta">{formatDateTime(lead.createdAt)}</p>
+      {/*
+        What makes the board work without a pointer. Value stays empty so
+        the control always reads "Move to…" rather than claiming to be a
+        stage picker whose current stage is the column it already sits in.
+      */}
+      <select
+        className="board-card-move"
+        aria-label={`Move ${leadTitle(lead)} to another stage`}
+        value=""
+        disabled={busy}
+        onChange={(event) => onMoveLead(lead.id, Number(event.target.value))}
+      >
+        <option value="">Move to…</option>
+        {stages
+          .filter((option) => option.id !== stage.id)
+          .map((option) => (
+            <option key={option.id} value={String(option.id)}>
+              {option.name}
+            </option>
+          ))}
+      </select>
+    </li>
   )
 }

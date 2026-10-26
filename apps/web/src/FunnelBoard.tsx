@@ -4,6 +4,7 @@ import {
   deleteStage,
   fetchBoard,
   moveLeadStage,
+  type BoardColumn,
   reorderStages,
   stageErrorMessage,
   updateStage,
@@ -33,6 +34,7 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
   const [actionError, setActionError] = useState<unknown>(undefined)
   const [pending, setPending] = useState(false)
   const [draggingId, setDraggingId] = useState<number | undefined>(undefined)
+  const [touchOverId, setTouchOverId] = useState<number | undefined>(undefined)
   const [newName, setNewName] = useState('')
   const [newTerminal, setNewTerminal] = useState(false)
 
@@ -78,10 +80,16 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
 
   function handleMoveLead(leadId: number, stageId: number) {
     setDraggingId(undefined)
+    setTouchOverId(undefined)
     // The empty option of a card's "Move to…" select, chosen by a keyboard
     // walking the list. Nothing to do, and Number('') is not a stage.
     if (!Number.isSafeInteger(stageId) || stageId <= 0) return
-    void run(() => moveLeadStage(leadId, stageId))
+    // The card lands where it was dropped at once; the refetch after confirms
+    // it, and a refused move refetches too, which puts it back.
+    if (board.data !== undefined) board.set(withCardMoved(board.data, leadId, stageId))
+    void run(() => moveLeadStage(leadId, stageId)).then((moved) => {
+      if (!moved) board.reload()
+    })
   }
 
   function handleReorderStage(id: number, offset: -1 | 1) {
@@ -135,7 +143,9 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
             columnCount={columns.length}
             busy={busy}
             draggingId={draggingId}
+            touchOverId={touchOverId}
             onDragLead={setDraggingId}
+            onTouchOver={setTouchOverId}
             onMoveLead={handleMoveLead}
             onEditStage={(id, patch) => run(() => updateStage(id, patch))}
             onReorderStage={handleReorderStage}
@@ -174,4 +184,19 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
       </div>
     </section>
   )
+}
+
+/** The board as it will be once the move lands: the card on top of its new column. */
+export function withCardMoved(columns: BoardColumn[], leadId: number, stageId: number): BoardColumn[] {
+  const lead = columns.flatMap((column) => column.leads).find((card) => card.id === leadId)
+  const target = columns.find((column) => column.stage.id === stageId)
+  if (lead === undefined || target === undefined || lead.stageId === stageId) return columns
+  const moved = { ...lead, stageId, stageName: target.stage.name }
+  return columns.map((column) => {
+    if (column.stage.id === lead.stageId) {
+      return { ...column, leads: column.leads.filter((card) => card.id !== leadId), total: column.total - 1 }
+    }
+    if (column.stage.id === stageId) return { ...column, leads: [moved, ...column.leads], total: column.total + 1 }
+    return column
+  })
 }
