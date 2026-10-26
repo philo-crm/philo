@@ -49,17 +49,20 @@ function createTestApp(options: Parameters<typeof createServerTestApp>[0] = {}):
 
 /** Every tool DESIGN.md (MCP surface) names for the MVP. */
 const TOOL_NAMES = [
+  'add_lead_attachment',
   'add_lead_note',
   'create_lead',
   'create_stage',
   'delete_stage',
   'get_email_template',
   'get_lead',
+  'get_lead_attachment',
   'list_email_templates',
   'list_leads',
   'list_stages',
   'move_lead_stage',
   'preview_email_template',
+  'remove_lead_attachment',
   'reorder_stages',
   'update_email_template',
   'update_lead',
@@ -254,6 +257,17 @@ describe('mcp transport', () => {
     )
 
     expect(res.status).toBe(413)
+  })
+
+  it('turns away an oversized body without a credential before reading it', async () => {
+    const testApp = createTestApp()
+    const oversized = {
+      ...INITIALIZE,
+      params: { ...INITIALIZE.params, padding: 'x'.repeat(MAX_MCP_BODY_BYTES) },
+    }
+    const res = await testApp.app.request('/mcp', jsonRpcPost(oversized))
+
+    expect(res.status).toBe(401)
   })
 
   it('keeps answers out of shared caches', async () => {
@@ -469,6 +483,64 @@ describe('mcp lead tools', () => {
       const refused = await call('update_lead', { leadId: row?.id, email: null })
       expect(refused.isError).toBe(true)
       expect(refused.data).toEqual({ error: 'email_or_phone_required' })
+    })
+  })
+
+  it('merges details by key, and the timeline names keys but not values', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+    await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com' })
+
+    await withMcpClient(testApp, key, async (call) => {
+      const [row] = testApp.db.select({ id: leads.id }).from(leads).limit(1).all()
+      await call('update_lead', { leadId: row?.id, details: { start_date: 'Nov 2', licence: 'X123' } })
+      const patched = await call('update_lead', { leadId: row?.id, details: { licence: null } })
+      const lead = patched.data['lead'] as { details: Record<string, unknown> }
+      expect(lead.details).toEqual({ start_date: 'Nov 2' })
+    })
+    const changes = testApp.db.select().from(leadEvents).where(eq(leadEvents.type, 'details_changed')).all()
+    expect(changes.map((event) => event.payload)).toEqual(['{"keys":["licence","start_date"]}', '{"keys":["licence"]}'])
+    expect(changes.every((event) => event.actor.startsWith('api_key:'))).toBe(true)
+  })
+
+  it('attaches, fetches and removes a file', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+    await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com' })
+    const bytes = Buffer.from('%PDF-1.7 offer letter')
+
+    await withMcpClient(testApp, key, async (call, client) => {
+      const [row] = testApp.db.select({ id: leads.id }).from(leads).limit(1).all()
+      const added = await call('add_lead_attachment', {
+        leadId: row?.id,
+        filename: 'offer.pdf',
+        contentType: 'application/pdf',
+        data: bytes.toString('base64'),
+      })
+      expect(added.isError).toBe(false)
+      const [attachment] = (added.data['lead'] as { attachments: { id: number; filename: string }[] }).attachments
+      expect(attachment?.filename).toBe('offer.pdf')
+
+      const fetched = await client.callTool({
+        name: 'get_lead_attachment',
+        arguments: { leadId: row?.id, attachmentId: attachment?.id },
+      })
+      expect(fetched.content).toEqual([
+        {
+          type: 'resource',
+          resource: {
+            uri: `philo://leads/${row?.id}/attachments/${attachment?.id}`,
+            mimeType: 'application/pdf',
+            blob: bytes.toString('base64'),
+          },
+        },
+      ])
+
+      const removed = await call('remove_lead_attachment', { leadId: row?.id, attachmentId: attachment?.id })
+      expect((removed.data['lead'] as { attachments: unknown[] }).attachments).toEqual([])
+
+      const gone = await call('get_lead_attachment', { leadId: row?.id, attachmentId: attachment?.id })
+      expect(gone).toEqual({ isError: true, data: { error: 'attachment_not_found' } })
     })
   })
 

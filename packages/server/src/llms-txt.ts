@@ -29,9 +29,10 @@ scripts. It describes this instance: ${base} (philo ${VERSION}).
 
 ## Before you write anything
 
-Philo is a pre-screening CRM, not an employment-application system. Never record
-government identifiers of any kind — no social security number, no driver's
-licence number, no date of birth. Contact details and qualification answers only.
+What a lead submitted is in \`fields\` and never changes. What is learned
+afterwards goes in \`details\` or as an attachment. Both may hold sensitive
+personal data when the business needs it; the timeline records which detail keys
+changed, never their values.
 
 Email templates are live. Editing one changes what the business sends out under
 its own name from the next lead onwards.
@@ -84,8 +85,11 @@ unattended client cannot complete the flow.
 Call \`tools/list\` for the schemas. In outline:
 
 - Leads: \`list_leads\` (stage, form, spam, date filters and a full-text
-  \`search\`), \`get_lead\` (record plus whole timeline), \`create_lead\`,
-  \`update_lead\`, \`move_lead_stage\`, \`add_lead_note\`
+  \`search\`), \`get_lead\` (record, attachments and whole timeline),
+  \`create_lead\`, \`update_lead\` (contact and \`details\`),
+  \`move_lead_stage\`, \`add_lead_note\`
+- Attachments: \`add_lead_attachment\`, \`get_lead_attachment\`,
+  \`remove_lead_attachment\`
 - Funnel: \`list_stages\`, \`create_stage\`, \`update_stage\`,
   \`reorder_stages\`, \`delete_stage\`
 - Email: \`list_email_templates\`, \`get_email_template\`,
@@ -94,7 +98,7 @@ Call \`tools/list\` for the schemas. In outline:
 ## The REST surface
 
 Every path below is under ${base}/api/v1, answers JSON, and refuses an
-unauthenticated caller with 401. Bodies are JSON.
+unauthenticated caller with 401. Bodies are JSON, except an attachment's.
 
 - GET /leads — \`?stage=&form=&spam=&search=&createdAfter=&createdBefore=&limit=&offset=\`.
   Newest first, with a total. \`limit\` defaults to 50, maximum 200. \`spam\`
@@ -102,10 +106,15 @@ unauthenticated caller with 401. Bodies are JSON.
   a 400, never a filter silently dropped.
 - POST /leads — files a lead by hand: \`name\`, \`email\`, \`phone\`, \`source\`,
   \`stageId\`, \`fields\`. At least one of email or phone. Sends no email.
-- GET /leads/{id} — the lead and its timeline.
-- PATCH /leads/{id} — \`name\`, \`email\`, \`phone\`. Null clears a field; the lead
-  must still have an email or a phone afterwards. The submitted \`fields\` are the
-  record of what the applicant sent and are not editable.
+- GET /leads/{id} — the lead, its attachments and its timeline.
+- PATCH /leads/{id} — \`name\`, \`email\`, \`phone\`, \`details\`. Null clears a
+  field; the lead must still have an email or a phone afterwards. \`details\`
+  merges by key, null removing one. The submitted \`fields\` are the record of
+  what the lead sent and are not editable.
+- POST /leads/{id}/attachments?filename=... — the file is the raw body, typed by
+  its Content-Type; up to 10 MB.
+- GET /leads/{id}/attachments/{attachmentId} — the file, always as a download.
+- DELETE /leads/{id}/attachments/{attachmentId} — removes it for good.
 - POST /leads/{id}/stage — \`{"stageId": n}\`. Any stage to any stage.
 - POST /leads/{id}/notes — \`{"note": "..."}\`. Append-only.
 - POST /leads/{id}/not-spam — promotes a quarantined lead and fires the

@@ -1,16 +1,17 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
-import { createPhiloClient, isUnauthorized, type FetchLike } from '@philo/sdk'
-import { Hono } from 'hono'
+import { createPhiloClient, isUnauthorized, MAX_ATTACHMENT_BYTES, type FetchLike } from '@philo/sdk'
+import { Hono, type MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
 import { createMcpServer } from './tools.ts'
 
 /**
- * Ceiling on a request body, matching the API's. Every JSON-RPC call this
- * server takes is orders of magnitude smaller; an email template is the
- * largest thing that crosses it.
+ * Ceiling on a request body: one attachment at the API's own limit, base64'd
+ * for `add_lead_attachment`, plus room for the JSON-RPC around it. Only an
+ * authenticated caller gets this far — the token is checked before the body is
+ * read — so an anonymous one cannot make the server buffer it.
  */
-export const MAX_MCP_BODY_BYTES = 64 * 1024
+export const MAX_MCP_BODY_BYTES = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 + 64 * 1024
 
 export const MCP_PATH = '/mcp'
 
@@ -86,31 +87,34 @@ export function createMcpApp(options: McpAppOptions): Hono {
     c.res.headers.set('Cache-Control', 'no-store')
   })
 
-  app.use(
-    MCP_PATH,
-    bodyLimit({
-      maxSize: MAX_MCP_BODY_BYTES,
-      onError: (c) => c.json({ error: 'payload_too_large' }, 413),
-    }),
-  )
-
-  app.post(MCP_PATH, async (c) => {
+  /**
+   * Checked before any MCP handling, so a dead token is an HTTP 401 the
+   * client's OAuth machinery acts on — not a tool error inside a 200 — and
+   * before the body limit, so nothing is read for a caller without one.
+   */
+  const authenticate: MiddlewareHandler = async (c, next) => {
     const token = bearerToken(c.req.header('authorization'))
-    const philo = client(token)
     if (token === undefined) {
       c.header('WWW-Authenticate', challenge(false))
       return c.json({ error: 'unauthorized' }, 401)
     }
-    // Checked before any MCP handling, so a dead token is an HTTP 401 the
-    // client's OAuth machinery acts on — not a tool error inside a 200.
     try {
-      await philo.auth.principal()
+      await client(token).auth.principal()
     } catch (error) {
       if (!isUnauthorized(error)) throw error
       c.header('WWW-Authenticate', challenge(true))
       return c.json({ error: 'unauthorized' }, 401)
     }
+    return next()
+  }
 
+  const limitBody = bodyLimit({
+    maxSize: MAX_MCP_BODY_BYTES,
+    onError: (c) => c.json({ error: 'payload_too_large' }, 413),
+  })
+
+  app.post(MCP_PATH, authenticate, limitBody, async (c) => {
+    const philo = client(bearerToken(c.req.header('authorization')))
     const server = createMcpServer(philo)
     // No `sessionIdGenerator`, which is what puts the transport in stateless mode.
     const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true })

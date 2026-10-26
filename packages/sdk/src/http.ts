@@ -80,26 +80,35 @@ export class Transport {
   }
 
   async request<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    const res = await this.#send(method, path, 'application/json', body, signal)
+    const payload =
+      method === 'GET' ? undefined : { data: JSON.stringify(body ?? {}), contentType: 'application/json' }
+    const res = await this.send(method, path, payload, signal)
     if (res.status === 204) return undefined as T
     return (await res.json()) as T
   }
 
   /** A GET whose body is read as it arrives rather than parsed whole. */
   async stream(path: string, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
-    const res = await this.#send('GET', path, 'text/event-stream', undefined, signal)
+    const res = await this.send('GET', path, undefined, signal, 'text/event-stream')
     if (res.body === null) throw new ApiError(res.status, '')
     return res.body
   }
 
-  async #send(method: Method, path: string, accept: string, body: unknown, signal: AbortSignal | undefined): Promise<Response> {
+  /** The response itself, for a body that is not JSON either way. Throws on a non-2xx. */
+  async send(
+    method: Method,
+    path: string,
+    body?: { data: NonNullable<RequestInit['body']>; contentType: string },
+    signal?: AbortSignal,
+    accept = 'application/json',
+  ): Promise<Response> {
     const headers: Record<string, string> = { accept }
     const token = await this.#options.accessToken?.()
     if (token !== undefined) headers['authorization'] = `Bearer ${token}`
     const init: RequestInit = { method, headers }
-    if (method !== 'GET') {
-      headers['content-type'] = 'application/json'
-      init.body = JSON.stringify(body ?? {})
+    if (body !== undefined) {
+      headers['content-type'] = body.contentType
+      init.body = body.data
     }
     if (signal !== undefined) init.signal = signal
 

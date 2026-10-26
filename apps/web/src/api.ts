@@ -1,6 +1,7 @@
 import {
   ApiError,
   MAX_API_KEY_NAME_LENGTH,
+  MAX_ATTACHMENT_BYTES,
   MAX_SETTINGS_NAME_LENGTH,
   MAX_STAGE_NAME_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
@@ -26,6 +27,7 @@ export type {
   EmailTemplate,
   EmailTemplateDraft,
   EmailTemplatePreview,
+  LeadAttachmentRecord,
   LeadDetail,
   LeadEventRecord,
   LeadPage,
@@ -55,6 +57,8 @@ export const BOARD_COLUMN_SIZE = 25
 
 export {
   MAX_API_KEY_NAME_LENGTH,
+  MAX_ATTACHMENT_BYTES,
+  MAX_DETAIL_KEY_LENGTH,
   MAX_NOTE_LENGTH,
   MAX_SETTINGS_NAME_LENGTH,
   MAX_STAGE_NAME_LENGTH,
@@ -69,6 +73,10 @@ const MESSAGES: Record<string, string> = {
   invalid_note: 'A note has to have text, and fit within 5,000 characters.',
   invalid_contact: 'Those contact details are not valid.',
   email_or_phone_required: 'A lead needs either an email address or a phone number.',
+  invalid_details: 'Those details could not be saved — a name may be too long, or the lead holds too much already.',
+  invalid_attachment: 'That file is empty or its name cannot be used.',
+  attachment_too_large: `A file can be at most ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`,
+  attachment_not_found: 'That file has already been removed. Reload to see the current list.',
   invalid_request: 'The server could not read that request.',
   unauthorized: 'Your session has expired. Sign in again.',
 }
@@ -191,6 +199,23 @@ export function addLeadNote(id: number, note: string): Promise<LeadDetail> {
 /** The spam view's "not spam": clears the flag and fires the held-back pipeline. */
 export function promoteLead(id: number): Promise<LeadDetail> {
   return philo.leads.markNotSpam(id)
+}
+
+/** Sets each key given; a null value removes that key. Other keys are untouched. */
+export function updateLeadDetails(id: number, details: Record<string, unknown>): Promise<LeadDetail> {
+  return philo.leads.update(id, { details })
+}
+
+export function uploadAttachment(id: number, file: File): Promise<LeadDetail> {
+  return philo.leads.attachments.upload(id, { data: file, filename: file.name })
+}
+
+export function downloadAttachment(id: number, attachmentId: number): Promise<Blob> {
+  return philo.leads.attachments.download(id, attachmentId)
+}
+
+export function removeAttachment(id: number, attachmentId: number): Promise<LeadDetail> {
+  return philo.leads.attachments.remove(id, attachmentId)
 }
 
 const SETTINGS_MESSAGES: Record<string, string> = {

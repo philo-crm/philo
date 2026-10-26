@@ -1,9 +1,17 @@
 import { Hono, type Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { actorOf, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { readJsonBody } from '../json-body.ts'
 import { notifyLeadCreated, type LeadCreatedHook } from '../notify.ts'
+import {
+  addAttachment,
+  getAttachmentFile,
+  removeAttachment,
+  MAX_ATTACHMENT_BYTES,
+  type AttachmentError,
+} from './attachments.ts'
 import {
   addLeadNote,
   clearLeadSpam,
@@ -11,7 +19,7 @@ import {
   getLead,
   listLeads,
   moveLeadStage,
-  updateLeadContact,
+  updateLead,
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   type LeadDetail,
@@ -38,13 +46,31 @@ const LEAD_STATUS: Record<LeadError, ContentfulStatusCode> = {
   invalid_contact: 400,
   invalid_source: 400,
   invalid_fields: 400,
+  invalid_details: 400,
   email_or_phone_required: 422,
   // Only reachable if an operator deleted every stage. Same answer intake gives.
   no_stage: 503,
 }
 
+const ATTACHMENT_STATUS: Record<AttachmentError, ContentfulStatusCode> = {
+  not_found: 404,
+  attachment_not_found: 404,
+  invalid_attachment: 400,
+  attachment_too_large: 413,
+}
+
 function fail(c: Context, error: LeadError) {
   return c.json({ error }, LEAD_STATUS[error])
+}
+
+/**
+ * `attachment` with an ASCII fallback name and the real one in RFC 5987 form,
+ * so a non-ASCII filename survives without a raw byte ever entering the header.
+ */
+function contentDisposition(filename: string): string {
+  const fallback = filename.replace(/[^\x20-\x7e]|["\\]/g, '_')
+  const encoded = encodeURIComponent(filename).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`
 }
 
 function parseId(raw: string | undefined): number | undefined {
@@ -156,7 +182,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
-    return respond(c, updateLeadContact(deps.db, id, body))
+    return respond(c, updateLead(deps.db, id, body, actorOf(c)))
   })
 
   routes.post('/:id/stage', async (c) => {
@@ -192,6 +218,59 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
       notifyLeadCreated(deps.onLeadCreated, { id: lead.id, formId, isSpam: false })
     }
     return c.json({ lead })
+  })
+
+  /**
+   * The file is the raw request body, typed by its own Content-Type, named by
+   * `?filename=` — no multipart parsing. The limit here replaces the API-wide
+   * one, which app.ts skips for this path; it runs after authentication, so an
+   * anonymous caller is turned away before any of the body is read.
+   */
+  routes.post(
+    '/:id/attachments',
+    bodyLimit({
+      maxSize: MAX_ATTACHMENT_BYTES,
+      onError: (c) => c.json({ error: 'attachment_too_large' }, 413),
+    }),
+    async (c) => {
+      const id = parseId(c.req.param('id'))
+      if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
+      const data = new Uint8Array(await c.req.arrayBuffer())
+      const result = addAttachment(
+        deps.db,
+        id,
+        { filename: c.req.query('filename'), contentType: c.req.header('content-type'), data },
+        actorOf(c),
+      )
+      return result.ok ? c.json({ lead: result.value }, 201) : c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
+    },
+  )
+
+  /**
+   * Always a download, never a page: an uploaded HTML or SVG file served inline
+   * from this origin would run with the API's authority.
+   */
+  routes.get('/:id/attachments/:attachmentId', (c) => {
+    const id = parseId(c.req.param('id'))
+    const attachmentId = parseId(c.req.param('attachmentId'))
+    if (id === undefined || attachmentId === undefined) return c.json({ error: 'invalid_request' }, 400)
+    const result = getAttachmentFile(deps.db, id, attachmentId)
+    if (!result.ok) return c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
+    const file = result.value
+    return c.body(new Uint8Array(file.data), 200, {
+      'Content-Type': file.contentType,
+      'Content-Disposition': contentDisposition(file.filename),
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "sandbox; default-src 'none'",
+    })
+  })
+
+  routes.delete('/:id/attachments/:attachmentId', (c) => {
+    const id = parseId(c.req.param('id'))
+    const attachmentId = parseId(c.req.param('attachmentId'))
+    if (id === undefined || attachmentId === undefined) return c.json({ error: 'invalid_request' }, 400)
+    const result = removeAttachment(deps.db, id, attachmentId, actorOf(c))
+    return result.ok ? c.json({ lead: result.value }) : c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
   })
 
   return routes

@@ -297,7 +297,7 @@ MVP tool set:
 - **Leads:** `list_leads` (filters: stage, form, spam, date; FTS5 `search`),
   `get_lead` (record + timeline), `create_lead`, `update_lead`,
   `move_lead_stage`, `add_lead_note`; `update_lead` edits `details`, and
-  attachments get list, add, fetch and remove tools (ADR-0008)
+  attachments get add, fetch and remove tools — `get_lead` lists them (ADR-0008)
 - **Funnel:** `list_stages`, `create_stage`, `update_stage` (rename,
   terminal flag), `reorder_stages` (whole funnel), `delete_stage` (empty,
   non-last stages only)

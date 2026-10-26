@@ -1,16 +1,31 @@
-import { useCallback, useState, type FormEvent } from 'react'
+import { useCallback, useState, type ChangeEvent, type FormEvent } from 'react'
 import {
   addLeadNote,
   apiErrorMessage,
+  downloadAttachment,
   fetchLead,
   fetchStages,
   moveLeadStage,
   promoteLead,
+  removeAttachment,
+  updateLeadDetails,
+  uploadAttachment,
+  MAX_ATTACHMENT_BYTES,
+  MAX_DETAIL_KEY_LENGTH,
   MAX_NOTE_LENGTH,
+  type LeadAttachmentRecord,
   type LeadDetail as LeadDetailRecord,
 } from './api.ts'
 import { ApiError, firstFailure } from './http.ts'
-import { actorLabel, describeEvent, formatDateTime, formatFieldValue, humanizeKey, leadTitle } from './format.ts'
+import {
+  actorLabel,
+  describeEvent,
+  formatBytes,
+  formatDateTime,
+  formatFieldValue,
+  humanizeKey,
+  leadTitle,
+} from './format.ts'
 import { Link } from './router.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
@@ -169,6 +184,29 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
         </div>
       </div>
 
+      <div className="panels">
+        <DetailsPanel
+          details={record.details}
+          busy={busy}
+          onChange={(details) => run(() => updateLeadDetails(leadId, details))}
+        />
+        <AttachmentsPanel
+          attachments={record.attachments}
+          busy={busy}
+          onUpload={(file) => run(() => uploadAttachment(leadId, file))}
+          onDownload={async (attachment) => {
+            setActionError(undefined)
+            try {
+              saveBlob(await downloadAttachment(leadId, attachment.id), attachment.filename)
+            } catch (caught) {
+              setActionError(caught)
+            }
+          }}
+          onRemove={(attachment) => run(() => removeAttachment(leadId, attachment.id))}
+          onRejected={(message) => setActionError(new Error(message))}
+        />
+      </div>
+
       <div className="panel">
         <h2>Timeline</h2>
         <form className="note-form" onSubmit={handleNote}>
@@ -208,5 +246,156 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
         </ol>
       </div>
     </section>
+  )
+}
+
+/**
+ * Hands a fetched file to the browser as a download, under its stored name.
+ *
+ * Retyped as octet-stream first: an object URL lives in this app's origin
+ * without the server's sandboxing headers, so an uploaded HTML or SVG file kept
+ * at its own type would run as the app in any browser that navigates to the
+ * link instead of honouring `download`.
+ */
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(new Blob([blob], { type: 'application/octet-stream' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  // Revoked on the next tick: some browsers start the download asynchronously.
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+interface DetailsPanelProps {
+  details: Record<string, unknown>
+  busy: boolean
+  onChange: (details: Record<string, unknown>) => Promise<boolean>
+}
+
+/** What was learned after intake — ADR-0008. Saving a name that exists replaces its value. */
+function DetailsPanel({ details, busy, onChange }: DetailsPanelProps) {
+  const [key, setKey] = useState('')
+  const [value, setValue] = useState('')
+  const entries = Object.entries(details)
+
+  async function handleAdd(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const name = key.trim()
+    if (busy || name === '' || value.trim() === '') return
+    // Cleared only on success, so a failed save does not lose what was typed.
+    if (await onChange({ [name]: value.trim() })) {
+      setKey('')
+      setValue('')
+    }
+  }
+
+  return (
+    <div className="panel">
+      <h2>Details</h2>
+      {entries.length === 0 ? (
+        <p className="empty">Nothing added since the lead came in.</p>
+      ) : (
+        <dl className="pairs">
+          {entries.map(([name, stored]) => (
+            <div key={name} className="pair">
+              <dt>{humanizeKey(name)}</dt>
+              <dd className="pair-value">
+                <span>{formatFieldValue(stored)}</span>
+                <button
+                  type="button"
+                  className="link-button"
+                  disabled={busy}
+                  aria-label={`Remove ${humanizeKey(name)}`}
+                  onClick={() => void onChange({ [name]: null })}
+                >
+                  Remove
+                </button>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      <form className="detail-form" onSubmit={handleAdd}>
+        <label className="field">
+          <span className="field-label">Name</span>
+          <input
+            value={key}
+            maxLength={MAX_DETAIL_KEY_LENGTH}
+            placeholder="start_date"
+            onChange={(event) => setKey(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">Value</span>
+          <input value={value} onChange={(event) => setValue(event.target.value)} />
+        </label>
+        <button type="submit" disabled={busy || key.trim() === '' || value.trim() === ''}>
+          Save detail
+        </button>
+      </form>
+    </div>
+  )
+}
+
+interface AttachmentsPanelProps {
+  attachments: LeadAttachmentRecord[]
+  busy: boolean
+  onUpload: (file: File) => Promise<boolean>
+  onDownload: (attachment: LeadAttachmentRecord) => Promise<void>
+  onRemove: (attachment: LeadAttachmentRecord) => Promise<boolean>
+  onRejected: (message: string) => void
+}
+
+function AttachmentsPanel({ attachments, busy, onUpload, onDownload, onRemove, onRejected }: AttachmentsPanelProps) {
+  function handleFile(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.target
+    const file = input.files?.[0]
+    // Reset so choosing the same file again still fires a change.
+    input.value = ''
+    if (file === undefined) return
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      onRejected(`${file.name} is ${formatBytes(file.size)}; a file can be at most ${formatBytes(MAX_ATTACHMENT_BYTES)}.`)
+      return
+    }
+    void onUpload(file)
+  }
+
+  function handleRemove(attachment: LeadAttachmentRecord) {
+    // Removal deletes the bytes for good, so it asks first.
+    if (window.confirm(`Remove ${attachment.filename}? The file cannot be recovered.`)) void onRemove(attachment)
+  }
+
+  return (
+    <div className="panel">
+      <h2>Files</h2>
+      {attachments.length === 0 ? (
+        <p className="empty">No files attached.</p>
+      ) : (
+        <ul className="attachments">
+          {attachments.map((attachment) => (
+            <li key={attachment.id}>
+              <button type="button" className="link-button" onClick={() => void onDownload(attachment)}>
+                {attachment.filename}
+              </button>
+              <span className="muted numeric"> {formatBytes(attachment.size)}</span>
+              <button
+                type="button"
+                className="link-button"
+                disabled={busy}
+                aria-label={`Remove ${attachment.filename}`}
+                onClick={() => handleRemove(attachment)}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <label className="field">
+        <span className="field-label">Attach a file</span>
+        <input type="file" disabled={busy} onChange={handleFile} />
+      </label>
+    </div>
   )
 }

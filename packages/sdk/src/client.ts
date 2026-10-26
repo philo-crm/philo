@@ -10,6 +10,7 @@ import type {
   EmailTemplatePreview,
   LeadContactPatch,
   LeadDetail,
+  LeadPatch,
   LiveNotification,
   LeadPage,
   LeadQuery,
@@ -95,6 +96,9 @@ export class PhiloClient {
     updateContact: (id: number, patch: LeadContactPatch): Promise<LeadDetail> =>
       this.#lead('PATCH', `/${id}`, patch),
 
+    /** Contact fields and `details` in one patch. Only the keys of `details` named change. */
+    update: (id: number, patch: LeadPatch): Promise<LeadDetail> => this.#lead('PATCH', `/${id}`, patch),
+
     moveStage: (id: number, stageId: number): Promise<LeadDetail> =>
       this.#lead('POST', `/${id}/stage`, { stageId }),
 
@@ -102,6 +106,32 @@ export class PhiloClient {
 
     /** The spam view's "not spam": clears the flag and fires the held-back pipeline. */
     markNotSpam: (id: number): Promise<LeadDetail> => this.#lead('POST', `/${id}/not-spam`),
+
+    attachments: {
+      /** Answers with the whole lead, the new file in its `attachments`. */
+      upload: async (
+        id: number,
+        file: { data: Blob | Uint8Array<ArrayBuffer>; filename: string; contentType?: string | undefined },
+      ): Promise<LeadDetail> => {
+        const contentType = file.contentType ?? (file.data instanceof Blob ? file.data.type : '')
+        const res = await this.#http.send(
+          'POST',
+          `${API}/leads/${id}/attachments?filename=${encodeURIComponent(file.filename)}`,
+          { data: file.data, contentType: contentType === '' ? 'application/octet-stream' : contentType },
+        )
+        return ((await res.json()) as { lead: LeadDetail }).lead
+      },
+
+      download: async (id: number, attachmentId: number, signal?: AbortSignal): Promise<Blob> => {
+        const res = await this.#http.send('GET', `${API}/leads/${id}/attachments/${attachmentId}`, undefined, signal)
+        return res.blob()
+      },
+
+      remove: async (id: number, attachmentId: number): Promise<LeadDetail> => {
+        const res = await this.#http.send('DELETE', `${API}/leads/${id}/attachments/${attachmentId}`)
+        return ((await res.json()) as { lead: LeadDetail }).lead
+      },
+    },
   }
 
   readonly stages = {

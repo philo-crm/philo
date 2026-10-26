@@ -58,6 +58,8 @@ export interface FakeApi {
   apiKeySecrets: string[]
   /** The VAPID public key this instance generated at its first boot. */
   vapidPublicKey: string
+  /** Uploaded attachment bytes by id, as `lead_attachment_blobs` would hold them. */
+  files: Map<number, Blob>
   /** Rows in `push_subscriptions`, as the server would hold them. */
   pushSubscriptions: { endpoint: string; p256dh: string; auth: string }[]
   /**
@@ -159,6 +161,8 @@ export function makeLead(overrides: Partial<LeadDetail> & { id: number }): LeadD
     stageName: 'New',
     isSpam: false,
     fields: {},
+    details: {},
+    attachments: [],
     createdAt: '2026-07-01T12:00:00.000Z',
     updatedAt: '2026-07-01T12:00:00.000Z',
     events: [
@@ -704,6 +708,9 @@ function handle(
   const settingsAnswer = handleEmailSettings(api, method, path, body)
   if (settingsAnswer !== undefined) return settingsAnswer
 
+  const attachmentAnswer = handleAttachments(api, method, path, query, body)
+  if (attachmentAnswer !== undefined) return attachmentAnswer
+
   const match = /^\/api\/v1\/leads\/(\d+)(\/[a-z-]+)?$/.exec(path)
   const lead = match?.[1] === undefined ? undefined : api.leads.find((row) => row.id === Number(match[1]))
   if (match === null) return jsonResponse(404, { error: 'not_found' })
@@ -713,6 +720,18 @@ function handle(
   if (method === 'GET' && action === undefined) return jsonResponse(200, { lead })
 
   const payload = (body ?? {}) as Record<string, unknown>
+  if (method === 'PATCH' && action === undefined) {
+    const patch = (payload['details'] ?? {}) as Record<string, unknown>
+    const details = new Map(Object.entries(lead.details))
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) details.delete(key)
+      else details.set(key, value)
+    }
+    lead.details = Object.fromEntries(details)
+    const keys = Object.keys(patch).toSorted()
+    if (keys.length > 0) pushEvent(lead, { type: 'details_changed', payload: { keys }, actor: `user:${TEST_USER.id}` })
+    return jsonResponse(200, { lead })
+  }
   if (method === 'POST' && action === '/notes') {
     const note = payload['note']
     if (typeof note !== 'string' || note.trim() === '') return jsonResponse(400, { error: 'invalid_note' })
@@ -746,6 +765,60 @@ function handle(
   return jsonResponse(404, { error: 'not_found' })
 }
 
+let nextAttachmentId = 500
+
+/**
+ * The file routes. Bytes are kept as the Blob the client sent, so a download
+ * test gets back exactly what was uploaded.
+ */
+function handleAttachments(
+  api: FakeApi,
+  method: string,
+  path: string,
+  query: URLSearchParams,
+  body: unknown,
+): Response | Promise<Response> | undefined {
+  const match = /^\/api\/v1\/leads\/(\d+)\/attachments(?:\/(\d+))?$/.exec(path)
+  if (match === null) return undefined
+  const lead = api.leads.find((row) => row.id === Number(match[1]))
+  if (lead === undefined) return jsonResponse(404, { error: 'not_found' })
+  const actor = `user:${TEST_USER.id}`
+
+  if (method === 'POST' && match[2] === undefined) {
+    const file = body as Blob
+    nextAttachmentId += 1
+    const filename = query.get('filename') ?? ''
+    api.files.set(nextAttachmentId, file)
+    lead.attachments.push({
+      id: nextAttachmentId,
+      filename,
+      contentType: file.type,
+      size: file.size,
+      sha256: 'f'.repeat(64),
+      actor,
+      createdAt: new Date().toISOString(),
+    })
+    pushEvent(lead, { type: 'attachment_added', payload: { attachmentId: nextAttachmentId, filename, size: file.size }, actor })
+    return jsonResponse(201, { lead })
+  }
+
+  const attachment = lead.attachments.find((row) => row.id === Number(match[2]))
+  if (attachment === undefined) return jsonResponse(404, { error: 'attachment_not_found' })
+  // Read out first: jsdom's Blob is not one the runtime's Response can consume.
+  if (method === 'GET') return api.files.get(attachment.id)!.arrayBuffer().then((bytes) => new Response(bytes))
+  if (method === 'DELETE') {
+    lead.attachments = lead.attachments.filter((row) => row.id !== attachment.id)
+    api.files.delete(attachment.id)
+    pushEvent(lead, {
+      type: 'attachment_removed',
+      payload: { attachmentId: attachment.id, filename: attachment.filename, size: attachment.size },
+      actor,
+    })
+    return jsonResponse(200, { lead })
+  }
+  return undefined
+}
+
 function headerOf(init: RequestInit | undefined, name: string): string | undefined {
   const headers = init?.headers
   if (headers === undefined) return undefined
@@ -758,8 +831,9 @@ function headerOf(init: RequestInit | undefined, name: string): string | undefin
  * valid token, and a refresh token waits in storage for an `<App />` that boots
  * from scratch. `signedIn: false` starts from a browser that has never signed in.
  */
-/** The IdP's endpoints take a form, the API takes JSON. */
+/** The IdP's endpoints take a form, the API takes JSON — except a file upload. */
 function parseBody(body: unknown, contentType: string | undefined): unknown {
+  if (body instanceof Blob) return body
   if (typeof body !== 'string') return undefined
   return contentType === 'application/x-www-form-urlencoded' ? new URLSearchParams(body) : JSON.parse(body)
 }
@@ -786,6 +860,7 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     apiKeySecrets: [],
     vapidPublicKey: TEST_VAPID_PUBLIC_KEY,
     pushSubscriptions: [],
+    files: new Map(),
     liveNotifications: [],
     calls: [],
     ...rest,

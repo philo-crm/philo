@@ -9,6 +9,12 @@ export const MAX_SEARCH_LENGTH = 256
 export const MAX_NOTE_LENGTH = 5_000
 export const MAX_CONTACT_FIELD_LENGTH = 200
 export const MAX_EMAIL_LENGTH = 254
+export const MAX_DETAIL_KEY_LENGTH = 100
+export const MAX_DETAILS_BYTES = 32_000
+
+/** packages/server/src/leads/attachments.ts */
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+export const MAX_ATTACHMENT_FILENAME_LENGTH = 255
 
 /** packages/server/src/stages/service.ts */
 export const MAX_STAGE_NAME_LENGTH = 80

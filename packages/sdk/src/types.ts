@@ -14,6 +14,8 @@ export interface LeadRecord {
   isSpam: boolean
   /** The intake payload's non-reserved keys, as submitted — see ADR-0003. */
   fields: Record<string, unknown>
+  /** Added after intake by users and agents — ADR-0008. */
+  details: Record<string, unknown>
   createdAt: string
   updatedAt: string
 }
@@ -27,8 +29,20 @@ export interface LeadEventRecord {
   createdAt: string
 }
 
+/** A file on a lead. The bytes come from `leads.attachments.download`. */
+export interface LeadAttachmentRecord {
+  id: number
+  filename: string
+  contentType: string
+  size: number
+  sha256: string
+  actor: string
+  createdAt: string
+}
+
 export interface LeadDetail extends LeadRecord {
   events: LeadEventRecord[]
+  attachments: LeadAttachmentRecord[]
 }
 
 export interface LeadPage {
@@ -66,6 +80,11 @@ export interface LeadContactPatch {
   name?: string | null | undefined
   email?: string | null | undefined
   phone?: string | null | undefined
+}
+
+/** Contact fields as in `LeadContactPatch`; `details` merges by key, and null removes one. */
+export interface LeadPatch extends LeadContactPatch {
+  details?: Record<string, unknown> | undefined
 }
 
 export interface StageRecord {
