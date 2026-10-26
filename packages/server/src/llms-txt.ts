@@ -113,9 +113,10 @@ unauthenticated caller with 401. Bodies are JSON, except an attachment's.
   merges by key, null removing one. The submitted \`fields\` are the record of
   what the lead sent and are not editable.
 - DELETE /leads/{id} — erases the lead with its timeline, details and files.
-  204, or 404 if there is no such lead. Permanent: there is no undo and no
-  record left behind. To take a lead out of the funnel, move it to a final
-  stage instead.
+  204, or 404 if there is no such lead. Permanent: there is no undo, and
+  nothing about the lead is kept apart from its id in the server log, though
+  backups taken before now still hold it. To take a lead out of the funnel,
+  move it to a final stage instead.
 - POST /leads/{id}/attachments?filename=... — the file is the raw body, typed by
   its Content-Type; up to 10 MB.
 - GET /leads/{id}/attachments/{attachmentId} — the file, always as a download.
