@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm'
-import type { Db } from '../db/index.ts'
+import { truncateWal, type Db } from '../db/index.ts'
 import { leadAttachments, leadEvents, leads, stages } from '../db/schema.ts'
 import { isWithinDepthLimit } from '../intake/payload.ts'
 import { err, ok, type Result } from '../result.ts'
@@ -653,6 +653,45 @@ export function addLeadNote(
 
   if (!found) return err('not_found')
   return requireLead(db, id)
+}
+
+/**
+ * Erases the lead and everything held about it — DESIGN.md (Erasure). Its
+ * timeline, attachments and search row go with it by cascade and trigger, and
+ * nothing is written anywhere in its place: a record of the deletion that named
+ * the person would be the very thing that was asked to go.
+ *
+ * `secure_delete` zeroes the freed pages, but the old page images stay in the
+ * WAL until a checkpoint copies the zeroed ones over the file and empties it —
+ * SQLite's own checkpoints never empty it. A reader holding the WAL open (an
+ * online backup) can keep that from completing, so it is retried until it does.
+ */
+export function deleteLead(db: Db, id: number, actor: string): boolean {
+  const deleted = db.delete(leads).where(eq(leads.id, id)).run().changes > 0
+  if (!deleted) return false
+
+  console.log(`lead ${id} deleted by ${actor}`)
+  scrubWal(db, id)
+  return true
+}
+
+/** Between checkpoint attempts while something holds the WAL. */
+export const WAL_RETRY_MS = 30_000
+/** An hour of retries; past that, the next boot's checkpoint finishes it. */
+const MAX_WAL_ATTEMPTS = 120
+
+function scrubWal(db: Db, leadId: number, attempt = 1): void {
+  // A timer can outlive the connection — a shutdown, or a test closing it.
+  if (!db.$client.open) return
+  try {
+    if (truncateWal(db)) return
+  } catch (error: unknown) {
+    console.error(`lead ${leadId}: could not checkpoint the WAL`, error)
+    return
+  }
+  if (attempt === 1) console.warn(`lead ${leadId}: the WAL is in use, so its old pages linger until a checkpoint completes`)
+  if (attempt >= MAX_WAL_ATTEMPTS) return
+  setTimeout(() => scrubWal(db, leadId, attempt + 1), WAL_RETRY_MS).unref()
 }
 
 export interface SpamPromotion {

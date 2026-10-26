@@ -100,6 +100,12 @@ search duplicate hits. `packages/server/test/db.test.ts` asserts that all three 
 exist after startup and that the index holds exactly one row per lead, so a
 migration that gets either half wrong fails the suite.
 
+**A migration that drops and re-creates `leads_fts` must turn its
+`secure-delete` option back on** (see `0009_leads_fts_secure_delete.sql`).
+The option lives in the table's own config, so it goes with the table, and
+without it a deleted lead stays readable in the index's old segments. The same
+test checks it.
+
 ## Architecture decisions
 
 Significant architectural choices are recorded in [docs/adr/](docs/adr/). If

@@ -107,6 +107,11 @@ export class PhiloClient {
     /** The spam view's "not spam": clears the flag and fires the held-back pipeline. */
     markNotSpam: (id: number): Promise<LeadDetail> => this.#lead('POST', `/${id}/not-spam`),
 
+    /** For good, with everything held about the lead. There is no undo. */
+    delete: async (id: number): Promise<void> => {
+      await this.#http.request('DELETE', `${API}/leads/${id}`)
+    },
+
     attachments: {
       /** Answers with the whole lead, the new file in its `attachments`. */
       upload: async (

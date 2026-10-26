@@ -218,6 +218,10 @@ export function removeAttachment(id: number, attachmentId: number): Promise<Lead
   return philo.leads.attachments.remove(id, attachmentId)
 }
 
+export function deleteLead(id: number): Promise<void> {
+  return philo.leads.delete(id)
+}
+
 const SETTINGS_MESSAGES: Record<string, string> = {
   invalid_smtp_host: 'Enter the SMTP host your provider gave you.',
   invalid_smtp_port: 'A port is a whole number between 1 and 65535.',

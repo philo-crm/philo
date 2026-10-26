@@ -105,6 +105,13 @@ describe('PhiloClient', () => {
     expect(isUnauthorized(failure)).toBe(true)
   })
 
+  it('deletes a lead', async () => {
+    const { calls, fetch } = recorder(() => new Response(null, { status: 204 }))
+    await expect(new PhiloClient({ fetch }).leads.delete(4)).resolves.toBeUndefined()
+    expect(calls[0]?.url).toBe('/api/v1/leads/4')
+    expect(calls[0]?.init?.method).toBe('DELETE')
+  })
+
   it('treats 204 as an empty success', async () => {
     const { fetch } = recorder(() => new Response(null, { status: 204 }))
     await expect(new PhiloClient({ fetch }).apiKeys.revoke(1)).resolves.toBeUndefined()

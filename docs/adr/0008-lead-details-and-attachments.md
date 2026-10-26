@@ -101,7 +101,8 @@ For file storage specifically:
   and host security matter more. Docs should say so plainly.
 - No masking, per-key access control, or retention automation. Deletion is
   manual, and Philo has no lead deletion yet, so erasing everything held
-  about one person is a gap this decision makes more pressing.
+  about one person is a gap this decision makes more pressing. (Since closed:
+  a lead can be deleted for good — DESIGN.md (Erasure).)
 - This supersedes the guardrail in AGENTS.md and the attachments deferral in
   DESIGN.md, and replaces ADR-0003's reliance on that guardrail; ADR-0003's
   data-model decision itself stands.

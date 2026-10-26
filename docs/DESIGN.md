@@ -152,7 +152,44 @@ Full rationale for the generality decision:
   history comes from `lead_events` (cheap history, no event sourcing).
 - **No `assigned_to`** on leads for now (1–2 users per instance).
 - Duplicate handling is a short intake dedupe window only — a reapplicant
-  months later is a **new lead**, never auto-merged.
+  months later is a **new lead**, never auto-merged. A repeat inside the
+  window whose lead has since been deleted is filed again.
+
+### Erasure
+
+`DELETE /api/v1/leads/{id}` is a hard delete, open to any credential
+(ADR-0007). `lead_events`, `lead_attachments` and `lead_attachment_blobs`
+cascade from `leads`, and `leads_fts_delete` drops the search row. Nothing is
+written in its place — a timeline entry or tombstone that named the person
+would keep the thing that was asked to go; the server log gets the id and the
+actor only. No soft delete, undo window, bulk delete or retention schedule.
+
+Gone from the tables is not gone from the file. Three things, all of them
+needed (measured: drop any one and the deleted values can still be read out of
+the file with `grep`):
+
+- **`PRAGMA secure_delete = ON`** for every connection, so freed pages and
+  freed space inside pages are zeroed. This also covers a removed attachment
+  or an overwritten detail.
+- **FTS5 `secure-delete`** on `leads_fts` (migration 0009). FTS5 normally
+  deletes by appending a marker, so the cancelled tokens survive in older
+  index segments that are never freed for `secure_delete` to zero.
+- **`PRAGMA wal_checkpoint(TRUNCATE)`** after the delete. The old page images
+  stay in the WAL until a checkpoint writes the zeroed pages over the file and
+  empties it; SQLite's automatic checkpoints never empty it. A reader holding
+  the WAL (an online backup) makes it return busy without waiting, and it is
+  retried every 30 seconds until it completes, and again at every boot.
+
+Cost, measured on 5,000 leads with a 256 KB file on every tenth: deleting a
+lead went from 0.16 ms to 0.75 ms; updating a lead (which rewrites its search
+row) from about 0.05 ms to 0.24 ms; inserts unchanged. Negligible at a
+single business's scale, so it is always on rather than an option.
+
+A database written before this was on has free space that was never zeroed,
+holding values earlier edits overwrote. The boot that applies migration 0009
+merges the search index and then runs a one-time `VACUUM`, which rebuilds the
+file without it. Backups taken before a deletion still hold the lead —
+DEPLOYMENT.md (Backup).
 
 ## Intake endpoint
 
@@ -296,7 +333,8 @@ MVP tool set:
 
 - **Leads:** `list_leads` (filters: stage, form, spam, date; FTS5 `search`),
   `get_lead` (record + timeline), `create_lead`, `update_lead`,
-  `move_lead_stage`, `add_lead_note`; `update_lead` edits `details`, and
+  `move_lead_stage`, `add_lead_note`, `delete_lead` (`destructiveHint`,
+  permanent — see Erasure); `update_lead` edits `details`, and
   attachments get add, fetch and remove tools — `get_lead` lists them (ADR-0008)
 - **Funnel:** `list_stages`, `create_stage`, `update_stage` (rename,
   terminal flag), `reorder_stages` (whole funnel), `delete_stage` (empty,
