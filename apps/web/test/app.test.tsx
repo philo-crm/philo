@@ -122,17 +122,63 @@ describe('App', () => {
     expect(await screen.findByText('Bot Submission')).toBeDefined()
   })
 
-  it('reaches settings from the shell, and stops lighting Leads', async () => {
+  it('reaches server settings from the account menu, and stops lighting Leads', async () => {
     installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
     render(<App />)
     await screen.findByRole('heading', { name: 'Leads' })
 
-    fireEvent.click(screen.getByRole('link', { name: 'Settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Server settings' }))
 
-    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: 'Server settings' })).toBeDefined()
     expect(window.location.pathname).toBe('/settings')
     expect(await screen.findByLabelText('SMTP host')).toBeDefined()
     expect(screen.getByRole('link', { name: 'Leads' }).getAttribute('aria-current')).toBeNull()
+    // The menu shuts once it has taken you somewhere.
+    expect(screen.queryByRole('link', { name: 'Server settings' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('link', { name: 'API keys' }))
+    expect(window.location.pathname).toBe('/settings/api-keys')
+    expect(await screen.findByRole('heading', { name: 'API keys' })).toBeDefined()
+  })
+
+  it('reaches the selected funnel’s settings from the switcher', async () => {
+    installFakeApi({ leads: [] })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Leads' })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Funnel: Default' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Funnel settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'Default funnel' })).toBeDefined()
+    fireEvent.click(screen.getByRole('link', { name: 'Website form' }))
+    expect(window.location.pathname).toBe('/funnel/form')
+    expect(await screen.findByText('Sample form')).toBeDefined()
+  })
+
+  it('switches the colour theme from the account menu', async () => {
+    installFakeApi({ leads: [] })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Leads' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dark' }))
+    expect(document.documentElement.dataset['theme']).toBe('dark')
+    expect(screen.getByRole('button', { name: 'Dark' }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'System' }))
+    expect(document.documentElement.dataset['theme']).toBeUndefined()
+  })
+
+  it('opens a blank new lead from the top bar', async () => {
+    installFakeApi({ leads: [] })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Leads' })
+
+    fireEvent.click(screen.getByRole('link', { name: 'New lead' }))
+
+    expect(await screen.findByRole('heading', { name: 'New lead' })).toBeDefined()
+    expect(window.location.pathname).toBe('/leads/new')
   })
 
   it('reaches the funnel board from the shell', async () => {
@@ -140,9 +186,9 @@ describe('App', () => {
     render(<App />)
     await screen.findByRole('heading', { name: 'Leads' })
 
-    fireEvent.click(screen.getByRole('link', { name: 'Funnel' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Board' }))
 
-    expect(await screen.findByRole('heading', { name: 'Funnel' })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: 'Default' })).toBeDefined()
     expect(window.location.pathname).toBe('/board')
     // A card on the board opens the same lead screen the list does.
     fireEvent.click(await screen.findByRole('link', { name: 'Dana Okafor' }))
@@ -168,6 +214,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'Leads' })
     const refreshToken = api.refreshToken
 
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
 
     expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeDefined()

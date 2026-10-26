@@ -1,8 +1,8 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { fetchFunnels, type FunnelRecord } from './api.ts'
 import { useResource, type Resource } from './useResource.ts'
 
-/** The funnel the board and the template editor last showed, per browser. */
+/** The funnel the board and the funnel settings last showed, per browser. */
 const SELECTED_FUNNEL_KEY = 'philo.funnel'
 
 function readStored(): number | undefined {
@@ -15,34 +15,67 @@ function readStored(): number | undefined {
   }
 }
 
-function writeStored(id: number): void {
+/**
+ * One selection for the whole app — ADR-0009. The switcher in the top bar and
+ * every screen scoped to a funnel read the same value, so changing it in one
+ * place moves them all.
+ */
+const selectionListeners = new Set<() => void>()
+/** Kept alongside storage so a browser that refuses to store still switches for this visit. */
+let selection = readStored()
+
+export function selectFunnel(id: number): void {
+  selection = id
   try {
     window.localStorage.setItem(SELECTED_FUNNEL_KEY, String(id))
   } catch {
     // A browser that remembers nothing starts on the default funnel next time.
   }
+  for (const listener of selectionListeners) listener()
+}
+
+function subscribeSelection(listener: () => void): () => void {
+  selectionListeners.add(listener)
+  return () => selectionListeners.delete(listener)
+}
+
+function currentSelection(): number | undefined {
+  return selection ?? readStored()
+}
+
+/**
+ * Funnels are listed by several mounted components at once — the switcher and
+ * whatever screen is open — so a change made through one of them tells the rest
+ * to refetch rather than leave the switcher showing an old name.
+ */
+const changeListeners = new Set<() => void>()
+
+export function funnelsChanged(): void {
+  for (const listener of changeListeners) listener()
 }
 
 export function useFunnels(): Resource<FunnelRecord[]> {
   const load = useCallback((signal: AbortSignal) => fetchFunnels(signal), [])
-  return useResource(load)
+  const funnels = useResource(load)
+  const { refresh } = funnels
+  useEffect(() => {
+    changeListeners.add(refresh)
+    return () => {
+      changeListeners.delete(refresh)
+    }
+  }, [refresh])
+  return funnels
 }
 
 /**
- * Which funnel a screen is showing — ADR-0009. Remembered across screens and
- * visits; a remembered funnel that has since been deleted falls back to the
- * default. Undefined until the funnel list has loaded.
+ * Which funnel is selected. A remembered funnel that has since been deleted
+ * falls back to the default. Undefined until the funnel list has loaded.
  */
 export function useSelectedFunnel(funnels: FunnelRecord[] | undefined): [number | undefined, (id: number) => void] {
-  const [chosen, setChosen] = useState(readStored)
-  const select = useCallback((id: number) => {
-    writeStored(id)
-    setChosen(id)
-  }, [])
-
-  if (funnels === undefined) return [undefined, select]
+  const chosen = useSyncExternalStore(subscribeSelection, currentSelection)
+  if (funnels === undefined) return [undefined, selectFunnel]
   const selected = funnels.find((funnel) => funnel.id === chosen) ?? funnels.find((funnel) => funnel.isDefault)
-  return [selected?.id ?? funnels[0]?.id, select]
+  return [selected?.id ?? funnels[0]?.id, selectFunnel]
 }
 
 export interface FunnelPickerProps {
@@ -52,11 +85,11 @@ export interface FunnelPickerProps {
   disabled?: boolean
 }
 
-/** Nothing at all on an instance with one funnel, which is most of them. */
+/** A plain select, for a form that files something into a funnel. Nothing on a one-funnel instance. */
 export function FunnelPicker({ funnels, selected, onChange, disabled = false }: FunnelPickerProps) {
   if (funnels.length < 2) return null
   return (
-    <label className="field funnel-picker">
+    <label className="field">
       <span className="field-label">Funnel</span>
       <select
         value={selected === undefined ? '' : String(selected)}

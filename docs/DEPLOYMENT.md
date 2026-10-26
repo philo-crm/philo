@@ -99,7 +99,7 @@ wrong by omission:
   the one in the tokens; a base URL that is not what browsers reach makes
   sign-in fail at the first redirect.
 - **`https` is what lets push work at all**, because a browser will not
-  subscribe from an insecure context. On an http base URL the Settings toggle
+  subscribe from an insecure context. On an http base URL the notifications toggle
   simply never succeeds, with nothing on screen saying why.
 
 No trailing slash is needed — one is stripped.
@@ -236,10 +236,10 @@ with `docker logs philo`. Then:
    least one of email or phone is required. Add the honeypot field named in the
    log as a hidden input — a submission that fills it is quarantined as spam
    rather than rejected.
-3. **Configure SMTP** in Settings — see [EMAIL.md](EMAIL.md). Until you do, no
+3. **Configure SMTP** in Server settings (the account menu, top right) — see [EMAIL.md](EMAIL.md). Until you do, no
    notifications and no acknowledgments are sent, and nothing outside the boot
    log says so.
-4. **Turn on push**, per device, in Settings. On iOS the site must be added to
+4. **Turn on push**, per device, in Server settings → Notifications. On iOS the site must be added to
    the Home Screen first; the app offers a walkthrough. Push is best-effort by
    design ([ADR-0004](adr/0004-push-best-effort-email-guaranteed.md)) — email
    is the channel that must always work.
@@ -384,7 +384,7 @@ Philo has no opinion about it.
 |---|---|
 | Sign-in fails right after the redirect | `PHILO_PUBLIC_BASE_URL` (the issuer) or `PHILO_APP_URL` (the redirect) is not the URL the browser actually uses. The sign-in dialog refuses a redirect it was not configured for. |
 | The push toggle never turns on | Base URL is not `https`, or, on iOS, the site has not been added to the Home Screen. EU iOS has no PWA push at all. |
-| No email arrives, no error shown | SMTP is not configured, or a template is disabled. The boot log says which; template edits are in Settings. |
+| No email arrives, no error shown | SMTP is not configured, or a template is disabled. The boot log says which; template edits are in Funnel settings → Email templates. |
 | A legitimate submitter is rate-limited | Behind a proxy without `PHILO_TRUSTED_PROXY=true`, everyone shares one budget. |
 | Form posts fail from the browser with a CORS error | The form's origin is not in that intake form's `allowed_origins`. |
 | The app returns to the sign-in screen | The refresh token expired or was revoked. Each lasts 30 days and is replaced on every use, so this means a device unused for a month, or signed out elsewhere. |

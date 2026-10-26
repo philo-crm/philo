@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, type FormEvent } from 'react'
 import {
+  createLead,
   createStage,
   deleteStage,
   fetchBoard,
@@ -10,12 +11,12 @@ import {
   updateStage,
   MAX_STAGE_NAME_LENGTH,
 } from './api.ts'
-import { FunnelPicker, useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
-import { IntakeDetails } from './IntakeDetails.tsx'
+import { useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
 import { firstFailure } from './http.ts'
+import { PlusIcon, SettingsIcon } from './icons.tsx'
 import { useLiveChanges } from './live.ts'
 import { Link } from './router.tsx'
-import { StageColumn } from './StageColumn.tsx'
+import { StageColumn, type QuickLead } from './StageColumn.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface FunnelBoardProps {
@@ -24,7 +25,7 @@ export interface FunnelBoardProps {
 
 export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
   const funnels = useFunnels()
-  const [funnelId, selectFunnel] = useSelectedFunnel(funnels.data)
+  const [funnelId] = useSelectedFunnel(funnels.data)
   // Waits for the funnel list, so the board never flashes the default funnel's
   // columns before switching to the one this browser last looked at.
   const loadBoard = useCallback(
@@ -36,7 +37,9 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
   const [actionError, setActionError] = useState<unknown>(undefined)
   const [pending, setPending] = useState(false)
   const [draggingId, setDraggingId] = useState<number | undefined>(undefined)
+  const [draggingStageId, setDraggingStageId] = useState<number | undefined>(undefined)
   const [touchOverId, setTouchOverId] = useState<number | undefined>(undefined)
+  const [addingStage, setAddingStage] = useState(false)
   const [newName, setNewName] = useState('')
   const [newTerminal, setNewTerminal] = useState(false)
 
@@ -54,7 +57,8 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
   useSessionGuard(error, onSessionExpired)
 
   const columns = board.data ?? []
-  const intakeForms = funnels.data?.find((funnel) => funnel.id === funnelId)?.forms ?? []
+  const funnel = funnels.data?.find((candidate) => candidate.id === funnelId)
+  const leadTotal = columns.reduce((sum, column) => sum + column.total, 0)
   const stages = columns.map((column) => column.stage)
   // Still busy while the refetch below is in flight: re-enabling the controls
   // over stale counts invites a second edit against a funnel that just moved.
@@ -95,18 +99,37 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
     })
   }
 
+  /**
+   * The server takes the complete funnel in its new order and refuses a
+   * partial one, so the new order is computed here and sent whole. The columns
+   * move at once; a refused order refetches, which puts them back.
+   */
+  function handlePlaceStage(id: number, targetId: number) {
+    const order = withStagePlaced(columns.map((column) => column.stage.id), id, targetId)
+    if (order === undefined || board.data === undefined) return
+    const byId = new Map(board.data.map((column) => [column.stage.id, column]))
+    board.set(order.flatMap((stageId) => byId.get(stageId) ?? []))
+    void run(() => reorderStages(order, funnelId)).then((placed) => {
+      if (!placed) board.reload()
+    })
+  }
+
   function handleReorderStage(id: number, offset: -1 | 1) {
-    // The server takes the complete funnel in its new order and refuses a
-    // partial one, so the swap is computed here and sent whole.
     const order = columns.map((column) => column.stage.id)
-    const from = order.indexOf(id)
-    const moved = order[from]
-    const displaced = order[from + offset]
-    if (moved === undefined || displaced === undefined) return
-    const next = [...order]
-    next[from] = displaced
-    next[from + offset] = moved
-    void run(() => reorderStages(next, funnelId))
+    const target = order[order.indexOf(id) + offset]
+    if (target !== undefined) handlePlaceStage(id, target)
+  }
+
+  function handleCreateLead(stageId: number, lead: QuickLead): Promise<boolean> {
+    return run(() =>
+      createLead({
+        name: lead.name === '' ? undefined : lead.name,
+        email: lead.email === '' ? undefined : lead.email,
+        phone: lead.phone === '' ? undefined : lead.phone,
+        funnelId,
+        stageId,
+      }),
+    )
   }
 
   async function handleCreateStage(event: FormEvent<HTMLFormElement>) {
@@ -117,36 +140,31 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
     if (await run(() => createStage(name, newTerminal, funnelId))) {
       setNewName('')
       setNewTerminal(false)
+      setAddingStage(false)
     }
   }
 
   return (
     <section className="screen screen-wide">
       <header className="screen-head">
-        <h1>Funnel</h1>
-        <FunnelPicker funnels={funnels.data ?? []} selected={funnelId} onChange={selectFunnel} disabled={busy} />
-        <Link to="/leads/new" className="button-link">
-          New lead
+        <div className="screen-title">
+          <h1>{funnel?.name ?? 'Board'}</h1>
+          <p className="count" aria-live="polite">
+            {board.loading && board.data === undefined
+              ? 'Loading…'
+              : `${leadTotal} ${leadTotal === 1 ? 'lead' : 'leads'} in ${stages.length} ${stages.length === 1 ? 'stage' : 'stages'}`}
+          </p>
+        </div>
+        <Link to="/funnel" className="button-link button-quiet">
+          <SettingsIcon />
+          <span>Funnel settings</span>
         </Link>
-        <p className="count" aria-live="polite">
-          {board.loading && board.data === undefined ? 'Loading…' : `${stages.length} stages`}
-        </p>
       </header>
 
       {error !== undefined && (
         <p className="notice notice-error" role="alert">
           {stageErrorMessage(error)}
         </p>
-      )}
-
-      {/* Where this funnel's leads come from, for whoever is wiring up the website. */}
-      {intakeForms.length > 0 && (
-        <details className="panel board-intake">
-          <summary>Connect a website form</summary>
-          {intakeForms.map((form) => (
-            <IntakeDetails key={form.id} form={form} />
-          ))}
-        </details>
       )}
 
       <div className="board">
@@ -159,12 +177,16 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
             columnCount={columns.length}
             busy={busy}
             draggingId={draggingId}
+            draggingStageId={draggingStageId}
             touchOverId={touchOverId}
             onDragLead={setDraggingId}
+            onDragStage={setDraggingStageId}
             onTouchOver={setTouchOverId}
             onMoveLead={handleMoveLead}
+            onCreateLead={handleCreateLead}
             onEditStage={(id, patch) => run(() => updateStage(id, patch))}
             onReorderStage={handleReorderStage}
+            onPlaceStage={handlePlaceStage}
             onDeleteStage={(id) => void run(() => deleteStage(id))}
           />
         ))}
@@ -172,34 +194,59 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
         {/* A column of its own, at the end, so adding a stage is where the
             stage will land rather than somewhere in the page furniture. */}
         <section className="board-column board-add" aria-label="Add a stage">
-          <form className="stage-form" onSubmit={(event) => void handleCreateStage(event)}>
-            <label className="field">
-              <span className="field-label">New stage</span>
-              <input
-                value={newName}
-                placeholder="Stage name"
-                maxLength={MAX_STAGE_NAME_LENGTH}
-                onChange={(event) => setNewName(event.target.value)}
-              />
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={newTerminal}
-                onChange={(event) => setNewTerminal(event.target.checked)}
-              />
-              <span>Terminal stage</span>
-            </label>
-            <div className="stage-form-actions">
-              <button type="submit" disabled={busy || newName.trim() === ''}>
-                Add stage
-              </button>
-            </div>
-          </form>
+          {addingStage ? (
+            <form className="stage-form" onSubmit={(event) => void handleCreateStage(event)}>
+              <label className="field">
+                <span className="field-label">New stage</span>
+                <input
+                  value={newName}
+                  autoFocus
+                  placeholder="Stage name"
+                  maxLength={MAX_STAGE_NAME_LENGTH}
+                  onChange={(event) => setNewName(event.target.value)}
+                />
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={newTerminal}
+                  onChange={(event) => setNewTerminal(event.target.checked)}
+                />
+                <span>Terminal stage — where leads finish</span>
+              </label>
+              <div className="stage-form-actions">
+                <button type="submit" disabled={busy || newName.trim() === ''}>
+                  Add stage
+                </button>
+                <button type="button" disabled={busy} onClick={() => setAddingStage(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button type="button" className="board-add-button" disabled={busy} onClick={() => setAddingStage(true)}>
+              <PlusIcon />
+              <span>New stage</span>
+            </button>
+          )}
         </section>
       </div>
     </section>
   )
+}
+
+/**
+ * The stage order once `id` takes `targetId`'s place: dropped on a column to
+ * its right it lands after that column, to its left before it. Undefined when
+ * either is not in the order or nothing would move.
+ */
+export function withStagePlaced(order: number[], id: number, targetId: number): number[] | undefined {
+  const from = order.indexOf(id)
+  const to = order.indexOf(targetId)
+  if (from === -1 || to === -1 || from === to) return undefined
+  const next = order.filter((stageId) => stageId !== id)
+  next.splice(to, 0, id)
+  return next
 }
 
 /** The board as it will be once the move lands: the card on top of its new column. */

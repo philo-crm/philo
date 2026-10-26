@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { Settings } from '../src/Settings.tsx'
 import { installFakeApi, TEST_EMAIL_SETTINGS, type StoredEmailSettings } from './support/fake-api.ts'
@@ -195,11 +195,26 @@ describe('Settings', () => {
 
   it('carries the API key manager, which is the only place a key can be made', async () => {
     installFakeApi()
-    renderSettings()
-    await loaded()
+    render(<Settings section="api-keys" onSessionExpired={vi.fn()} />)
 
     expect(await screen.findByRole('heading', { name: 'API keys' })).toBeDefined()
     expect(await screen.findByText('Nightly export')).toBeDefined()
+  })
+
+  it('lists its sections and marks the one showing', async () => {
+    installFakeApi()
+    render(<Settings section="webhooks" onSessionExpired={vi.fn()} />)
+
+    const nav = screen.getByRole('navigation', { name: 'Server settings sections' })
+    expect(within(nav).getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'Email & business',
+      'Funnels',
+      'Notifications',
+      'API keys',
+      'Webhooks',
+    ])
+    expect(within(nav).getByRole('link', { name: 'Webhooks' }).getAttribute('aria-current')).toBe('page')
+    expect(await screen.findByRole('heading', { name: 'Webhooks' })).toBeDefined()
   })
 
   it('hands an expired session back to the shell', async () => {

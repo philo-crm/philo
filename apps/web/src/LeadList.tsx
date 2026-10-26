@@ -7,7 +7,7 @@ import {
   PAGE_SIZE,
 } from './api.ts'
 import { formatDateTime, leadContact, leadTitle } from './format.ts'
-import { useFunnels } from './FunnelPicker.tsx'
+import { useFunnels, useSelectedFunnel } from './FunnelPicker.tsx'
 import { useLiveChanges } from './live.ts'
 import { firstFailure } from './http.ts'
 import { Link } from './router.tsx'
@@ -28,9 +28,17 @@ const ALL_FUNNELS = 'all'
 export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
-  const [funnelId, setFunnelId] = useState<number | undefined>(undefined)
-  const [stageId, setStageId] = useState<number | undefined>(undefined)
-  const [offset, setOffset] = useState(0)
+  /**
+   * "All funnels", remembered with the funnel selected when it was picked, so
+   * choosing another funnel in the top bar ends it rather than leaving the
+   * list and the switcher naming different things.
+   */
+  const [acrossUnder, setAcrossUnder] = useState<{ funnelId: number | undefined } | undefined>(undefined)
+  const [stageFilter, setStageFilter] = useState<{ funnelId: number | undefined; stageId: number | undefined }>({
+    funnelId: undefined,
+    stageId: undefined,
+  })
+  const [paging, setPaging] = useState<{ funnelId: number | undefined; offset: number }>({ funnelId: undefined, offset: 0 })
   const [actionError, setActionError] = useState<unknown>(undefined)
   const [promotingId, setPromotingId] = useState<number | undefined>(undefined)
 
@@ -49,20 +57,36 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
       setSearch(next)
       // A narrowed result set has no page three; staying on it would show an
       // empty table for a search that matched plenty.
-      setOffset(0)
+      setPaging((previous) => ({ ...previous, offset: 0 }))
     }, SEARCH_DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
   }, [searchInput])
 
+  const funnels = useFunnels()
+  const [selectedFunnel, selectFunnel] = useSelectedFunnel(funnels.data)
+  const multiFunnel = (funnels.data?.length ?? 0) > 1
+  // The list follows the funnel chosen in the top bar, like the board — unless
+  // it was asked to look across all of them. The spam view has no funnels.
+  const acrossFunnels = acrossUnder !== undefined && acrossUnder.funnelId === selectedFunnel
+  const funnelId = isSpam || !multiFunnel || acrossFunnels ? undefined : selectedFunnel
+  // A stage filter or a page belongs to the funnel it was set under; switching
+  // funnels, from here or from the top bar, starts both over.
+  const stageId = stageFilter.funnelId === funnelId ? stageFilter.stageId : undefined
+  const offset = paging.funnelId === funnelId ? paging.offset : 0
+  const setStageId = (id: number | undefined) => setStageFilter({ funnelId, stageId: id })
+  const setOffset = useCallback((next: number) => setPaging({ funnelId, offset: next }), [funnelId])
+  // Until the funnels are known, so the list does not flash every funnel's
+  // leads before narrowing to the selected one.
+  const ready = isSpam || funnels.data !== undefined || funnels.error !== undefined
+
   const loadLeads = useCallback(
     (signal: AbortSignal) =>
-      fetchLeads({ isSpam, funnelId, stageId, search, limit: PAGE_SIZE, offset }, signal),
-    [isSpam, funnelId, stageId, search, offset],
+      ready
+        ? fetchLeads({ isSpam, funnelId, stageId, search, limit: PAGE_SIZE, offset }, signal)
+        : new Promise<never>(() => undefined),
+    [ready, isSpam, funnelId, stageId, search, offset],
   )
   const page = useResource(loadLeads)
-
-  const funnels = useFunnels()
-  const multiFunnel = (funnels.data?.length ?? 0) > 1
   // Stages belong to a funnel (ADR-0009), so the stage filter offers one
   // funnel's: the one chosen, or the only one there is. Across several funnels
   // it is hidden rather than a list of same-named stages nobody can tell apart.
@@ -99,7 +123,7 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
     if (pageData !== undefined && pageData.leads.length === 0 && pageData.offset > 0) {
       setOffset(Math.max(0, pageData.offset - PAGE_SIZE))
     }
-  }, [pageData])
+  }, [pageData, setOffset])
 
   async function handlePromote(id: number) {
     setPromotingId(id)
@@ -128,17 +152,14 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
   return (
     <section className="screen">
       <header className="screen-head">
-        <h1>{isSpam ? 'Spam' : 'Leads'}</h1>
-        {!isSpam && (
-          <Link to="/leads/new" className="button-link">
-            New lead
-          </Link>
-        )}
-        <p className="count" aria-live="polite">
-          {page.loading && page.data === undefined
-            ? 'Loading…'
-            : `${total} ${total === 1 ? 'lead' : 'leads'}`}
-        </p>
+        <div className="screen-title">
+          <h1>{isSpam ? 'Spam' : 'Leads'}</h1>
+          <p className="count" aria-live="polite">
+            {page.loading && page.data === undefined
+              ? 'Loading…'
+              : `${total} ${total === 1 ? 'lead' : 'leads'}`}
+          </p>
+        </div>
       </header>
 
       <div className="toolbar">
@@ -159,10 +180,8 @@ export function LeadList({ isSpam, onSessionExpired }: LeadListProps) {
               value={funnelId === undefined ? ALL_FUNNELS : String(funnelId)}
               onChange={(event) => {
                 const value = event.target.value
-                setFunnelId(value === ALL_FUNNELS ? undefined : Number(value))
-                // Another funnel's stage is not a filter this one can apply.
-                setStageId(undefined)
-                setOffset(0)
+                setAcrossUnder(value === ALL_FUNNELS ? { funnelId: selectedFunnel } : undefined)
+                if (value !== ALL_FUNNELS) selectFunnel(Number(value))
               }}
             >
               <option value={ALL_FUNNELS}>All funnels</option>

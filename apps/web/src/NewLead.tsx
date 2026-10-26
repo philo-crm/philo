@@ -74,13 +74,12 @@ export function NewLead({ onSessionExpired }: NewLeadProps) {
   }
 
   return (
-    <section className="screen">
+    <section className="screen screen-narrow">
       <p className="breadcrumb">
         <Link to="/">← Leads</Link>
       </p>
       <header className="screen-head">
         <h1>New lead</h1>
-        <FunnelPicker funnels={funnels.data ?? []} selected={funnelId} onChange={selectFunnel} disabled={busy} />
       </header>
       <p className="hint">For someone who got in touch some other way. No email is sent to them or to you.</p>
 
@@ -95,8 +94,9 @@ export function NewLead({ onSessionExpired }: NewLeadProps) {
         </p>
       )}
 
-      <form className="panel" aria-label="New lead" onSubmit={(event) => void handleSubmit(event)}>
-        <div className="fields">
+      <form className="panel settings-cards new-lead-form" aria-label="New lead" onSubmit={(event) => void handleSubmit(event)}>
+        <div className="fields fields-2">
+          <FunnelPicker funnels={funnels.data ?? []} selected={funnelId} onChange={selectFunnel} disabled={busy} />
           <label className="field">
             <span className="field-label">Name</span>
             <input
@@ -150,7 +150,7 @@ export function NewLead({ onSessionExpired }: NewLeadProps) {
             </select>
           </label>
         </div>
-        <div className="settings-actions">
+        <div className="form-footer">
           <button type="submit" disabled={busy || funnelId === undefined}>
             {busy ? 'Adding…' : 'Add lead'}
           </button>

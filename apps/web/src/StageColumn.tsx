@@ -1,8 +1,24 @@
 import { useState, type DragEvent, type FormEvent } from 'react'
-import { MAX_STAGE_NAME_LENGTH, type BoardColumn, type LeadRecord, type StageRecord } from './api.ts'
+import {
+  MAX_CONTACT_FIELD_LENGTH,
+  MAX_EMAIL_LENGTH,
+  MAX_STAGE_NAME_LENGTH,
+  type BoardColumn,
+  type LeadRecord,
+  type StageRecord,
+} from './api.ts'
 import { formatDateTime, leadContact, leadTitle } from './format.ts'
+import { GripIcon, MoreIcon, PlusIcon } from './icons.tsx'
+import { Menu } from './Menu.tsx'
 import { Link } from './router.tsx'
 import { STAGE_ATTRIBUTE, useTouchDrag } from './touchDrag.ts'
+
+/** What the column's own add form collects — the rest of a lead is filled in on its screen. */
+export interface QuickLead {
+  name: string
+  email: string
+  phone: string
+}
 
 export interface StageColumnProps {
   column: BoardColumn
@@ -15,13 +31,19 @@ export interface StageColumnProps {
   busy: boolean
   /** The card being dragged, so a column knows whether a drop is worth taking. */
   draggingId: number | undefined
-  /** The column a finger is holding a card over — a touch drag has no dragover. */
+  /** The column being dragged by its grip, so the others know to make room. */
+  draggingStageId: number | undefined
+  /** The column a finger is holding a card or a column over — a touch drag has no dragover. */
   touchOverId: number | undefined
   onDragLead: (leadId: number | undefined) => void
+  onDragStage: (stageId: number | undefined) => void
   onTouchOver: (stageId: number | undefined) => void
   onMoveLead: (leadId: number, stageId: number) => void
+  onCreateLead: (stageId: number, lead: QuickLead) => Promise<boolean>
   onEditStage: (id: number, patch: { name: string; isTerminal: boolean }) => Promise<boolean>
   onReorderStage: (id: number, offset: -1 | 1) => void
+  /** Dropped on another column: take that column's place. */
+  onPlaceStage: (id: number, targetId: number) => void
   onDeleteStage: (id: number) => void
 }
 
@@ -32,19 +54,38 @@ export function StageColumn({
   columnCount,
   busy,
   draggingId,
+  draggingStageId,
   touchOverId,
   onDragLead,
+  onDragStage,
   onTouchOver,
   onMoveLead,
+  onCreateLead,
   onEditStage,
   onReorderStage,
+  onPlaceStage,
   onDeleteStage,
 }: StageColumnProps) {
   const { stage } = column
   const [editing, setEditing] = useState(false)
+  const [adding, setAdding] = useState(false)
   const [name, setName] = useState(stage.name)
   const [isTerminal, setIsTerminal] = useState(stage.isTerminal)
   const [over, setOver] = useState(false)
+
+  // The whole column follows the finger, though only the grip starts the drag.
+  // Ref and pointer handlers share the <section>, as a card's share its <li>,
+  // so the pointer captured at the lift keeps reaching the handlers.
+  const touch = useTouchDrag<HTMLElement>({
+    disabled: busy,
+    onLift: () => onDragStage(stage.id),
+    onOver: onTouchOver,
+    onDrop: (targetId) => {
+      onTouchOver(undefined)
+      onDragStage(undefined)
+      if (targetId !== undefined && targetId !== stage.id) onPlaceStage(stage.id, targetId)
+    },
+  })
 
   function startEditing() {
     // Seeded from the stage each time the form opens, so a cancelled edit — or
@@ -72,9 +113,17 @@ export function StageColumn({
     return id !== undefined && !column.leads.some((lead) => lead.id === id)
   }
 
+  /** Another column, dragged by its grip, that would land in this one's place. */
+  const takesStage = draggingStageId !== undefined && draggingStageId !== stage.id
+
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault()
     setOver(false)
+    if (takesStage) {
+      onPlaceStage(draggingStageId, stage.id)
+      onDragStage(undefined)
+      return
+    }
     if (!accepts(draggingId)) return
     onMoveLead(draggingId, stage.id)
   }
@@ -85,15 +134,29 @@ export function StageColumn({
    * which is the non-spam number the board actually shows.
    */
   const deletable = stage.leadCount === 0 && columnCount > 1
-  const highlighted = over || (touchOverId === stage.id && accepts(draggingId))
+  const touchedOver = touchOverId === stage.id && (accepts(draggingId) || takesStage)
+  const highlighted = over || touchedOver
+  // Which side the dragged column would land on, so the marker shows where.
+  const draggedIndex = stages.findIndex((candidate) => candidate.id === draggingStageId)
+  const placeMarker = takesStage && highlighted ? (draggedIndex > index ? ' is-place-before' : ' is-place-after') : ''
+
+  const className = [
+    'board-column',
+    stage.isTerminal ? ' is-terminal' : '',
+    highlighted && !takesStage ? ' is-over' : '',
+    placeMarker,
+    draggingStageId === stage.id ? ' is-moving' : '',
+    touch.lifted ? ' is-lifted' : '',
+  ].join('')
 
   return (
     <section
-      className={`board-column${stage.isTerminal ? ' is-terminal' : ''}${highlighted ? ' is-over' : ''}`}
+      ref={touch.ref}
+      className={className}
       aria-label={stage.name}
       {...{ [STAGE_ATTRIBUTE]: stage.id }}
       onDragOver={(event) => {
-        if (!accepts(draggingId)) return
+        if (!takesStage && !accepts(draggingId)) return
         // Without this the browser refuses the drop and animates the card home.
         event.preventDefault()
         setOver(true)
@@ -107,6 +170,17 @@ export function StageColumn({
         setOver(false)
       }}
       onDrop={handleDrop}
+      // On the column rather than the grip: a lifted column captures the
+      // pointer on itself, and the moves, the drop and the cancel arrive here.
+      // Only a press that starts on the grip lifts it; a card's own press
+      // bubbles through and is ignored, the hook matching on pointer id.
+      onPointerDown={(event) => {
+        if ((event.target as Element).closest('.column-grip') !== null) touch.onPointerDown(event)
+      }}
+      onPointerMove={touch.onPointerMove}
+      onPointerUp={touch.onPointerUp}
+      onPointerCancel={touch.onPointerCancel}
+      onContextMenu={touch.onContextMenu}
     >
       <header className="board-column-head">
         {editing ? (
@@ -139,49 +213,127 @@ export function StageColumn({
           </form>
         ) : (
           <>
+            <span
+              className="column-grip"
+              title="Drag to reorder"
+              aria-hidden="true"
+              draggable={!busy}
+              onDragStart={(event) => {
+                event.dataTransfer.setData('text/plain', `stage:${stage.id}`)
+                event.dataTransfer.effectAllowed = 'move'
+                const columnElement = event.currentTarget.closest('section')
+                if (columnElement !== null) event.dataTransfer.setDragImage?.(columnElement, 20, 20)
+                onDragStage(stage.id)
+              }}
+              onDragEnd={() => onDragStage(undefined)}
+            >
+              <GripIcon />
+            </span>
             <h2 className="board-column-title">
-              {stage.name}
-              {stage.isTerminal && <span className="tag tag-terminal">Terminal</span>}
+              <span className="board-column-name">{stage.name}</span>
+              <span className="board-column-count numeric">{column.total}</span>
             </h2>
-            <p className="count numeric">{column.total}</p>
-            <div className="board-column-actions">
-              <button type="button" disabled={busy} onClick={startEditing}>
-                Rename
-              </button>
+            <div className="board-column-tools">
               <button
                 type="button"
-                aria-label={`Move ${stage.name} earlier`}
-                disabled={busy || index === 0}
-                onClick={() => onReorderStage(stage.id, -1)}
+                className="icon-button"
+                aria-label={`Add a lead to ${stage.name}`}
+                aria-expanded={adding}
+                disabled={busy}
+                onClick={() => setAdding((value) => !value)}
               >
-                ←
+                <PlusIcon />
               </button>
-              <button
-                type="button"
-                aria-label={`Move ${stage.name} later`}
-                disabled={busy || index === columnCount - 1}
-                onClick={() => onReorderStage(stage.id, 1)}
+              <Menu
+                ariaLabel={`${stage.name} options`}
+                triggerClassName="icon-button"
+                label={<MoreIcon />}
+                disabled={busy}
               >
-                →
-              </button>
-              <button
-                type="button"
-                aria-label={`Delete ${stage.name}`}
-                disabled={busy || !deletable}
-                onClick={() => onDeleteStage(stage.id)}
-              >
-                Delete
-              </button>
+                {(close) => (
+                  <>
+                    <button
+                      type="button"
+                      className="menu-item"
+                      onClick={() => {
+                        close()
+                        startEditing()
+                      }}
+                    >
+                      <span className="menu-item-text">Rename or change type</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="menu-item"
+                      aria-label={`Move ${stage.name} earlier`}
+                      disabled={index === 0}
+                      onClick={() => {
+                        close()
+                        onReorderStage(stage.id, -1)
+                      }}
+                    >
+                      <span className="menu-item-text">Move left</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="menu-item"
+                      aria-label={`Move ${stage.name} later`}
+                      disabled={index === columnCount - 1}
+                      onClick={() => {
+                        close()
+                        onReorderStage(stage.id, 1)
+                      }}
+                    >
+                      <span className="menu-item-text">Move right</span>
+                    </button>
+                    <hr className="menu-rule" />
+                    <button
+                      type="button"
+                      className="menu-item menu-item-danger"
+                      aria-label={`Delete ${stage.name}`}
+                      disabled={!deletable}
+                      onClick={() => {
+                        close()
+                        onDeleteStage(stage.id)
+                      }}
+                    >
+                      <span className="menu-item-text">Delete stage</span>
+                    </button>
+                    {/* Why Delete is off. A disabled button shows no tooltip,
+                        so the reason is written out under it instead. */}
+                    {!deletable && (
+                      <p className="menu-note">
+                        {columnCount <= 1
+                          ? 'A funnel keeps its last stage.'
+                          : 'Only an empty stage can be deleted.'}
+                      </p>
+                    )}
+                  </>
+                )}
+              </Menu>
             </div>
+            {stage.isTerminal && <span className="tag tag-terminal">Terminal</span>}
           </>
         )}
       </header>
 
+      {adding && (
+        <QuickAddForm
+          stageName={stage.name}
+          busy={busy}
+          onCancel={() => setAdding(false)}
+          onSubmit={async (lead) => {
+            const created = await onCreateLead(stage.id, lead)
+            if (created) setAdding(false)
+            return created
+          }}
+        />
+      )}
+
       {/*
-        Why Delete is off, when the column itself does not already say so. A
-        column showing cards explains itself; an empty-looking one that refuses
-        to go does not, and a `title` on a disabled button is no help — browsers
-        suppress pointer events on those, so the tooltip never appears.
+        Why the column refuses to be deleted, when the column itself does not
+        already say so. A column showing cards explains itself; an empty-looking
+        one that refuses to go does not.
       */}
       {!deletable && column.total === 0 && !editing && (
         <p className="board-note muted">
@@ -192,7 +344,7 @@ export function StageColumn({
       )}
 
       {column.leads.length === 0 ? (
-        <p className="board-empty muted">No leads here.</p>
+        !adding && <p className="board-empty muted">No leads here.</p>
       ) : (
         <ol className="board-cards">
           {column.leads.map((lead) => (
@@ -217,6 +369,88 @@ export function StageColumn({
         </p>
       )}
     </section>
+  )
+}
+
+interface QuickAddFormProps {
+  stageName: string
+  busy: boolean
+  onCancel: () => void
+  onSubmit: (lead: QuickLead) => Promise<boolean>
+}
+
+/**
+ * A lead entered straight into this column — a phone call, a walk-in. The same
+ * rule as the full form: a name is optional, a way to reach them is not.
+ */
+function QuickAddForm({ stageName, busy, onCancel, onSubmit }: QuickAddFormProps) {
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [missingContact, setMissingContact] = useState(false)
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+    if (email.trim() === '' && phone.trim() === '') {
+      setMissingContact(true)
+      return
+    }
+    setMissingContact(false)
+    await onSubmit({ name: name.trim(), email: email.trim(), phone: phone.trim() })
+  }
+
+  return (
+    <form
+      className="quick-add"
+      aria-label={`New lead in ${stageName}`}
+      onSubmit={(event) => void handleSubmit(event)}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') onCancel()
+      }}
+    >
+      <input
+        aria-label="Name"
+        placeholder="Name"
+        value={name}
+        autoFocus
+        autoComplete="off"
+        maxLength={MAX_CONTACT_FIELD_LENGTH}
+        onChange={(event) => setName(event.target.value)}
+      />
+      <input
+        aria-label="Email"
+        type="email"
+        placeholder="Email"
+        value={email}
+        autoComplete="off"
+        maxLength={MAX_EMAIL_LENGTH}
+        onChange={(event) => setEmail(event.target.value)}
+      />
+      <input
+        aria-label="Phone"
+        type="tel"
+        placeholder="Phone"
+        value={phone}
+        autoComplete="off"
+        maxLength={MAX_CONTACT_FIELD_LENGTH}
+        onChange={(event) => setPhone(event.target.value)}
+      />
+      {missingContact && (
+        <p className="quick-add-error" role="alert">
+          Add an email or a phone number.
+        </p>
+      )}
+      <div className="stage-form-actions">
+        <button type="submit" disabled={busy}>
+          Add lead
+        </button>
+        <button type="button" disabled={busy} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+      <p className="hint">No email is sent to them or to you.</p>
+    </form>
   )
 }
 
@@ -273,29 +507,31 @@ function BoardCard({ lead, stage, stages, busy, dragging, onDragLead, onTouchOve
       <Link to={`/leads/${lead.id}`} className="board-card-title" draggable={false}>
         {leadTitle(lead)}
       </Link>
-      <p className="muted">{leadContact(lead)}</p>
-      <p className="muted numeric board-card-meta">{formatDateTime(lead.createdAt)}</p>
-      {/*
-        What makes the board work without a pointer. Value stays empty so
-        the control always reads "Move to…" rather than claiming to be a
-        stage picker whose current stage is the column it already sits in.
-      */}
-      <select
-        className="board-card-move"
-        aria-label={`Move ${leadTitle(lead)} to another stage`}
-        value=""
-        disabled={busy}
-        onChange={(event) => onMoveLead(lead.id, Number(event.target.value))}
-      >
-        <option value="">Move to…</option>
-        {stages
-          .filter((option) => option.id !== stage.id)
-          .map((option) => (
-            <option key={option.id} value={String(option.id)}>
-              {option.name}
-            </option>
-          ))}
-      </select>
+      <p className="muted board-card-contact">{leadContact(lead)}</p>
+      <div className="board-card-foot">
+        <span className="muted numeric board-card-meta">{formatDateTime(lead.createdAt)}</span>
+        {/*
+          What makes the board work without a pointer. Value stays empty so
+          the control always reads "Move to…" rather than claiming to be a
+          stage picker whose current stage is the column it already sits in.
+        */}
+        <select
+          className="board-card-move"
+          aria-label={`Move ${leadTitle(lead)} to another stage`}
+          value=""
+          disabled={busy}
+          onChange={(event) => onMoveLead(lead.id, Number(event.target.value))}
+        >
+          <option value="">Move to…</option>
+          {stages
+            .filter((option) => option.id !== stage.id)
+            .map((option) => (
+              <option key={option.id} value={String(option.id)}>
+                {option.name}
+              </option>
+            ))}
+        </select>
+      </div>
     </li>
   )
 }
