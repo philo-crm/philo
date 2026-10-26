@@ -17,6 +17,7 @@ import {
   type StageRecord,
 } from '@philo/sdk'
 import { philo } from './client.ts'
+import { PushSubscribeError } from './http.ts'
 
 export type {
   ApiKeyRecord,
@@ -225,6 +226,9 @@ const SETTINGS_MESSAGES: Record<string, string> = {
  * in order to fix their configuration.
  */
 export function settingsErrorMessage(error: unknown): string {
+  if (error instanceof PushSubscribeError) {
+    return `This browser couldn't register for push (${error.reason}: ${error.message}).`
+  }
   if (error instanceof ApiError) {
     const message = SETTINGS_MESSAGES[error.code]
     if (message !== undefined) {

@@ -10,7 +10,7 @@
  */
 
 import { fetchVapidPublicKey, storePushSubscription, forgetPushSubscription } from './api.ts'
-import { isUnauthorized } from './http.ts'
+import { isUnauthorized, PushSubscribeError } from './http.ts'
 
 export type PushState =
   /** No Push API here, or no service worker to hang a subscription off. */
@@ -66,6 +66,27 @@ function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> {
 }
 
 /**
+ * A fresh subscription. The key is fetched outside the `try`: a failure there is
+ * the server's, and reads as one, whereas whatever `subscribe` throws is the
+ * browser's and would otherwise be reported as a dropped connection.
+ */
+async function subscribe(registration: ServiceWorkerRegistration): Promise<PushSubscription> {
+  const applicationServerKey = decodeBase64Url(await fetchVapidPublicKey())
+  try {
+    return await registration.pushManager.subscribe({
+      // Required by every browser that implements the Push API, and true of
+      // this deployment: every push Philo sends shows a notification.
+      userVisibleOnly: true,
+      applicationServerKey,
+    })
+  } catch (error) {
+    // Logged here, once, rather than from the message shown on every render.
+    console.error('pushManager.subscribe() failed', error)
+    throw new PushSubscribeError(error)
+  }
+}
+
+/**
  * Subscribes this browser and tells the server about it. Call it from a click:
  * `requestPermission` is the first thing that happens, because iOS only honours
  * it while the tap that led here is still current.
@@ -85,14 +106,7 @@ export async function enablePush(): Promise<PushState> {
   // Reused when there is one: a browser hands back the same endpoint, and
   // re-subscribing over the top would only rotate keys the server already has.
   const existing = await registration.pushManager.getSubscription()
-  const subscription =
-    existing ??
-    (await registration.pushManager.subscribe({
-      // Required by every browser that implements the Push API, and true of
-      // this deployment: every push Philo sends shows a notification.
-      userVisibleOnly: true,
-      applicationServerKey: decodeBase64Url(await fetchVapidPublicKey()),
-    }))
+  const subscription = existing ?? (await subscribe(registration))
 
   try {
     await storePushSubscription(subscription.toJSON())
