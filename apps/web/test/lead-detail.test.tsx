@@ -232,4 +232,38 @@ describe('LeadDetail', () => {
     expect(screen.getByText('File attached')).toBeDefined()
     expect(screen.getByText('offer.pdf')).toBeDefined()
   })
+
+  it('deletes the lead only once "delete" is typed, then returns to the list', async () => {
+    window.history.pushState(null, '', '/leads/5')
+    const api = installFakeApi({ leads: [applicant()] })
+    renderDetail()
+    await screen.findByRole('heading', { name: 'Dana Okafor' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete lead…' }))
+    const confirm = screen.getByRole('button', { name: 'Delete for good' }) as HTMLButtonElement
+    expect(confirm.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Type delete to confirm'), { target: { value: 'dele' } })
+    expect(confirm.disabled).toBe(true)
+    expect(api.leads).toHaveLength(1)
+
+    fireEvent.change(screen.getByLabelText('Type delete to confirm'), { target: { value: 'delete' } })
+    fireEvent.click(confirm)
+
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+    expect(api.leads).toEqual([])
+    expect(api.calls.at(-1)?.method).toBe('DELETE')
+  })
+
+  it('backs out of deleting without touching the lead', async () => {
+    const api = installFakeApi({ leads: [applicant()] })
+    renderDetail()
+    await screen.findByRole('heading', { name: 'Dana Okafor' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete lead…' }))
+    fireEvent.change(screen.getByLabelText('Type delete to confirm'), { target: { value: 'delete' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.queryByRole('button', { name: 'Delete for good' })).toBeNull()
+    expect(api.leads).toHaveLength(1)
+  })
 })

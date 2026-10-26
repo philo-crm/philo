@@ -2,10 +2,10 @@ import Database from 'better-sqlite3'
 import { asc, eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from '../src/db/index.ts'
 import { DB_FILENAME, MIGRATIONS_DIR, openDatabase } from '../src/db/index.ts'
 import * as schema from '../src/db/schema.ts'
@@ -264,6 +264,58 @@ describe('full-text search', () => {
       .all()
       .map((row) => row.name)
     expect(triggers).toEqual(['leads_fts_delete', 'leads_fts_insert', 'leads_fts_update'])
+  })
+
+  // DESIGN.md (Erasure): an older database freed space without zeroing it, and
+  // the boot that upgrades it has to scrub that, or deleting a lead after the
+  // upgrade still leaves what an earlier edit overwrote.
+  it('scrubs free space once when upgrading a database written before secure_delete', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const dataDir = tempDataDir()
+    const olderMigrations = join(tempDataDir(), 'drizzle')
+    cpSync(MIGRATIONS_DIR, olderMigrations, { recursive: true })
+    // The database as the release before 0009 left it: that migration and every
+    // later one are not applied yet.
+    const journalPath = join(olderMigrations, 'meta', '_journal.json')
+    const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as { entries: { tag: string }[] }
+    const cut = journal.entries.findIndex((entry) => entry.tag === '0009_leads_fts_secure_delete')
+    for (const entry of journal.entries.slice(cut)) rmSync(join(olderMigrations, `${entry.tag}.sql`))
+    journal.entries = journal.entries.slice(0, cut)
+    writeFileSync(journalPath, JSON.stringify(journal))
+
+    const sqlite = new Database(join(dataDir, DB_FILENAME))
+    sqlite.pragma('journal_mode = WAL')
+    const older = drizzle(sqlite, { schema })
+    migrate(older, { migrationsFolder: olderMigrations })
+    // Raw SQL: today's schema names funnel columns this one does not have yet.
+    const pipelineId = sqlite.prepare("INSERT INTO pipelines (name, created_at) VALUES ('Default', 0)").run().lastInsertRowid
+    const stageId = Number(
+      sqlite.prepare("INSERT INTO stages (pipeline_id, name, position) VALUES (?, 'New', 0)").run(pipelineId).lastInsertRowid,
+    )
+    const [lead] = older
+      .insert(leads)
+      .values({ email: 'oldsecret-a-much-longer-address@example.com', currentStageId: stageId, fields: '{}' })
+      .returning({ id: leads.id })
+      .all()
+    older.update(leads).set({ email: 'nv@example.com' }).where(eq(leads.id, lead!.id)).run()
+    sqlite.pragma('wal_checkpoint(TRUNCATE)')
+    sqlite.close()
+    expect(readFileSync(join(dataDir, DB_FILENAME)).includes('oldsecret')).toBe(true)
+
+    openTracked(dataDir)
+
+    expect(readFileSync(join(dataDir, DB_FILENAME)).includes('oldsecret')).toBe(false)
+    vi.restoreAllMocks()
+  })
+
+  // DESIGN.md (Erasure): both are needed for a deleted lead to leave no bytes.
+  it('zeroes freed space, in the file and in the search index', () => {
+    const db = openTracked(tempDataDir())
+    expect(db.$client.pragma('secure_delete', { simple: true })).toBe(1)
+    const option = db.$client
+      .prepare<[], { v: number }>("SELECT v FROM leads_fts_config WHERE k = 'secure-delete'")
+      .get()
+    expect(option?.v).toBe(1)
   })
 
   it('indexes name, email, phone, and the values in fields', () => {

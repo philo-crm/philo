@@ -856,6 +856,10 @@ function handle(
 
   const action = match[2]
   if (method === 'GET' && action === undefined) return jsonResponse(200, { lead })
+  if (method === 'DELETE' && action === undefined) {
+    api.leads = api.leads.filter((row) => row !== lead)
+    return new Response(null, { status: 204 })
+  }
 
   const payload = (body ?? {}) as Record<string, unknown>
   if (method === 'PATCH' && action === undefined) {

@@ -55,6 +55,7 @@ const TOOL_NAMES = [
   'create_lead',
   'create_stage',
   'delete_funnel',
+  'delete_lead',
   'delete_stage',
   'get_email_template',
   'get_lead',
@@ -545,6 +546,26 @@ describe('mcp lead tools', () => {
 
       const gone = await call('get_lead_attachment', { leadId: row?.id, attachmentId: attachment?.id })
       expect(gone).toEqual({ isError: true, data: { error: 'attachment_not_found' } })
+    })
+  })
+
+  it('deletes a lead for good, and says so when it is already gone', async () => {
+    const testApp = createTestApp()
+    const { key } = agentKey(testApp)
+    await submit(testApp, { name: 'Dana Reed', email: 'dana@example.com' })
+
+    await withMcpClient(testApp, key, async (call, client) => {
+      const { tools } = await client.listTools()
+      const tool = tools.find((candidate) => candidate.name === 'delete_lead')
+      expect(tool?.annotations?.destructiveHint).toBe(true)
+      expect(tool?.description).toContain('cannot be undone')
+
+      const [row] = testApp.db.select({ id: leads.id }).from(leads).limit(1).all()
+      expect(await call('delete_lead', { leadId: row?.id })).toEqual({ isError: false, data: { deleted: row?.id } })
+      expect(testApp.db.select().from(leads).all()).toEqual([])
+      expect(testApp.db.select().from(leadEvents).all()).toEqual([])
+
+      expect(await call('delete_lead', { leadId: row?.id })).toEqual({ isError: true, data: { error: 'not_found' } })
     })
   })
 

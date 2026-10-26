@@ -16,6 +16,7 @@ import {
   addLeadNote,
   clearLeadSpam,
   createLead,
+  deleteLead,
   getLead,
   listLeads,
   moveLeadStage,
@@ -187,6 +188,14 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
     return respond(c, updateLead(deps.db, id, body, actorOf(c)))
+  })
+
+  /** For good: no undo, no tombstone. Open to any credential — ADR-0007. */
+  routes.delete('/:id', (c) => {
+    const id = parseId(c.req.param('id'))
+    if (id === undefined) return c.json({ error: 'invalid_request' }, 400)
+    if (!deleteLead(deps.db, id, actorOf(c))) return fail(c, 'not_found')
+    return c.body(null, 204)
   })
 
   routes.post('/:id/stage', async (c) => {

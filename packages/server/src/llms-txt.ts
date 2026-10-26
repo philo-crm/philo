@@ -94,7 +94,8 @@ Call \`tools/list\` for the schemas. In outline:
 - Leads: \`list_leads\` (funnel, stage, form, spam, date filters and a full-text
   \`search\`), \`get_lead\` (record, attachments and whole timeline),
   \`create_lead\`, \`update_lead\` (contact and \`details\`),
-  \`move_lead_stage\`, \`add_lead_note\`
+  \`move_lead_stage\`, \`add_lead_note\`, \`delete_lead\` (permanent, no
+  undo)
 - Attachments: \`add_lead_attachment\`, \`get_lead_attachment\`,
   \`remove_lead_attachment\`
 - Funnel: \`list_stages\`, \`create_stage\`, \`update_stage\`,
@@ -122,6 +123,10 @@ unauthenticated caller with 401. Bodies are JSON, except an attachment's.
   field; the lead must still have an email or a phone afterwards. \`details\`
   merges by key, null removing one. The submitted \`fields\` are the record of
   what the lead sent and are not editable.
+- DELETE /leads/{id} — erases the lead with its timeline, details and files.
+  204, or 404 if there is no such lead. Permanent: there is no undo and no
+  record left behind. To take a lead out of the funnel, move it to a final
+  stage instead.
 - POST /leads/{id}/attachments?filename=... — the file is the raw body, typed by
   its Content-Type; up to 10 MB.
 - GET /leads/{id}/attachments/{attachmentId} — the file, always as a download.

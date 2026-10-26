@@ -63,7 +63,8 @@ noted, emailed.
 **Details and files that grow with the lead.** What the form submitted stays as
 it was sent; what you learn afterwards — on a call, from a document — goes in the
 lead's details or as an attached file, up to 10 MB each. The timeline records
-which details changed but never their values.
+which details changed but never their values. Deleting a lead erases all of it,
+down to the bytes in the database file.
 
 ![The funnel board](docs/images/funnel.png)
 

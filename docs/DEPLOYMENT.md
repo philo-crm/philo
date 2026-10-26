@@ -296,6 +296,12 @@ working CRM that signs everyone out and has lost every push subscription.
 Whatever you choose, keep the copies off the host and **test a restore**. An
 untested backup is a hypothesis.
 
+**Deleting a lead does not reach your backups.** Philo erases a deleted lead
+from the live database, down to the bytes in the file, but every backup taken
+before the deletion still holds it. If you delete a lead because the person
+asked you to erase what you hold about them, that request covers those copies
+too: expire them on a schedule you can state, or remove the lead from them.
+
 ## Restore
 
 Set the archive once and **check it before anything destructive runs** — the

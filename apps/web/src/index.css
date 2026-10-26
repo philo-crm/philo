@@ -122,6 +122,12 @@ button[type='submit'] {
   color: var(--accent-contrast);
 }
 
+button.danger {
+  background: var(--error);
+  border-color: var(--error);
+  color: var(--accent-contrast);
+}
+
 button:disabled {
   opacity: 0.55;
   cursor: default;
@@ -618,6 +624,16 @@ main {
   text-decoration: underline;
   cursor: pointer;
   font: inherit;
+}
+
+.delete-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.delete-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .note-form {

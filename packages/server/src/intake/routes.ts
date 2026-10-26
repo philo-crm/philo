@@ -247,6 +247,10 @@ function createLead(db: Db, form: IntakeForm, submission: Submission): CreatedLe
   })
 }
 
+function leadExists(db: Db, id: number): boolean {
+  return db.select({ id: leads.id }).from(leads).where(eq(leads.id, id)).limit(1).all().length > 0
+}
+
 export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}): Hono<IntakeEnv> {
   const routes = new Hono<IntakeEnv>()
   // Per app instance, so a test gets a fresh budget and a restart forgives.
@@ -314,12 +318,15 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
 
     // Spam is accepted and answered exactly like anything else, so a bot cannot
     // tell the honeypot tripped — including through the dedupe window.
+    // A repeat whose lead has since been deleted is a new submission: the person
+    // is applying again, and swallowing it would lose them without a word.
     const hash = submissionHash(form.formKey, submission)
-    if (dedupe.has(hash)) return accepted(c)
+    const seen = dedupe.leadFor(hash)
+    if (seen !== undefined && leadExists(deps.db, seen)) return accepted(c)
 
     const created = createLead(deps.db, form, submission)
     if (created === undefined) return c.json({ error: 'no_stage_configured' }, 503)
-    dedupe.record(hash)
+    dedupe.record(hash, created.id)
 
     if (!created.isSpam) notifyLeadCreated(deps.onLeadCreated, created)
     return accepted(c)

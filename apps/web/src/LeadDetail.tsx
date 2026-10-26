@@ -2,6 +2,7 @@ import { useCallback, useState, type ChangeEvent, type FormEvent } from 'react'
 import {
   addLeadNote,
   apiErrorMessage,
+  deleteLead,
   downloadAttachment,
   fetchLead,
   fetchStages,
@@ -26,8 +27,8 @@ import {
   humanizeKey,
   leadTitle,
 } from './format.ts'
-import { Link } from './router.tsx'
 import { useFunnels } from './FunnelPicker.tsx'
+import { Link, navigate } from './router.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface LeadDetailProps {
@@ -278,7 +279,85 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
           })}
         </ol>
       </div>
+
+      <DeletePanel
+        busy={busy}
+        onDelete={async () => {
+          setBusy(true)
+          setActionError(undefined)
+          try {
+            await deleteLead(leadId)
+            navigate(record.isSpam ? '/spam' : '/')
+          } catch (caught) {
+            setActionError(caught)
+            setBusy(false)
+          }
+        }}
+      />
     </section>
+  )
+}
+
+/** What has to be typed before a lead is erased. */
+const DELETE_CONFIRMATION = 'delete'
+
+/**
+ * Erasure, behind a typed confirmation: unlike moving a lead to a closing stage,
+ * nothing about it can be undone, and a stray click must not be enough.
+ */
+function DeletePanel({ busy, onDelete }: { busy: boolean; onDelete: () => Promise<void> }) {
+  const [open, setOpen] = useState(false)
+  const [typed, setTyped] = useState('')
+
+  if (!open) {
+    return (
+      <div className="panel">
+        <h2>Delete lead</h2>
+        <p className="muted">Erases this lead and everything held about it. To close it out instead, move it to a final stage.</p>
+        <button type="button" className="danger" disabled={busy} onClick={() => setOpen(true)}>
+          Delete lead…
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <form
+      className="panel delete-form"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (typed.trim().toLowerCase() === DELETE_CONFIRMATION) void onDelete()
+      }}
+    >
+      <h2>Delete lead</h2>
+      <p className="notice notice-error">
+        This erases the contact details, answers, details, timeline and files for good. It cannot be undone,
+        and backups taken before now still hold them.
+      </p>
+      <label className="field">
+        <span className="field-label">Type {DELETE_CONFIRMATION} to confirm</span>
+        <input value={typed} autoComplete="off" onChange={(event) => setTyped(event.target.value)} />
+      </label>
+      <div className="delete-actions">
+        <button
+          type="submit"
+          className="danger"
+          disabled={busy || typed.trim().toLowerCase() !== DELETE_CONFIRMATION}
+        >
+          {busy ? 'Deleting…' : 'Delete for good'}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setOpen(false)
+            setTyped('')
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   )
 }
 

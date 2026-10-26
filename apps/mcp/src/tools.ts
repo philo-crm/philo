@@ -368,6 +368,25 @@ export function createMcpServer(philo: PhiloClient): McpServer {
   )
 
   server.registerTool(
+    'delete_lead',
+    {
+      title: 'Delete a lead',
+      description:
+        'Permanently erases a lead and everything held about it: contact, answers, details, ' +
+        'timeline and files. This cannot be undone, and nothing records that the lead existed. ' +
+        'Only call it when the user has explicitly asked for this lead to be deleted. To take a ' +
+        'lead out of the funnel without erasing it, move it to a terminal stage instead.',
+      inputSchema: { leadId: LEAD_ID },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    (args) =>
+      call(null, async () => {
+        await philo.leads.delete(args.leadId)
+        return { deleted: args.leadId }
+      }),
+  )
+
+  server.registerTool(
     'list_stages',
     {
       title: 'List funnel stages',

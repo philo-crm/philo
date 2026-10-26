@@ -1,8 +1,8 @@
 {
+  "id": "8ed5c817-a9c7-42c8-a761-f41c7173e5dc",
+  "prevId": "1c2baee3-0c93-4033-a77c-c2dc6f75206b",
   "version": "6",
   "dialect": "sqlite",
-  "id": "93b3ad17-11bf-418e-bea5-191cfb559db4",
-  "prevId": "1c2baee3-0c93-4033-a77c-c2dc6f75206b",
   "tables": {
     "access_tokens": {
       "name": "access_tokens",
@@ -70,28 +70,28 @@
         "access_tokens_client_id_oauth_clients_client_id_fk": {
           "name": "access_tokens_client_id_oauth_clients_client_id_fk",
           "tableFrom": "access_tokens",
-          "tableTo": "oauth_clients",
           "columnsFrom": [
             "client_id"
           ],
+          "tableTo": "oauth_clients",
           "columnsTo": [
             "client_id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "access_tokens_user_id_users_id_fk": {
           "name": "access_tokens_user_id_users_id_fk",
           "tableFrom": "access_tokens",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -164,15 +164,15 @@
         "api_keys_user_id_users_id_fk": {
           "name": "api_keys_user_id_users_id_fk",
           "tableFrom": "api_keys",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -266,28 +266,28 @@
         "authorization_codes_client_id_oauth_clients_client_id_fk": {
           "name": "authorization_codes_client_id_oauth_clients_client_id_fk",
           "tableFrom": "authorization_codes",
-          "tableTo": "oauth_clients",
           "columnsFrom": [
             "client_id"
           ],
+          "tableTo": "oauth_clients",
           "columnsTo": [
             "client_id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "authorization_codes_user_id_users_id_fk": {
           "name": "authorization_codes_user_id_users_id_fk",
           "tableFrom": "authorization_codes",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -303,13 +303,6 @@
           "primaryKey": true,
           "notNull": true,
           "autoincrement": true
-        },
-        "pipeline_id": {
-          "name": "pipeline_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
         },
         "trigger": {
           "name": "trigger",
@@ -349,30 +342,15 @@
         }
       },
       "indexes": {
-        "email_templates_pipeline_trigger_idx": {
-          "name": "email_templates_pipeline_trigger_idx",
+        "email_templates_trigger_unique": {
+          "name": "email_templates_trigger_unique",
           "columns": [
-            "pipeline_id",
             "trigger"
           ],
           "isUnique": true
         }
       },
-      "foreignKeys": {
-        "email_templates_pipeline_id_pipelines_id_fk": {
-          "name": "email_templates_pipeline_id_pipelines_id_fk",
-          "tableFrom": "email_templates",
-          "tableTo": "pipelines",
-          "columnsFrom": [
-            "pipeline_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -409,13 +387,6 @@
           "autoincrement": false,
           "default": "'[]'"
         },
-        "pipeline_id": {
-          "name": "pipeline_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -433,21 +404,7 @@
           "isUnique": true
         }
       },
-      "foreignKeys": {
-        "intake_forms_pipeline_id_pipelines_id_fk": {
-          "name": "intake_forms_pipeline_id_pipelines_id_fk",
-          "tableFrom": "intake_forms",
-          "tableTo": "pipelines",
-          "columnsFrom": [
-            "pipeline_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -475,15 +432,15 @@
         "lead_attachment_blobs_attachment_id_lead_attachments_id_fk": {
           "name": "lead_attachment_blobs_attachment_id_lead_attachments_id_fk",
           "tableFrom": "lead_attachment_blobs",
-          "tableTo": "lead_attachments",
           "columnsFrom": [
             "attachment_id"
           ],
+          "tableTo": "lead_attachments",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -563,15 +520,15 @@
         "lead_attachments_lead_id_leads_id_fk": {
           "name": "lead_attachments_lead_id_leads_id_fk",
           "tableFrom": "lead_attachments",
-          "tableTo": "leads",
           "columnsFrom": [
             "lead_id"
           ],
+          "tableTo": "leads",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -639,15 +596,15 @@
         "lead_events_lead_id_leads_id_fk": {
           "name": "lead_events_lead_id_leads_id_fk",
           "tableFrom": "lead_events",
-          "tableTo": "leads",
           "columnsFrom": [
             "lead_id"
           ],
+          "tableTo": "leads",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -784,28 +741,28 @@
         "leads_form_id_intake_forms_id_fk": {
           "name": "leads_form_id_intake_forms_id_fk",
           "tableFrom": "leads",
-          "tableTo": "intake_forms",
           "columnsFrom": [
             "form_id"
           ],
+          "tableTo": "intake_forms",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "leads_current_stage_id_stages_id_fk": {
           "name": "leads_current_stage_id_stages_id_fk",
           "tableFrom": "leads",
-          "tableTo": "stages",
           "columnsFrom": [
             "current_stage_id"
           ],
+          "tableTo": "stages",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "restrict"
         }
       },
       "compositePrimaryKeys": {},
@@ -897,30 +854,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "from_name": {
-          "name": "from_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        },
-        "reply_to": {
-          "name": "reply_to",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        },
-        "notify_recipients": {
-          "name": "notify_recipients",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'[]'"
-        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -994,15 +927,15 @@
         "push_subscriptions_user_id_users_id_fk": {
           "name": "push_subscriptions_user_id_users_id_fk",
           "tableFrom": "push_subscriptions",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -1075,28 +1008,28 @@
         "refresh_tokens_client_id_oauth_clients_client_id_fk": {
           "name": "refresh_tokens_client_id_oauth_clients_client_id_fk",
           "tableFrom": "refresh_tokens",
-          "tableTo": "oauth_clients",
           "columnsFrom": [
             "client_id"
           ],
+          "tableTo": "oauth_clients",
           "columnsTo": [
             "client_id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "refresh_tokens_user_id_users_id_fk": {
           "name": "refresh_tokens_user_id_users_id_fk",
           "tableFrom": "refresh_tokens",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -1148,15 +1081,15 @@
         "sessions_user_id_users_id_fk": {
           "name": "sessions_user_id_users_id_fk",
           "tableFrom": "sessions",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -1248,15 +1181,15 @@
         "stages_pipeline_id_pipelines_id_fk": {
           "name": "stages_pipeline_id_pipelines_id_fk",
           "tableFrom": "stages",
-          "tableTo": "pipelines",
           "columnsFrom": [
             "pipeline_id"
           ],
+          "tableTo": "pipelines",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -1341,9 +1274,9 @@
   "views": {},
   "enums": {},
   "_meta": {
+    "columns": {},
     "schemas": {},
-    "tables": {},
-    "columns": {}
+    "tables": {}
   },
   "internal": {
     "indexes": {}
