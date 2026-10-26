@@ -1,3 +1,5 @@
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChangeFeed } from '../src/events/feed.ts'
 import { signPayload, startWebhookDelivery } from '../src/webhooks/deliver.ts'
@@ -6,11 +8,15 @@ import { cleanupTestApps, createTestApp, defaultFormKey, jsonPost, setupAdmin, t
 
 beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {})
+  vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
-afterEach(() => {
+const servers: Server[] = []
+
+afterEach(async () => {
   cleanupTestApps()
   vi.restoreAllMocks()
+  await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve))))
 })
 
 interface Received {
@@ -19,15 +25,27 @@ interface Received {
   body: string
 }
 
-/** A fetch that records each request and answers with the next status in `statuses` (then the last). */
-function receiver(statuses: number[] = [200]) {
+/**
+ * A real receiver on loopback, answering each request with the next status in
+ * `statuses` (then the last). Every host name resolves to it — see `resolveHost`.
+ */
+async function receiver(statuses: number[] = [200]) {
   const received: Received[] = []
-  const fake = (async (input: string | URL | Request, init?: RequestInit) => {
-    received.push({ url: String(input), headers: new Headers(init?.headers), body: String(init?.body) })
-    const status = statuses[Math.min(received.length - 1, statuses.length - 1)]!
-    return new Response(null, { status })
-  }) as typeof fetch
-  return { fake, received }
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      const headers = new Headers()
+      for (const [name, value] of Object.entries(req.headers)) if (typeof value === 'string') headers.set(name, value)
+      received.push({ url: req.url ?? '', headers, body: Buffer.concat(chunks).toString() })
+      res.statusCode = statuses[Math.min(received.length - 1, statuses.length - 1)]!
+      res.end()
+    })
+  })
+  servers.push(server)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as AddressInfo
+  return { port, received, at: (path = '/') => `http://hooks.example.com:${port}${path}` }
 }
 
 interface Harness {
@@ -36,13 +54,13 @@ interface Harness {
   api: (path: string, init?: RequestInit) => Response | Promise<Response>
 }
 
-/** Every name resolves to a documentation address, so no test touches real DNS. */
-const lookup = async (host: string) => (host === 'metadata.example.com' ? ['169.254.169.254'] : ['203.0.113.10'])
+/** Every name is the loopback receiver, so no test touches real DNS — except the one that must be refused. */
+const resolveHost = async (host: string) => (host === 'metadata.example.com' ? ['169.254.169.254'] : ['127.0.0.1'])
 
-async function harness(fake?: typeof fetch): Promise<Harness> {
+async function harness(): Promise<Harness> {
   const feed = new ChangeFeed()
-  const testApp = createTestApp({ changeFeed: feed, webhookTuning: { fetch: fake, lookup } })
-  if (fake !== undefined) startWebhookDelivery(testApp.db, feed, { fetch: fake, lookup, retryDelaysMs: [1, 1] })
+  const testApp = createTestApp({ changeFeed: feed, webhookTuning: { resolve: resolveHost } })
+  startWebhookDelivery(testApp.db, feed, { resolve: resolveHost, retryDelaysMs: [1, 1] })
   const authorization = await setupAdmin(testApp)
   const api = (path: string, init: RequestInit = {}) =>
     testApp.app.request(`/api/v1${path}`, {
@@ -136,9 +154,9 @@ describe('/api/v1/webhooks', () => {
   })
 
   it('sends a signed ping on test, and keeps the outcome', async () => {
-    const { fake, received } = receiver([503])
-    const h = await harness(fake)
-    const { body } = await register(h, { url: 'https://hooks.example.com/philo' })
+    const { received, at } = await receiver([503])
+    const h = await harness()
+    const { body } = await register(h, { url: at('/philo') })
 
     const res = await h.api(`/webhooks/${body.webhook.id}/test`, { method: 'POST' })
     expect(res.status).toBe(200)
@@ -153,16 +171,16 @@ describe('/api/v1/webhooks', () => {
 
 describe('delivery', () => {
   it('posts each change, signed with the secret', async () => {
-    const { fake, received } = receiver()
-    const h = await harness(fake)
-    const { body } = await register(h, { url: 'https://hooks.example.com/philo' })
+    const { received, at } = await receiver()
+    const h = await harness()
+    const { body } = await register(h, { url: at('/philo') })
 
     await submit(h.testApp, 'dana@example.com')
     await settle(() => received.length > 0)
 
     expect(received).toHaveLength(1)
     const [request] = received
-    expect(request!.url).toBe('https://hooks.example.com/philo')
+    expect(request!.url).toBe('/philo')
     expect(request!.headers.get('content-type')).toBe('application/json')
     expect(request!.headers.get('x-philo-event')).toBe('lead.created')
     const timestamp = request!.headers.get('x-philo-timestamp')!
@@ -173,60 +191,70 @@ describe('delivery', () => {
   })
 
   it('sends only the types asked for, and only for the funnel asked for', async () => {
-    const { fake, received } = receiver()
-    const h = await harness(fake)
+    const { received, at } = await receiver()
+    const h = await harness()
     const defaultForm = defaultFormKey(h.testApp)
     const created = await h.api('/funnels', jsonPost({ name: 'Sales' }))
     const { funnel } = (await created.json()) as { funnel: { id: number; forms: { formKey: string }[] } }
-    await register(h, { url: 'https://hooks.example.com/sales', funnelId: funnel.id })
-    await register(h, { url: 'https://hooks.example.com/deletes', events: ['lead.deleted'] })
+    await register(h, { url: at('/sales'), funnelId: funnel.id, events: ['lead.created'] })
+    await register(h, { url: at('/deletes'), events: ['lead.deleted'] })
 
     await submit(h.testApp, 'default@example.com', defaultForm)
     await submit(h.testApp, 'sales@example.com', funnel.forms[0]!.formKey)
     await settle(() => received.length > 0)
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 30))
 
-    expect(received.map((request) => request.url)).toEqual(['https://hooks.example.com/sales'])
+    expect(received.map((request) => request.url)).toEqual(['/sales'])
     expect(received[0]!.body).toContain('sales@example.com')
   })
 
   it('retries a failure, then gives up', async () => {
-    const { fake, received } = receiver([500])
-    const h = await harness(fake)
-    await register(h, { url: 'https://hooks.example.com/' })
+    const { received, at } = await receiver([500])
+    const h = await harness()
+    await register(h, { url: at(), events: ['lead.created'] })
 
     await submit(h.testApp, 'dana@example.com')
     await settle(() => received.length >= 3)
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 30))
 
     expect(received).toHaveLength(3)
     expect(new Set(received.map((request) => request.headers.get('x-philo-delivery'))).size).toBe(1)
   })
 
   it('stops retrying once it gets through', async () => {
-    const { fake, received } = receiver([500, 204])
-    const h = await harness(fake)
-    await register(h, { url: 'https://hooks.example.com/' })
+    const { received, at } = await receiver([500, 204])
+    const h = await harness()
+    await register(h, { url: at(), events: ['lead.created'] })
 
     await submit(h.testApp, 'dana@example.com')
     await settle(() => received.length >= 2)
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 30))
 
     expect(received).toHaveLength(2)
     const listed = (await (await h.api('/webhooks')).json()) as { webhooks: { lastDelivery: unknown }[] }
     expect(listed.webhooks[0]!.lastDelivery).toMatchObject({ ok: true, status: 204, error: null })
   })
 
-  it('records a receiver that cannot be reached', async () => {
-    const fake = (async () => {
-      throw new TypeError('fetch failed')
-    }) as typeof fetch
-    const h = await harness(fake)
-    const { body } = await register(h, { url: 'https://hooks.example.com/' })
+  it('does not follow a redirect', async () => {
+    const { received, at } = await receiver([302])
+    const h = await harness()
+    const { body } = await register(h, { url: at() })
 
     const res = await h.api(`/webhooks/${body.webhook.id}/test`, { method: 'POST' })
 
-    expect(await res.json()).toMatchObject({ delivery: { ok: false, status: null, error: 'fetch failed' } })
+    expect(await res.json()).toMatchObject({ delivery: { ok: false, status: 302 } })
+    expect(received).toHaveLength(1)
+  })
+
+  it('records a receiver that cannot be reached', async () => {
+    const h = await harness()
+    const { body } = await register(h, { url: 'http://127.0.0.1:1/' })
+
+    const res = await h.api(`/webhooks/${body.webhook.id}/test`, { method: 'POST' })
+
+    const { delivery } = (await res.json()) as { delivery: { ok: boolean; status: number | null; error: string } }
+    expect(delivery).toMatchObject({ ok: false, status: null })
+    expect(delivery.error).toContain('ECONNREFUSED')
   })
 
   it.each([
@@ -236,27 +264,23 @@ describe('delivery', () => {
     'http://0.0.0.0/',
     'https://metadata.example.com/',
   ])('refuses to post to %s', async (url) => {
-    const { fake, received } = receiver()
-    const h = await harness(fake)
+    const h = await harness()
     const { body } = await register(h, { url })
 
     const res = await h.api(`/webhooks/${body.webhook.id}/test`, { method: 'POST' })
 
     expect(await res.json()).toMatchObject({ delivery: { ok: false, status: null, error: 'address not allowed' } })
-    expect(received).toHaveLength(0)
   })
 
-  it.each(['http://127.0.0.1:5678/hook', 'http://10.0.0.5/hook', 'http://automation.internal/hook'])(
-    'posts to a local receiver at %s',
-    async (url) => {
-      const { fake, received } = receiver()
-      const h = await harness(fake)
+  it('posts to a receiver on loopback, by address or by a name that resolves there', async () => {
+    const { received, port } = await receiver()
+    const h = await harness()
+
+    for (const url of [`http://127.0.0.1:${port}/hook`, `http://automation.internal:${port}/hook`]) {
       const { body } = await register(h, { url })
-
       const res = await h.api(`/webhooks/${body.webhook.id}/test`, { method: 'POST' })
-
       expect(await res.json()).toMatchObject({ delivery: { ok: true, status: 200 } })
-      expect(received).toHaveLength(1)
-    },
-  )
+    }
+    expect(received).toHaveLength(2)
+  })
 })

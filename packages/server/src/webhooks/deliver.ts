@@ -1,6 +1,8 @@
 import { createHmac, randomUUID } from 'node:crypto'
 import { lookup as dnsLookup } from 'node:dns/promises'
-import { BlockList, isIP } from 'node:net'
+import { request as httpRequest, type RequestOptions } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { BlockList, isIP, type LookupFunction } from 'node:net'
 import type { Db } from '../db/index.ts'
 import type { ChangeEvent, ChangeFeed } from '../events/feed.ts'
 import { VERSION } from '../version.ts'
@@ -10,9 +12,8 @@ export interface DeliveryTuning {
   timeoutMs?: number | undefined
   /** Waits before each retry; its length is how many retries there are. */
   retryDelaysMs?: readonly number[] | undefined
-  fetch?: typeof fetch | undefined
   /** Resolves a host to every address it has. Tests substitute their own. */
-  lookup?: ((host: string) => Promise<string[]>) | undefined
+  resolve?: ((host: string) => Promise<string[]>) | undefined
 }
 
 const TIMEOUT_MS = 10_000
@@ -38,16 +39,54 @@ function isForbidden(address: string): boolean {
   return FORBIDDEN.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4')
 }
 
+const REFUSED = 'address not allowed'
+
 async function resolveAll(host: string): Promise<string[]> {
   const found = await dnsLookup(host, { all: true, verbatim: true })
   return found.map((entry) => entry.address)
 }
 
-/** Checked at every attempt, not at registration, so a DNS change cannot slip past it. */
-async function refusedTarget(url: string, tuning: DeliveryTuning): Promise<string | undefined> {
-  const host = new URL(url).hostname.replace(/^\[|\]$/g, '')
-  const addresses = isIP(host) === 0 ? await (tuning.lookup ?? resolveAll)(host) : [host]
-  return addresses.some(isForbidden) ? 'address not allowed' : undefined
+/**
+ * The socket's own resolver, refusing a host if any address it has is
+ * forbidden. Because the connection uses exactly what this returns, a name
+ * cannot pass a check and then resolve somewhere else to connect.
+ */
+function guardedLookup(resolve: (host: string) => Promise<string[]>): LookupFunction {
+  return (host, options, callback) => {
+    resolve(host).then(
+      (addresses) => {
+        if (addresses.length === 0) return callback(new Error(`no address for ${host}`), '', 0)
+        if (addresses.some(isForbidden)) return callback(new Error(REFUSED), '', 0)
+        const entries = addresses.map((address) => ({ address, family: isIP(address) }))
+        if (options.all === true) return (callback as unknown as (e: null, a: typeof entries) => void)(null, entries)
+        const [first] = entries
+        callback(null, first!.address, first!.family)
+      },
+      (error: unknown) => callback(error as NodeJS.ErrnoException, '', 0),
+    )
+  }
+}
+
+/** One POST; answers the status. A redirect is a status like any other — it is never followed. */
+function post(url: URL, headers: Record<string, string>, body: string, tuning: DeliveryTuning): Promise<number> {
+  // An address in the URL is never looked up, so it is checked here instead.
+  const literal = url.hostname.replace(/^\[|\]$/g, '')
+  if (isIP(literal) !== 0 && isForbidden(literal)) return Promise.reject(new Error(REFUSED))
+  const options: RequestOptions = {
+    method: 'POST',
+    headers: { ...headers, 'Content-Length': String(Buffer.byteLength(body)) },
+    lookup: guardedLookup(tuning.resolve ?? resolveAll),
+    signal: AbortSignal.timeout(tuning.timeoutMs ?? TIMEOUT_MS),
+  }
+  return new Promise((resolve, reject) => {
+    const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, options, (res) => {
+      // Nothing in the answer is used; drain it so the socket is released.
+      res.resume()
+      resolve(res.statusCode ?? 0)
+    })
+    req.on('error', reject)
+    req.end(body)
+  })
 }
 
 /** What a receiver verifies: HMAC-SHA256 over `<timestamp>.<body>` — ADR-0010. */
@@ -67,14 +106,9 @@ async function attempt(db: Db, target: WebhookTarget, payload: Payload, tuning: 
   let status: number | null = null
   let error: string | null = null
   try {
-    const refused = await refusedTarget(target.url, tuning)
-    if (refused !== undefined) throw new Error(refused)
-    const res = await (tuning.fetch ?? fetch)(target.url, {
-      method: 'POST',
-      // A redirect would send a signed body somewhere nobody registered.
-      redirect: 'manual',
-      signal: AbortSignal.timeout(tuning.timeoutMs ?? TIMEOUT_MS),
-      headers: {
+    status = await post(
+      new URL(target.url),
+      {
         'Content-Type': 'application/json',
         'User-Agent': `philo/${VERSION}`,
         'X-Philo-Event': payload.type,
@@ -82,12 +116,10 @@ async function attempt(db: Db, target: WebhookTarget, payload: Payload, tuning: 
         'X-Philo-Timestamp': timestamp,
         'X-Philo-Signature': signPayload(target.secret, timestamp, payload.body),
       },
-      body: payload.body,
-    })
-    status = res.status
-    if (!res.ok) error = `HTTP ${res.status}`
-    // Nothing in the answer is used; read it so the connection can be reused.
-    await res.body?.cancel()
+      payload.body,
+      tuning,
+    )
+    if (status < 200 || status >= 300) error = `HTTP ${status}`
   } catch (caught: unknown) {
     error = caught instanceof Error ? caught.message : String(caught)
   }

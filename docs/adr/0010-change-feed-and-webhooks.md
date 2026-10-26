@@ -84,12 +84,12 @@ the same way. Each delivery is a `POST` of the event as JSON, signed:
 Only `http` and `https` URLs are accepted. Loopback and private addresses
 are allowed on purpose: the person registering one already holds the
 instance's full authority, and a local automation (a workflow tool on the same
-host) is a legitimate target. What is refused, checked against every address
-the host resolves to at each attempt, is link-local (where cloud metadata
-services answer), unspecified and multicast. The check and the connection
-resolve separately, so a host that rebinds between them could still reach a
-refused address; closing that needs a pinned resolver in the HTTP client, and
-is the next step if the check ever has to carry more weight than this.
+host) is a legitimate target. What is refused is link-local
+(where cloud metadata services answer), unspecified and multicast — checked
+inside the socket's own DNS lookup, against every address the host has, so the
+connection goes to exactly the addresses that passed and a name cannot rebind
+between the check and the connect. An address written in the URL is checked
+directly.
 
 ## Consequences
 
