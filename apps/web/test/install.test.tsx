@@ -162,13 +162,15 @@ describe('the shell banner', () => {
   it('stays out of the way on desktop', async () => {
     useBrowser(DESKTOP_CHROME)
     installFakeApi({ leads: [] })
-    render(<App />)
+    const view = render(<App />)
     await screen.findByRole('heading', { name: 'Leads' })
 
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
-    // The screen itself stays reachable for anyone who goes looking.
+    // The screen itself stays reachable for anyone who goes looking. The first
+    // mount has to go: left running, it re-renders onto /install as well.
+    view.unmount()
     window.history.pushState(null, '', '/install')
-    render(<InstallHelper />)
-    expect(screen.getByRole('heading', { name: 'Install Philo' })).toBeDefined()
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Install Philo' })).toBeDefined()
   })
 })
