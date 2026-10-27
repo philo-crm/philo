@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { AppShell } from './AppShell.tsx'
 import {
   beginSignIn,
@@ -11,6 +11,7 @@ import {
   type Auth,
   type User,
 } from './auth.ts'
+import { BrandMark } from './icons.tsx'
 import { syncPushSubscription } from './push.ts'
 
 type Screen =
@@ -53,6 +54,18 @@ async function boot(): Promise<Screen> {
   }
 }
 
+function AuthScreen({ children }: { children: ReactNode }) {
+  return (
+    <main className="auth-screen">
+      <p className="auth-brand">
+        <BrandMark />
+        Philo
+      </p>
+      {children}
+    </main>
+  )
+}
+
 function SignedOut({ auth, error }: { auth: Auth; error: string | undefined }) {
   const [pending, setPending] = useState(false)
 
@@ -62,16 +75,25 @@ function SignedOut({ auth, error }: { auth: Auth; error: string | undefined }) {
   }
 
   return (
-    <main>
-      <section className="auth-form">
-        <h1>{error === undefined ? 'Sign in' : 'Sign-in failed'}</h1>
+    <AuthScreen>
+      <section className="auth-card">
+        <div className="auth-head">
+          <h1>{error === undefined ? 'Sign in' : 'Sign-in failed'}</h1>
+          {error === undefined && (
+            <p className="muted">You’ll come straight back to this page once you’ve signed in.</p>
+          )}
+        </div>
         {/* `role="alert"` so a failure is announced, not just recoloured. */}
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="button" onClick={handleSignIn} disabled={pending}>
+        {error !== undefined && (
+          <p className="notice notice-error" role="alert">
+            {error}
+          </p>
+        )}
+        <button type="button" className="primary" onClick={handleSignIn} disabled={pending}>
           {error === undefined ? 'Sign in' : 'Try again'}
         </button>
       </section>
-    </main>
+    </AuthScreen>
   )
 }
 
@@ -116,21 +138,25 @@ export function App() {
 
   if (screen.kind === 'loading') {
     return (
-      <main>
-        <p>Loading…</p>
-      </main>
+      <AuthScreen>
+        <p className="muted">Loading…</p>
+      </AuthScreen>
     )
   }
 
   if (screen.kind === 'unreachable') {
     return (
-      <main>
-        <h1>Philo</h1>
-        <p role="alert">Could not reach the server.</p>
-        <button type="button" onClick={() => void boot().then(setScreen)}>
-          Retry
-        </button>
-      </main>
+      <AuthScreen>
+        <section className="auth-card">
+          <h1>Connection problem</h1>
+          <p className="notice notice-error" role="alert">
+            Could not reach the server. Check your connection and try again.
+          </p>
+          <button type="button" className="primary" onClick={() => void boot().then(setScreen)}>
+            Retry
+          </button>
+        </section>
+      </AuthScreen>
     )
   }
 

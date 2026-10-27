@@ -487,7 +487,11 @@ describe('oauth authorize', () => {
 
     expect(res.status).toBe(401)
     expect(res.headers.get('location')).toBeNull()
-    expect(await res.text()).toContain('not right')
+    const body = await res.text()
+    expect(body).toMatch(/<p class="notice" role="alert">[^<]*not right/)
+    // The address is kept, so the cursor goes back to the password.
+    expect(body).toMatch(/<input[^>]*id="password"[^>]*autofocus/)
+    expect(body).not.toMatch(/<input[^>]*id="email"[^>]*autofocus/)
   })
 
   it('sends access_denied back when the operator cancels', async () => {

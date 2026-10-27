@@ -88,3 +88,18 @@ export const SettingsIcon = () => (
     <circle cx="6" cy="11.5" r="1.5" />
   </Icon>
 )
+
+/** The app icon — public/favicon.svg — for the screens that come before the shell. */
+export const BrandMark = () => (
+  <svg
+    className="icon brand-mark"
+    viewBox="0 0 100 100"
+    width="28"
+    height="28"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <rect width="100" height="100" rx="22" />
+    <path d="M4 10 H96 L58 54 V92 L42 84 V54 Z" transform="translate(22 21.44) scale(0.56)" />
+  </svg>
+)
