@@ -211,6 +211,16 @@ export const users = sqliteTable('users', {
    * this cannot.
    */
   externalSubject: text('external_subject').unique(),
+  /**
+   * `user` or `admin` — ADR-0012. Null means the account has no access (an
+   * external IdP stopped granting it a scope). Enforced in code rather than by
+   * a CHECK, which SQLite could only add by rebuilding the table.
+   */
+  role: text('role', { enum: ['user', 'admin'] }),
+  /** When the role was last confirmed by the IdP; API keys of an external account depend on it. */
+  roleConfirmedAt: timestamp('role_confirmed_at'),
+  /** Set when an admin deactivates the account. Every credential it holds is refused. */
+  disabledAt: timestamp('disabled_at'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 })

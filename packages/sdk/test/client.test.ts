@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ApiError, PhiloClient, isUnauthorized } from '../src/index.ts'
+import { ApiError, PhiloClient, isAdminRequired, isUnauthorized } from '../src/index.ts'
 
 interface Call {
   url: string
@@ -103,6 +103,24 @@ describe('PhiloClient', () => {
     const failure = await new PhiloClient({ fetch }).auth.session().catch((e) => e)
     expect(failure).toMatchObject({ status: 401, code: '' })
     expect(isUnauthorized(failure)).toBe(true)
+  })
+
+  it('tells an admin-only refusal apart from other 403s', async () => {
+    const adminOnly = await new PhiloClient({ fetch: recorder(() => json({ error: 'admin_required' }, 403)).fetch })
+      .webhooks.list()
+      .catch((e) => e)
+    expect(isAdminRequired(adminOnly)).toBe(true)
+    expect(isUnauthorized(adminOnly)).toBe(false)
+    const other = await new PhiloClient({ fetch: recorder(() => json({ error: 'insufficient_scope' }, 403)).fetch })
+      .webhooks.list()
+      .catch((e) => e)
+    expect(isAdminRequired(other)).toBe(false)
+  })
+
+  it('returns the role with the principal', async () => {
+    const principal = { user: { id: 1, email: 'a@example.com', name: null, role: 'user' }, role: 'user', actor: 'api_key:3' }
+    const { fetch } = recorder(() => json(principal))
+    await expect(new PhiloClient({ fetch }).auth.principal()).resolves.toEqual(principal)
   })
 
   it('deletes a lead', async () => {

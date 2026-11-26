@@ -6,6 +6,7 @@ import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import { normalizeEmail } from './credentials.ts'
 import { hashPassword } from './password.ts'
+import { ACCOUNT_COLUMNS, ROLES_ON_ACCOUNTS, sessionUserOf } from './access.ts'
 import type { SessionUser } from './session.ts'
 
 /**
@@ -103,7 +104,9 @@ export async function verifyExternalToken(
   return user === undefined ? undefined : { user, clientId }
 }
 
-const USER_COLUMNS = { id: users.id, email: users.email, name: users.name }
+/** Roles are not read from scopes yet, so the stored role decides, as with the built-in IdP. */
+const USER_COLUMNS = ACCOUNT_COLUMNS
+const access = (row: Parameters<typeof sessionUserOf>[0]) => sessionUserOf(row, ROLES_ON_ACCOUNTS)
 
 /** Positive proof only: a provider that says nothing about the address has not vouched for it. */
 function verifiedEmail(claims: JWTPayload): string | undefined {
@@ -133,7 +136,7 @@ async function findOrProvisionUser(
   claims: JWTPayload,
 ): Promise<SessionUser | undefined> {
   const [bound] = db.select(USER_COLUMNS).from(users).where(eq(users.externalSubject, subject)).all()
-  if (bound !== undefined) return bound
+  if (bound !== undefined) return access(bound)
 
   const email = verifiedEmail(claims)
   if (email === undefined) return undefined
@@ -145,7 +148,7 @@ async function findOrProvisionUser(
       .where(and(eq(users.email, email), isNull(users.externalSubject)))
       .returning(USER_COLUMNS)
       .all()
-    return unbound
+    return access(unbound)
   }
 
   // A password nobody knows: the built-in sign-in is switched off in this mode,
@@ -158,9 +161,11 @@ async function findOrProvisionUser(
     if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return undefined
     const [created] = tx
       .insert(users)
-      .values({ email, passwordHash, name, externalSubject: subject })
+      // Without the role scopes there is one account, and it runs the
+      // instance — ADR-0012.
+      .values({ email, passwordHash, name, externalSubject: subject, role: 'admin', roleConfirmedAt: new Date() })
       .returning(USER_COLUMNS)
       .all()
-    return created
+    return access(created)
   })
 }

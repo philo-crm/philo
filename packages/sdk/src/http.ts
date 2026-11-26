@@ -30,6 +30,11 @@ export function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401
 }
 
+/** The call needs the admin role and the credential's user is not an admin — ADR-0012. */
+export function isAdminRequired(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403 && error.code === 'admin_required'
+}
+
 export type FetchLike = (input: string, init?: RequestInit) => Response | Promise<Response>
 
 /** Where a bearer token comes from. Undefined means "send the request without one". */

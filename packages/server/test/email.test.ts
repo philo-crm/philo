@@ -17,6 +17,7 @@ import type { CreatedLead } from '../src/notify.ts'
 import {
   cleanupTestApps,
   configureEmail,
+  createPerson,
   createTestApp,
   defaultFormKey,
   recordingSender,
@@ -124,6 +125,23 @@ function fakeSchedule() {
 }
 
 describe('sendNewLeadEmails', () => {
+  it('notifies every active admin, and no user, when the funnel names nobody — ADR-0012', async () => {
+    const testApp = createTestApp()
+    await setupAdmin(testApp)
+    createPerson(testApp, { email: 'second-admin@example.com', role: 'admin' })
+    createPerson(testApp, { email: 'worker@example.com', role: 'user' })
+    const gone = createPerson(testApp, { email: 'gone@example.com', role: 'admin' })
+    testApp.db.update(users).set({ disabledAt: new Date() }).where(eq(users.id, gone)).run()
+    createPerson(testApp, { email: 'no-access@example.com', role: null })
+    configureEmail(testApp)
+    const sender = recordingSender()
+    const leadId = await submitLead(testApp, { name: 'Dana Rivers', email: 'dana@example.com' })
+
+    await sendNewLeadEmails(onceDeps(testApp, sender.factory), leadId)
+
+    expect(byTemplate(sender.sent, 'New lead')?.to).toEqual(['admin@example.com', 'second-admin@example.com'])
+  })
+
   it('sends the notification and the acknowledgment, and records each on the timeline', async () => {
     const testApp = createTestApp()
     await setupAdmin(testApp)

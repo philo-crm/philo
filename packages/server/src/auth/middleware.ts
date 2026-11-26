@@ -6,7 +6,8 @@ import { FIRST_PARTY_CLIENT_ID } from '../oauth/first-party.ts'
 import { resolveAccessToken } from '../oauth/tokens.ts'
 import { resolveApiKey } from './api-keys.ts'
 import { verifyExternalToken, type ExternalIdp } from './external-idp.ts'
-import type { SessionUser } from './session.ts'
+import { ACCOUNT_COLUMNS, ROLES_ON_ACCOUNTS, sessionUserOf, type AccessPolicy } from './access.ts'
+import type { Role, SessionUser } from './session.ts'
 
 export interface AuthDeps {
   db: Db
@@ -18,6 +19,8 @@ export interface AuthDeps {
   trustProxy: boolean
   /** Set when an external IdP issues the tokens — ADR-0006. */
   externalIdp?: ExternalIdp | undefined
+  /** Where roles are decided — ADR-0012. Unset: on the account. */
+  access?: AccessPolicy | undefined
 }
 
 /**
@@ -29,6 +32,11 @@ export interface AuthDeps {
  */
 export interface Principal {
   user: SessionUser
+  /**
+   * What this credential may do — ADR-0012. Its user's role, read on every
+   * request, so a change reaches every credential the account holds at once.
+   */
+  role: Role
   actor: `user:${number}` | `api_key:${number}` | `oauth:${string}`
 }
 
@@ -46,9 +54,9 @@ export function bearerToken(header: string | undefined): string | undefined {
   return match?.[1]
 }
 
-function userById(db: Db, id: number): SessionUser | undefined {
-  const [user] = db.select({ id: users.id, email: users.email, name: users.name }).from(users).where(eq(users.id, id)).all()
-  return user
+function userById(deps: AuthDeps, id: number): SessionUser | undefined {
+  const [row] = deps.db.select(ACCOUNT_COLUMNS).from(users).where(eq(users.id, id)).all()
+  return sessionUserOf(row, deps.access ?? ROLES_ON_ACCOUNTS)
 }
 
 /**
@@ -61,13 +69,13 @@ function userById(db: Db, id: number): SessionUser | undefined {
  */
 export async function resolvePrincipal(deps: AuthDeps, token: string): Promise<Principal | undefined> {
   const key = resolveApiKey(deps.db, token)
-  if (key !== undefined) return withUser(deps.db, key.userId, `api_key:${key.id}`)
+  if (key !== undefined) return withUser(deps, key.userId, `api_key:${key.id}`)
 
   const grant = resolveAccessToken(deps.db, token)
   if (grant !== undefined) {
     // The PWA's grant is the person themself; any other client acts for them.
     const actor = grant.clientId === FIRST_PARTY_CLIENT_ID ? (`user:${grant.userId}` as const) : (`oauth:${grant.clientId}` as const)
-    return withUser(deps.db, grant.userId, actor)
+    return withUser(deps, grant.userId, actor)
   }
 
   if (deps.externalIdp === undefined) return undefined
@@ -75,13 +83,14 @@ export async function resolvePrincipal(deps: AuthDeps, token: string): Promise<P
   if (external === undefined) return undefined
   return {
     user: external.user,
+    role: external.user.role,
     actor: external.clientId === deps.externalIdp.clientId ? `user:${external.user.id}` : `oauth:${external.clientId}`,
   }
 }
 
-function withUser(db: Db, userId: number, actor: Principal['actor']): Principal | undefined {
-  const user = userById(db, userId)
-  return user === undefined ? undefined : { user, actor }
+function withUser(deps: AuthDeps, userId: number, actor: Principal['actor']): Principal | undefined {
+  const user = userById(deps, userId)
+  return user === undefined ? undefined : { user, role: user.role, actor }
 }
 
 /**
@@ -115,6 +124,18 @@ export const requireAuth: MiddlewareHandler<AuthEnv> = async (c, next) => {
 }
 
 /**
+ * Admin-only: configuration and people — ADR-0012. Behind `requireAuth`, so a
+ * principal is always there; a user's credential is refused with 403, which
+ * tells a client the token is fine and the person is not allowed.
+ */
+export const requireAdmin: MiddlewareHandler<AuthEnv> = async (c, next) => {
+  const principal = c.get('principal')
+  if (principal === undefined) return unauthorized(c)
+  if (principal.role !== 'admin') return c.json({ error: 'admin_required' }, 403)
+  return next()
+}
+
+/**
  * The user the credential acts for. Throws rather than returning undefined so
  * a route that forgets the guard fails loudly in tests instead of quietly
  * serving an anonymous request.
@@ -134,4 +155,11 @@ export function actorOf(c: Context<AuthEnv>): string {
   const principal = c.get('principal')
   if (principal === undefined) throw new Error('actorOf() requires requireAuth() on the route')
   return principal.actor
+}
+
+/** What the credential may do — the principal's role, which an external token's scopes may cap below its user's. */
+export function principalRole(c: Context<AuthEnv>): Role {
+  const principal = c.get('principal')
+  if (principal === undefined) throw new Error('principalRole() requires requireAuth() on the route')
+  return principal.role
 }

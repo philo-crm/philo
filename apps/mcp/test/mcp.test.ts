@@ -1,6 +1,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { createPhiloClient } from '@philo/sdk'
 import { asc, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -23,6 +25,7 @@ import {
   type TestApp,
 } from '../../../packages/server/test/support/app.ts'
 import { createMcpApp, MAX_MCP_BODY_BYTES } from '../src/app.ts'
+import { ADMIN_TOOLS, createMcpServer } from '../src/tools.ts'
 
 afterEach(() => {
   cleanupTestApps()
@@ -135,7 +138,7 @@ function agentKey(testApp: TestApp): ReturnType<typeof createApiKey> {
   const [existing] = testApp.db.select({ id: users.id }).from(users).limit(1).all()
   const userId =
     existing?.id ??
-    testApp.db.insert(users).values({ email: 'owner@example.com', passwordHash: 'unused', name: null }).returning({ id: users.id }).all()[0]?.id
+    testApp.db.insert(users).values({ email: 'owner@example.com', passwordHash: 'unused', name: null, role: 'admin' }).returning({ id: users.id }).all()[0]?.id
   if (userId === undefined) throw new Error('no user to own the key')
   return createApiKey(testApp.db, userId, 'Agent')
 }
@@ -813,5 +816,115 @@ describe('mcp email template tools', () => {
       expect(rendered.subject).toBe('Hello Dana Reed')
       expect(rendered.leadId).toBe(row?.id)
     })
+  })
+})
+
+describe('roles — ADR-0012', () => {
+  /** A user-role account's API key. */
+  function userKey(testApp: TestApp): string {
+    agentKey(testApp) // the instance's admin comes first
+    const [row] = testApp.db
+      .insert(users)
+      .values({ email: 'worker@example.com', passwordHash: 'unused', name: 'Worker', role: 'user' })
+      .returning({ id: users.id })
+      .all()
+    return createApiKey(testApp.db, row!.id, 'Worker agent').key
+  }
+
+  /** Arguments every tool's schema accepts, so a call reaches the API. */
+  const ARGS: Record<string, Record<string, unknown>> = {
+    list_leads: {},
+    get_lead: { leadId: 1 },
+    create_lead: { name: 'Pat', email: 'pat@example.com' },
+    update_lead: { leadId: 1, name: 'Pat' },
+    move_lead_stage: { leadId: 1, stageId: 1 },
+    add_lead_note: { leadId: 1, note: 'hi' },
+    add_lead_attachment: { leadId: 1, filename: 'a.txt', data: 'aGk=' },
+    get_lead_attachment: { leadId: 1, attachmentId: 1 },
+    remove_lead_attachment: { leadId: 1, attachmentId: 1 },
+    delete_lead: { leadId: 999 },
+    list_stages: {},
+    create_stage: { name: 'Screening' },
+    update_stage: { stageId: 1, name: 'Renamed' },
+    reorder_stages: { stageIds: [1] },
+    delete_stage: { stageId: 1 },
+    list_email_templates: {},
+    get_email_template: { trigger: 'new_lead_ack' },
+    update_email_template: { trigger: 'new_lead_ack', subject: 'Hi' },
+    preview_email_template: { trigger: 'new_lead_ack' },
+    list_funnels: {},
+    create_funnel: { name: 'Sales' },
+    update_funnel: { funnelId: 1, name: 'Renamed' },
+    delete_funnel: { funnelId: 1 },
+    list_webhooks: {},
+    create_webhook: { url: 'https://hooks.example.com/x' },
+    update_webhook: { webhookId: 1, authHeader: null },
+    test_webhook: { webhookId: 1 },
+    delete_webhook: { webhookId: 1 },
+  }
+
+  it('lists a user only the tools a user can call', async () => {
+    const testApp = createTestApp()
+    const names = await withMcpClient(testApp, userKey(testApp), async (_call, client) =>
+      (await client.listTools()).tools.map((tool) => tool.name).toSorted(),
+    )
+    expect(names).toEqual(TOOL_NAMES.filter((name) => !ADMIN_TOOLS.has(name)))
+  })
+
+  it("refuses a user's call to an admin tool by name", async () => {
+    const testApp = createTestApp()
+    const result = await withMcpClient(testApp, userKey(testApp), async (_call, client) =>
+      client.callTool({ name: 'list_webhooks', arguments: {} }).catch((error: unknown) => ({ thrown: error })),
+    )
+    // Unknown to this server: either an error result or a protocol error, never data.
+    if ('thrown' in result) expect(result.thrown).toBeInstanceOf(Error)
+    else expect(result.isError).toBe(true)
+  })
+
+  it('tags exactly the tools whose API calls need an admin', async () => {
+    // A server built as if for an admin, holding a user's key: what a session
+    // would see if the role changed between tools/list and the call. Every
+    // admin tool must come back as the API's 403 and no other tool may.
+    const testApp = createTestApp()
+    const key = userKey(testApp)
+    const philo = createPhiloClient({
+      baseUrl: TEST_PUBLIC_BASE_URL,
+      fetch: (input, init) => testApp.app.request(input, init),
+      accessToken: () => key,
+    })
+    const server = createMcpServer(philo, 'admin')
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverSide)
+    const client = new Client({ name: 'philo-tests', version: '0' })
+    await client.connect(clientSide)
+    try {
+      expect(Object.keys(ARGS).toSorted()).toEqual(TOOL_NAMES)
+      const adminRequired: string[] = []
+      for (const [name, args] of Object.entries(ARGS)) {
+        const result = await client.callTool({ name, arguments: args })
+        const [first] = result.content as { type: string; text: string }[]
+        if (result.isError === true && first?.text.includes('"admin_required"')) adminRequired.push(name)
+      }
+      expect(adminRequired.toSorted()).toEqual([...ADMIN_TOOLS].toSorted())
+    } finally {
+      await client.close()
+      await server.close()
+    }
+  })
+
+  it('lists an admin every tool', async () => {
+    const testApp = createTestApp()
+    const names = await withMcpClient(testApp, agentKey(testApp).key, async (_call, client) =>
+      (await client.listTools()).tools.map((tool) => tool.name).toSorted(),
+    )
+    expect(names).toEqual(TOOL_NAMES)
+  })
+
+  it('refuses a key whose account has no access, as the API does', async () => {
+    const testApp = createTestApp()
+    const key = userKey(testApp)
+    testApp.db.update(users).set({ role: null }).where(eq(users.email, 'worker@example.com')).run()
+    const res = await testApp.app.request('/mcp', jsonRpcPost(INITIALIZE, { authorization: `Bearer ${key}` }))
+    expect(res.status).toBe(401)
   })
 })

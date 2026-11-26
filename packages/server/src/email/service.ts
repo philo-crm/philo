@@ -1,7 +1,8 @@
 import { and, asc, eq, gte } from 'drizzle-orm'
+import { activeAdmins, ROLES_ON_ACCOUNTS, type AccessPolicy } from '../auth/access.ts'
 import { readFunnelEmailSettings, type FunnelEmailSettings } from '../funnels/service.ts'
 import type { Db } from '../db/index.ts'
-import { emailTemplates, leadEvents, leads, users } from '../db/schema.ts'
+import { emailTemplates, leadEvents, leads } from '../db/schema.ts'
 import { getLead, CREATED_VIA_API, type LeadDetail, type LeadEventRecord } from '../leads/service.ts'
 import type { LeadCreatedHook } from '../notify.ts'
 import { buildContext, renderBody, renderSubject, type TemplateContext } from './render.ts'
@@ -39,6 +40,8 @@ export interface EmailDeps {
   retry?: RetryTuning | undefined
   /** How a delayed retry is booked. Tests pass one that runs without waiting. */
   scheduleRetry?: ScheduleRetry | undefined
+  /** Who counts as an active admin — ADR-0012. Unset: roles live on the account. */
+  access?: AccessPolicy | undefined
 }
 
 interface TemplateRow {
@@ -64,19 +67,13 @@ function readTemplates(db: Db, funnelId: number): Map<string, TemplateRow> {
 
 /**
  * Who the new-lead notification goes to: the funnel's own recipients when it
- * names any (ADR-0009), and otherwise everyone who can sign in — on a
- * single-tenant instance with one or two accounts, "the people with logins" is
- * the answer an operator would have typed anyway, and it cannot drift out of
- * date the way a copy would.
+ * names any (ADR-0009), and otherwise every active admin (ADR-0012) — who
+ * works a funnel is configuration, and the admins are who would set it. Read
+ * at send time, so it cannot drift out of date the way a copy would.
  */
-function operatorRecipients(db: Db, funnel: FunnelEmailSettings | undefined): string[] {
+function operatorRecipients(deps: EmailDeps, funnel: FunnelEmailSettings | undefined): string[] {
   if (funnel !== undefined && funnel.notifyRecipients.length > 0) return funnel.notifyRecipients
-  return db
-    .select({ email: users.email })
-    .from(users)
-    .orderBy(asc(users.id))
-    .all()
-    .map((row) => row.email)
+  return activeAdmins(deps.db, deps.access ?? ROLES_ON_ACCOUNTS).map((row) => row.email)
 }
 
 /**
@@ -204,7 +201,7 @@ function plansFor(
   funnel: FunnelEmailSettings | undefined,
 ): SendPlan[] {
   return [
-    { trigger: 'new_lead_notify', to: deliverable(operatorRecipients(deps.db, funnel)) },
+    { trigger: 'new_lead_notify', to: deliverable(operatorRecipients(deps, funnel)) },
     {
       trigger: 'new_lead_ack',
       // A lead reachable only by phone gets no acknowledgment, which is not a

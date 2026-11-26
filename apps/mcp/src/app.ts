@@ -1,5 +1,13 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
-import { createPhiloClient, isUnauthorized, MAX_ATTACHMENT_BYTES, type FetchLike } from '@philo/sdk'
+import {
+  ApiError,
+  createPhiloClient,
+  isUnauthorized,
+  MAX_ATTACHMENT_BYTES,
+  type FetchLike,
+  type Principal,
+  type Role,
+} from '@philo/sdk'
 import { Hono, type MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
@@ -14,6 +22,10 @@ import { createMcpServer } from './tools.ts'
 export const MAX_MCP_BODY_BYTES = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 + 64 * 1024
 
 export const MCP_PATH = '/mcp'
+
+interface McpEnv {
+  Variables: { role: Role }
+}
 
 /** RFC 9728 §3.1: the resource's path, appended to the well-known prefix. */
 export const PROTECTED_RESOURCE_METADATA_PATH = `/.well-known/oauth-protected-resource${MCP_PATH}`
@@ -51,8 +63,8 @@ function bearerToken(header: string | undefined): string | undefined {
  * JSON responses rather than SSE, and `GET` refused, because nothing here
  * streams.
  */
-export function createMcpApp(options: McpAppOptions): Hono {
-  const app = new Hono()
+export function createMcpApp(options: McpAppOptions): Hono<McpEnv> {
+  const app = new Hono<McpEnv>()
   const resourceMetadataUrl = `${new URL(options.publicUrl).origin}${PROTECTED_RESOURCE_METADATA_PATH}`
   const client = (token?: string) =>
     createPhiloClient({ baseUrl: options.apiBaseUrl, fetch: options.fetch, accessToken: () => token })
@@ -92,19 +104,28 @@ export function createMcpApp(options: McpAppOptions): Hono {
    * client's OAuth machinery acts on — not a tool error inside a 200 — and
    * before the body limit, so nothing is read for a caller without one.
    */
-  const authenticate: MiddlewareHandler = async (c, next) => {
+  const authenticate: MiddlewareHandler<McpEnv> = async (c, next) => {
     const token = bearerToken(c.req.header('authorization'))
     if (token === undefined) {
       c.header('WWW-Authenticate', challenge(false))
       return c.json({ error: 'unauthorized' }, 401)
     }
+    let principal: Principal
     try {
-      await client(token).auth.principal()
+      principal = await client(token).auth.principal()
     } catch (error) {
-      if (!isUnauthorized(error)) throw error
-      c.header('WWW-Authenticate', challenge(true))
-      return c.json({ error: 'unauthorized' }, 401)
+      if (isUnauthorized(error)) {
+        c.header('WWW-Authenticate', challenge(true))
+        return c.json({ error: 'unauthorized' }, 401)
+      }
+      // A token the API knows but will not serve at all — passed through as
+      // the API said it, so a client can see why.
+      if (error instanceof ApiError && error.status === 403) {
+        return c.json({ error: error.code === '' ? 'forbidden' : error.code }, 403)
+      }
+      throw error
     }
+    c.set('role', principal.role)
     return next()
   }
 
@@ -115,7 +136,8 @@ export function createMcpApp(options: McpAppOptions): Hono {
 
   app.post(MCP_PATH, authenticate, limitBody, async (c) => {
     const philo = client(bearerToken(c.req.header('authorization')))
-    const server = createMcpServer(philo)
+    // The role the API reported for this token: what tools/list shows.
+    const server = createMcpServer(philo, c.get('role'))
     // No `sessionIdGenerator`, which is what puts the transport in stateless mode.
     const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true })
     await server.connect(transport)

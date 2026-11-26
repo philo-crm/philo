@@ -81,7 +81,7 @@ describe('bearer guard', () => {
       expect((await testApp.app.request(path, as(authorization))).status, path).toBe(200)
     }
     const session = await testApp.app.request('/api/v1/auth/session', as(authorization))
-    expect(await session.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin' } })
+    expect(await session.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin', role: 'admin' } })
   })
 
   it('refuses a token whose user is gone', async () => {
@@ -113,7 +113,7 @@ describe('GET /api/v1/auth/session', () => {
     const testApp = createTestApp()
     const authorization = await setupAdmin(testApp)
     const res = await testApp.app.request('/api/v1/auth/session', as(authorization))
-    expect(await res.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin' } })
+    expect(await res.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin', role: 'admin' } })
   })
 })
 
@@ -122,14 +122,16 @@ describe('GET /api/v1/auth/principal', () => {
     const testApp = createTestApp()
     const person = await setupAdmin(testApp)
     const { authorization, clientId } = await agentAuth(testApp, 1)
-    const user = { id: 1, email: ADMIN_EMAIL, name: 'Admin' }
+    const user = { id: 1, email: ADMIN_EMAIL, name: 'Admin', role: 'admin' as const }
 
     expect(await (await testApp.app.request('/api/v1/auth/principal', as(person))).json()).toEqual({
       user,
+      role: 'admin',
       actor: 'user:1',
     })
     expect(await (await testApp.app.request('/api/v1/auth/principal', as(authorization))).json()).toEqual({
       user,
+      role: 'admin',
       actor: `oauth:${clientId}`,
     })
   })
@@ -232,7 +234,7 @@ describe('external IdP', () => {
 
     const res = await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner' } })
+    expect(await res.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner', role: 'admin' } })
   })
 
   it('refuses a second person once the instance has its operator', async () => {
