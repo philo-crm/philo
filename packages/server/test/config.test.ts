@@ -54,12 +54,19 @@ describe('loadConfig', () => {
   it.each([
     [' https://crm.example.com/api, ,https://crm.example.com/mcp ,', ['https://crm.example.com/api', 'https://crm.example.com/mcp']],
     ['philo-api', ['philo-api']],
-    // Nothing left after the blanks go means no audience check, exactly as unset.
-    [' , ', undefined],
+    // Empty means no audience check, exactly as unset.
     ['', undefined],
   ])('reads PHILO_OIDC_AUDIENCE=%j as a list, dropping blanks', (raw, expected) => {
     const config = loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x', PHILO_OIDC_AUDIENCE: raw })
     expect(config.externalIdp?.audience).toEqual(expected)
+  })
+
+  // Set but naming nothing (say, a template whose variables were all unset)
+  // must not quietly turn the audience check off.
+  it.each([' ', ',', ' , '])('refuses PHILO_OIDC_AUDIENCE=%j, which lists no audience', (raw) => {
+    expect(() =>
+      loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x', PHILO_OIDC_AUDIENCE: raw }),
+    ).toThrow(/PHILO_OIDC_AUDIENCE/)
   })
 
   it('refuses an issuer that is not a URL', () => {

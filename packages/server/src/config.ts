@@ -96,10 +96,16 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
   // The issuer is compared to `iss` byte for byte, so it is kept as written
   // apart from the validation.
   parseUrl('PHILO_OIDC_ISSUER', issuer)
-  const audience = (env['PHILO_OIDC_AUDIENCE'] ?? '')
+  // Unset or empty means no audience check. Set but naming nothing (`' '`,
+  // `','`) is a mistake, and treating it as unset would fail open.
+  const rawAudience = env['PHILO_OIDC_AUDIENCE'] ?? ''
+  const audience = rawAudience
     .split(',')
     .map((value) => value.trim())
     .filter((value) => value !== '')
+  if (rawAudience !== '' && audience.length === 0) {
+    throw new ConfigError('PHILO_OIDC_AUDIENCE lists no audience; leave it unset to skip the audience check')
+  }
   const agentClientIds = (env['PHILO_OIDC_AGENT_CLIENT_IDS'] ?? '')
     .split(',')
     .map((id) => id.trim())
