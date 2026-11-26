@@ -524,6 +524,8 @@ describe('an external IdP token for a bound account without access', () => {
       audience: ['philo-api'],
       clientId: PWA_CLIENT,
       agentClientIds: [],
+      scope: 'openid email profile',
+      resource: [],
       keys: createLocalJWKSet({ keys: [jwk] }),
       userinfoEndpoint: async () => undefined,
     }
