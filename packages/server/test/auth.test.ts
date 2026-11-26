@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, type CryptoKey } from 'jose'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { createFirstUser } from '../src/auth/credentials.ts'
 import type { ExternalIdp } from '../src/auth/external-idp.ts'
 import { accessTokens, leadEvents, users } from '../src/db/schema.ts'
@@ -187,8 +187,26 @@ describe('route guard', () => {
 describe('external IdP', () => {
   const ISSUER = 'https://idp.example.com/realms/philo'
   const PWA_CLIENT = 'philo-web-external'
+  const USERINFO = 'https://idp.example.com/realms/philo/userinfo'
   let privateKey: CryptoKey
   let idp: ExternalIdp
+  // Every outbound call in these tests is the userinfo request. By default the
+  // provider refuses it, so nothing ever reaches the network.
+  let fetchSpy: MockInstance<typeof fetch>
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 401 }))
+  })
+
+  afterEach(() => {
+    fetchSpy.mockRestore()
+  })
+
+  function userinfo(body: unknown, init: ResponseInit = {}): void {
+    fetchSpy.mockImplementation(async () =>
+      new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' }, ...init }),
+    )
+  }
 
   beforeAll(async () => {
     const pair = await generateKeyPair('ES256')
@@ -200,6 +218,7 @@ describe('external IdP', () => {
       clientId: PWA_CLIENT,
       agentClientIds: ['some-connector'],
       keys: createLocalJWKSet({ keys: [jwk] }),
+      userinfoEndpoint: async () => USERINFO,
     }
   })
 
@@ -319,6 +338,107 @@ describe('external IdP', () => {
     })
     const [row] = testApp.db.select().from(users).all()
     expect(row?.externalSubject).toBe(`${ISSUER} external-sub`)
+  })
+
+  describe('a token that carries no email', () => {
+    const BARE = { azp: PWA_CLIENT }
+
+    it('provisions the operator from userinfo on an empty instance', async () => {
+      const testApp = createTestApp({ externalIdp: idp })
+      userinfo({ sub: 'external-sub', email: 'Owner@Example.com', email_verified: true, name: 'Owner' })
+      const jwt = await token(BARE)
+
+      const res = await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))
+      expect(await res.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner' } })
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchSpy.mock.calls[0]!
+      expect(String(url)).toBe(USERINFO)
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${jwt}`)
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+    })
+
+    it('binds an account from the built-in IdP era by the email userinfo verifies', async () => {
+      const testApp = createTestApp({ externalIdp: idp })
+      createFirstUser(testApp.db, { email: ADMIN_EMAIL, passwordHash: 'unused', name: 'Admin' })
+      userinfo({ sub: 'external-sub', email: ADMIN_EMAIL, email_verified: true })
+
+      const res = await testApp.app.request('/api/v1/auth/session', as(`Bearer ${await token(BARE)}`))
+      expect(await res.json()).toMatchObject({ user: { id: 1, email: ADMIN_EMAIL } })
+      const [row] = testApp.db.select().from(users).all()
+      expect(row?.externalSubject).toBe(`${ISSUER} external-sub`)
+    })
+
+    it('never asks userinfo again once the subject is bound', async () => {
+      const testApp = createTestApp({ externalIdp: idp })
+      userinfo({ sub: 'external-sub', email: 'owner@example.com', email_verified: true })
+      await testApp.app.request('/api/v1/auth/session', as(`Bearer ${await token(BARE)}`))
+      fetchSpy.mockClear()
+
+      expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(BARE)}`))).status).toBe(200)
+      expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token({ azp: 'some-connector' })}`))).status).toBe(200)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('asks nothing of userinfo once every account is bound', async () => {
+      const testApp = createTestApp({ externalIdp: idp })
+      await testApp.app.request('/api/v1/auth/session', as(`Bearer ${await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })}`))
+      userinfo({ sub: 'someone-else', email: 'someone@example.com', email_verified: true })
+
+      const other = await token(BARE, { subject: 'someone-else' })
+      expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${other}`))).status).toBe(401)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['an unverified email', { sub: 'external-sub', email: 'owner@example.com', email_verified: false }],
+      ['an email nobody vouched for', { sub: 'external-sub', email: 'owner@example.com' }],
+      ['no email', { sub: 'external-sub' }],
+      ['another subject', { sub: 'someone-else', email: 'owner@example.com', email_verified: true }],
+      ['no subject', { email: 'owner@example.com', email_verified: true }],
+      ['something other than an object', ['owner@example.com']],
+    ])('refuses when userinfo answers with %s', async (_label, body) => {
+      const testApp = createTestApp({ externalIdp: idp })
+      userinfo(body)
+      expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(BARE)}`))).status).toBe(401)
+      expect(testApp.db.select().from(users).all()).toHaveLength(0)
+    })
+
+    it.each([
+      ['refuses the token', new Response(null, { status: 401 })],
+      ['answers something other than 200', new Response(JSON.stringify({ sub: 'external-sub', email: 'owner@example.com', email_verified: true }), { status: 203 })],
+      ['answers with something that is not JSON', new Response('<html>', { status: 200 })],
+      ['answers with more than a profile', new Response(JSON.stringify({ sub: 'external-sub', email: 'owner@example.com', email_verified: true, pad: 'x'.repeat(100_000) }), { status: 200 })],
+    ])('refuses when userinfo %s', async (_label, response) => {
+      const testApp = createTestApp({ externalIdp: idp })
+      fetchSpy.mockResolvedValue(response)
+      expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(BARE)}`))).status).toBe(401)
+      expect(testApp.db.select().from(users).all()).toHaveLength(0)
+    })
+
+    it('refuses when the provider names no userinfo endpoint', async () => {
+      const testApp = createTestApp({ externalIdp: { ...idp, userinfoEndpoint: async () => undefined } })
+      expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(BARE)}`))).status).toBe(401)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['cannot be reached', () => Promise.reject(new TypeError('fetch failed'))],
+      ['times out', () => Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))],
+      ['fails on its side', async () => new Response(null, { status: 503 })],
+    ])('fails the request, without a 401, when userinfo %s', async (_label, impl) => {
+      const testApp = createTestApp({ externalIdp: idp })
+      fetchSpy.mockImplementation(impl)
+      const res = await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(BARE)}`))
+      expect(res.status).toBeGreaterThanOrEqual(500)
+      expect(testApp.db.select().from(users).all()).toHaveLength(0)
+    })
+  })
+
+  it('makes no userinfo call for a token that carries its own verified email', async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    const jwt = await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })
+    expect((await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))).status).toBe(200)
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   it('still accepts API keys', async () => {

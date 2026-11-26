@@ -133,8 +133,12 @@ discovery documents answer 404.
 2. Set `PHILO_OIDC_ISSUER` to the provider's issuer exactly as its tokens state
    it, `PHILO_OIDC_CLIENT_ID` to that client's id, and `PHILO_OIDC_AUDIENCE` to
    the audience its access tokens carry. The provider must issue JWT access
-   tokens that include `sub`, `email`, `email_verified` and `azp` (or
-   `client_id`).
+   tokens that include `sub` and `azp` (or `client_id`). The email that binds
+   the account must be verified: Philo reads `email` and `email_verified`
+   from the access token when it has them, and otherwise asks the
+   `userinfo_endpoint` named in the provider's discovery document. That call
+   is made only for a subject not yet bound, while there is still an account
+   to create or bind, so it happens once per account.
 3. The first operator token on an empty instance, with a verified email,
    creates the account and binds it to that token's subject. From then on the
    subject is the operator — changing the email at the provider changes
