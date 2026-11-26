@@ -22,6 +22,8 @@ describe('loadConfig', () => {
       PHILO_OIDC_AUDIENCE: 'philo-api',
       PHILO_OIDC_CLIENT_ID: 'philo-web',
       PHILO_OIDC_AGENT_CLIENT_IDS: ' connector-a, ,connector-b,philo-web',
+      PHILO_OIDC_SCOPE: ' openid  email profile offline_access ',
+      PHILO_OIDC_RESOURCE: ' https://crm.example.com/api, ,https://agents.example.com/mcp',
     })
     expect(config).toEqual({
       port: 8080,
@@ -36,6 +38,9 @@ describe('loadConfig', () => {
         clientId: 'philo-web',
         // Trimmed, blanks dropped, and the operator's own client never doubles as an agent.
         agentClientIds: ['connector-a', 'connector-b'],
+        // Whitespace collapsed; resource indicators kept exactly as written, blanks dropped.
+        scope: 'openid email profile offline_access',
+        resource: ['https://crm.example.com/api', 'https://agents.example.com/mcp'],
       },
     })
   })
@@ -49,6 +54,31 @@ describe('loadConfig', () => {
 
   it('refuses an external issuer without the client id that marks the operator', () => {
     expect(() => loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com' })).toThrow(/PHILO_OIDC_CLIENT_ID/)
+  })
+
+  it('asks an external IdP for the default scope and no resource unless told otherwise', () => {
+    const config = loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x' })
+    expect(config.externalIdp).toMatchObject({ scope: 'openid email profile', resource: [] })
+  })
+
+  it('refuses a sign-in scope without openid', () => {
+    const env = { PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x' }
+    expect(() => loadConfig({ ...env, PHILO_OIDC_SCOPE: 'email profile' })).toThrow(/PHILO_OIDC_SCOPE.*openid/)
+    // A scope token is compared whole: "openidx" is not "openid".
+    expect(() => loadConfig({ ...env, PHILO_OIDC_SCOPE: 'openidx email' })).toThrow(/PHILO_OIDC_SCOPE/)
+  })
+
+  it('refuses a resource indicator that is not an absolute URL, or carries a fragment', () => {
+    const env = { PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x' }
+    expect(() => loadConfig({ ...env, PHILO_OIDC_RESOURCE: 'philo-api' })).toThrow(/PHILO_OIDC_RESOURCE/)
+    expect(() => loadConfig({ ...env, PHILO_OIDC_RESOURCE: 'https://api.example.com/#x' })).toThrow(
+      /PHILO_OIDC_RESOURCE/,
+    )
+  })
+
+  it('refuses sign-in scope or resource settings without an external issuer to send them to', () => {
+    expect(() => loadConfig({ PHILO_OIDC_SCOPE: 'openid offline_access' })).toThrow(/PHILO_OIDC_ISSUER/)
+    expect(() => loadConfig({ PHILO_OIDC_RESOURCE: 'https://api.example.com' })).toThrow(/PHILO_OIDC_ISSUER/)
   })
 
   it('refuses an issuer that is not a URL', () => {

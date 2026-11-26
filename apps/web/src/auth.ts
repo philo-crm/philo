@@ -73,7 +73,12 @@ export const browser = {
 export async function loadAuth(): Promise<Auth> {
   const config = await philo.auth.config()
   const metadata = await discover(config.issuer)
-  const session = new TokenSession({ metadata, clientId: config.clientId, store: refreshTokenStore })
+  const session = new TokenSession({
+    metadata,
+    clientId: config.clientId,
+    store: refreshTokenStore,
+    resource: config.resource,
+  })
   setAccessTokenSource(session.accessToken)
   return { config, metadata, session }
 }
@@ -93,6 +98,7 @@ export async function beginSignIn(auth: Auth): Promise<void> {
     clientId: auth.config.clientId,
     redirectUri: redirectUri(),
     scope: auth.config.scope,
+    resource: auth.config.resource,
   })
   const stored: StoredPending = { ...pending, returnTo: currentLocation() }
   try {
@@ -152,6 +158,7 @@ const SIGN_IN_MESSAGES: Record<string, string> = {
   access_denied: 'Sign-in was cancelled.',
   state_mismatch: 'That sign-in response does not match the one this browser started.',
   nonce_mismatch: 'That sign-in response does not match the one this browser started.',
+  issuer_mismatch: 'That sign-in response came from a different identity provider than the one this browser asked.',
   no_pending_authorization: 'That sign-in was started in another tab or has already been finished.',
   invalid_grant: 'That sign-in has expired or was already used.',
 }

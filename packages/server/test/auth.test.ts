@@ -104,6 +104,7 @@ describe('GET /api/v1/auth/config', () => {
       issuer: TEST_PUBLIC_BASE_URL,
       clientId: 'philo-web',
       scope: 'openid operator',
+      resource: [],
     })
   })
 })
@@ -199,6 +200,8 @@ describe('external IdP', () => {
       audience: 'philo-api',
       clientId: PWA_CLIENT,
       agentClientIds: ['some-connector'],
+      scope: 'openid email profile',
+      resource: [],
       keys: createLocalJWKSet({ keys: [jwk] }),
     }
   })
@@ -221,9 +224,23 @@ describe('external IdP', () => {
       issuer: ISSUER,
       clientId: PWA_CLIENT,
       scope: 'openid email profile',
+      resource: [],
     })
     expect((await testApp.app.request('/oauth/authorize')).status).toBe(404)
     expect((await testApp.app.request('/.well-known/openid-configuration')).status).toBe(404)
+  })
+
+  it('tells the PWA the scope and resource indicators the operator configured', async () => {
+    const testApp = createTestApp({
+      externalIdp: { ...idp, scope: 'openid email offline_access', resource: ['https://crm.example.com/api'] },
+    })
+
+    expect(await (await testApp.app.request('/api/v1/auth/config')).json()).toEqual({
+      issuer: ISSUER,
+      clientId: PWA_CLIENT,
+      scope: 'openid email offline_access',
+      resource: ['https://crm.example.com/api'],
+    })
   })
 
   it('provisions the operator from the first token on an empty instance', async () => {

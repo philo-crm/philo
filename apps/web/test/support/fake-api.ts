@@ -23,6 +23,8 @@ import { setAccessTokenSource } from '../../src/client.ts'
  * wrong query string; this cannot.
  */
 export interface FakeApi {
+  /** What `GET /api/v1/auth/config` answers with; the issuer and client id stay the test ones. */
+  signIn: { scope: string; resource: string[] }
   user: User | undefined
   /** The one access token the API accepts right now; undefined when signed out. */
   accessToken: string | undefined
@@ -886,7 +888,7 @@ async function handleToken(api: FakeApi, params: URLSearchParams): Promise<Respo
 /** The public surface: auth config, discovery, and the IdP's token and revocation endpoints. */
 function handleIdp(api: FakeApi, method: string, path: string, body: unknown): Response | Promise<Response> | undefined {
   if (method === 'GET' && path === '/api/v1/auth/config') {
-    return jsonResponse(200, { issuer: TEST_ISSUER, clientId: TEST_CLIENT_ID, scope: 'openid operator' })
+    return jsonResponse(200, { issuer: TEST_ISSUER, clientId: TEST_CLIENT_ID, ...api.signIn })
   }
   if (method === 'GET' && path === '/.well-known/openid-configuration') {
     return jsonResponse(200, {
@@ -1115,6 +1117,7 @@ function parseBody(body: unknown, contentType: string | undefined): unknown {
 export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolean } = {}): FakeApi {
   const { signedIn = true, ...rest } = overrides
   const api: FakeApi = {
+    signIn: { scope: 'openid operator', resource: [] },
     user: TEST_USER,
     accessToken: undefined,
     refreshToken: undefined,

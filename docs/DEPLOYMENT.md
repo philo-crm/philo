@@ -87,6 +87,8 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens are recorded as the person rather than as an agent. |
 | `PHILO_OIDC_AUDIENCE` | unset | The `aud` the provider's access tokens must carry. Set it whenever the provider issues one. |
 | `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. |
+| `PHILO_OIDC_SCOPE` | `openid email profile` | The scope the PWA asks that provider for. Must include `openid`. Add `offline_access` if the provider issues refresh tokens only when asked. |
+| `PHILO_OIDC_RESOURCE` | empty | Comma-separated [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707) resource indicators (absolute URLs) the PWA sends with its sign-in and token requests, for a provider that picks the token's audience from them. |
 
 ### `PHILO_PUBLIC_BASE_URL` earns its keep
 
@@ -129,12 +131,28 @@ discovery documents answer 404.
 
 1. At the provider, register a **public** client for the PWA (authorization
    code with PKCE, no secret) with redirect URI `<PHILO_APP_URL>/auth/callback`,
-   and allow the `openid email profile` scopes.
+   and allow the `openid email profile` scopes, or whatever `PHILO_OIDC_SCOPE`
+   names instead.
 2. Set `PHILO_OIDC_ISSUER` to the provider's issuer exactly as its tokens state
    it, `PHILO_OIDC_CLIENT_ID` to that client's id, and `PHILO_OIDC_AUDIENCE` to
    the audience its access tokens carry. The provider must issue JWT access
    tokens that include `sub`, `email`, `email_verified` and `azp` (or
    `client_id`).
+   - Without a refresh token the PWA has to send the person back through the
+     provider each time the access token expires. Many providers issue one
+     only for the `offline_access` scope: add it to `PHILO_OIDC_SCOPE`, and
+     allow it on the client.
+   - A provider that serves several APIs may pick the access token's audience
+     from an RFC 8707 `resource` parameter rather than from the scope. Set
+     `PHILO_OIDC_RESOURCE` to the identifier it knows this API by, and set
+     `PHILO_OIDC_AUDIENCE` to the `aud` that yields. The PWA sends the same
+     values on sign-in, on the code exchange and on every refresh.
+   - `PHILO_OIDC_SCOPE` and `PHILO_OIDC_RESOURCE` apply only to an external
+     provider. Set without `PHILO_OIDC_ISSUER`, they stop Philo at startup.
+   - When the provider's redirect carries an `iss` parameter
+     ([RFC 9207](https://www.rfc-editor.org/rfc/rfc9207)), the PWA refuses one
+     that does not match the issuer it asked. A provider whose discovery
+     document sets `authorization_response_iss_parameter_supported` must send it.
 3. The first operator token on an empty instance, with a verified email,
    creates the account and binds it to that token's subject. From then on the
    subject is the operator — changing the email at the provider changes
