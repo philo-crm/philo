@@ -43,7 +43,7 @@ jobs:
   # mirror) runs this workflow too, usually without them. secrets.* cannot be read in a job-level
   # if:, so this job checks them and the review below skips cleanly when they are not set, instead
   # of failing on every PR. It keys on the secrets, not on the repository name, so a copy that
-  # configures them still gets reviews. It checks out nothing, has no permissions, and prints only
+  # configures them still gets reviews. It checks out nothing, can only read, and prints only
   # the secret names, the PR author and the trust decision.
   preflight:
     if: >-
@@ -51,9 +51,12 @@ jobs:
       && (github.event.action != 'labeled' || github.event.label.name == 'bugbot')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # The permission lookup below needs only Metadata read, which every GITHUB_TOKEN has, so the
-    # job needs no permissions of its own.
-    permissions: {}
+    # contents: read is for the collaborator permission lookup below. The docs ask only for
+    # Metadata read, but claude-code-action calls the same endpoint from a job with contents: read,
+    # so that is the proven setting; a 403 here would quietly skip every fork PR. The job checks
+    # out nothing, so the read grant exposes nothing to PR code.
+    permissions:
+      contents: read
     outputs:
       review: ${{ steps.trust.outputs.trusted == 'true' && steps.check.outputs.configured == 'true' }}
     steps:
