@@ -160,12 +160,16 @@ A PR is mergeable only when, **on its current tip commit**:
 2. Bugbot (`.github/workflows/bugbot.yml`) has posted **APPROVE** as
    `ergofobe-bot`, with no unresolved Blocking findings.
 
-Bugbot reviews every non-draft PR from a branch in this repo and re-reviews on
-each push; a pass applies only to the SHA it names. `REQUEST_CHANGES` means fix
-the Blocking items and push. A Blocking finding you believe is wrong gets a
-reply on its thread with the concrete reason; escalate to the user rather than
-merging over it. Non-blocking findings follow the Triage Rules below. Fork PRs
-get no Bugbot run and need a human review.
+Bugbot reviews every non-draft PR from a branch in this repo, and every
+non-draft fork PR whose author is an owner, member or collaborator, and
+re-reviews on each push; a pass applies only to the SHA it names.
+`REQUEST_CHANGES` means fix the Blocking items and push. A Blocking finding you
+believe is wrong gets a reply on its thread with the concrete reason; escalate
+to the user rather than merging over it. Non-blocking findings follow the
+Triage Rules below. Any other fork PR gets a Bugbot run only once a maintainer
+adds the `bugbot` label, after reading it: the run holds the repo's secrets and
+the PR is untrusted model input. The label keeps every later push reviewed, so
+remove it if a new push isn't trustworthy. Until then it needs a human review.
 
 Bugbot runs from `main` (`pull_request_target`), so a change to its workflow
 or prompt takes effect only after it merges.
