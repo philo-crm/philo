@@ -242,6 +242,12 @@ export interface RefreshTokenStore {
   save(token: string | undefined): void
 }
 
+/**
+ * Runs `fn` while no other holder of `name` runs, across every tab sharing the
+ * refresh token store — the shape of the Web Locks API's `navigator.locks.request`.
+ */
+export type RefreshLock = <T>(name: string, fn: () => Promise<T>) => Promise<T>
+
 /** Renew this long before expiry, so a request in flight never carries a dead token. */
 const EXPIRY_MARGIN_MS = 30_000
 
@@ -252,7 +258,9 @@ const EXPIRY_MARGIN_MS = 30_000
  *
  * Concurrent callers share one refresh, which matters with rotation — two
  * refreshes racing with the same token would spend it twice and sign the
- * person out.
+ * person out. Sessions in other tabs that share the store need `lock` as
+ * well: with it, a refresh re-reads the store first and spends the token the
+ * last tab stored, never one already spent.
  */
 export class TokenSession {
   readonly #metadata: OidcMetadata
@@ -260,6 +268,7 @@ export class TokenSession {
   readonly #store: RefreshTokenStore
   readonly #fetch: FetchLike
   readonly #now: () => number
+  readonly #lock: RefreshLock | undefined
   #tokens: TokenSet | undefined
   #refreshing: Promise<TokenSet | undefined> | undefined
 
@@ -269,12 +278,14 @@ export class TokenSession {
     store: RefreshTokenStore
     fetch?: FetchLike | undefined
     now?: (() => number) | undefined
+    lock?: RefreshLock | undefined
   }) {
     this.#metadata = options.metadata
     this.#clientId = options.clientId
     this.#store = options.store
     this.#fetch = options.fetch ?? defaultFetch
     this.#now = options.now ?? Date.now
+    this.#lock = options.lock
   }
 
   /** True when there is anything to sign in with, without spending it. */
@@ -289,7 +300,7 @@ export class TokenSession {
 
   accessToken = async (): Promise<string | undefined> => {
     const tokens = this.#tokens
-    if (tokens !== undefined && tokens.expiresAt - EXPIRY_MARGIN_MS > this.#now()) return tokens.accessToken
+    if (tokens !== undefined && this.#isFresh(tokens)) return tokens.accessToken
     const refreshed = await this.#refresh()
     return refreshed?.accessToken
   }
@@ -311,15 +322,41 @@ export class TokenSession {
     this.#store.save(undefined)
   }
 
+  #isFresh(tokens: TokenSet): boolean {
+    return tokens.expiresAt - EXPIRY_MARGIN_MS > this.#now()
+  }
+
   #refresh(): Promise<TokenSet | undefined> {
-    this.#refreshing ??= this.#doRefresh().finally(() => {
+    this.#refreshing ??= this.#lockedRefresh().finally(() => {
       this.#refreshing = undefined
     })
     return this.#refreshing
   }
 
-  async #doRefresh(): Promise<TokenSet | undefined> {
-    const refreshToken = this.#tokens?.refreshToken ?? this.#store.load()
+  async #lockedRefresh(): Promise<TokenSet | undefined> {
+    const lock = this.#lock
+    if (lock === undefined) return this.#doRefresh(this.#tokens?.refreshToken ?? this.#store.load())
+    let started = false
+    const inLock = () => {
+      started = true
+      // Tokens set while waiting (a sign-in finishing) need no refresh. The
+      // store comes first: another tab may have rotated the token since this
+      // one last read it, and the copy in memory is then already spent.
+      const held = this.#tokens
+      if (held !== undefined && this.#isFresh(held)) return Promise.resolve(held)
+      return this.#doRefresh(this.#store.load() ?? held?.refreshToken)
+    }
+    try {
+      return await lock(`philo.oidc-refresh:${this.#clientId}`, inLock)
+    } catch (error) {
+      // A lock that cannot be taken costs only the cross-tab guarantee; one
+      // that ran the refresh has its own answer, which must not run twice.
+      if (started) throw error
+      return inLock()
+    }
+  }
+
+  async #doRefresh(refreshToken: string | undefined): Promise<TokenSet | undefined> {
     if (refreshToken === undefined) return undefined
     try {
       const tokens = await refreshTokens({

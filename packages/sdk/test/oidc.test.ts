@@ -7,6 +7,7 @@ import {
   exchangeCode,
   pkceChallenge,
   type OidcMetadata,
+  type RefreshLock,
   type RefreshTokenStore,
 } from '../src/index.ts'
 
@@ -183,5 +184,116 @@ describe('TokenSession', () => {
     expect(store.value).toBeUndefined()
     expect(fetch.mock.calls[0]?.[0]).toBe(metadata.revocation_endpoint)
     expect(String(fetch.mock.calls[0]?.[1]?.body)).toBe('client_id=c&token=rt')
+  })
+})
+
+/** A one-at-a-time lock, standing in for the Web Locks API that tabs share. */
+function memoryLock(): RefreshLock & { names: string[] } {
+  let tail: Promise<unknown> = Promise.resolve()
+  const names: string[] = []
+  const lock = (<T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    names.push(name)
+    const run = tail.then(fn)
+    tail = run.catch(() => undefined)
+    return run
+  }) as RefreshLock & { names: string[] }
+  lock.names = names
+  return lock
+}
+
+/** An IdP with OAuth 2.1 reuse detection: presenting a spent refresh token revokes the whole grant. */
+function rotatingIdp(first: string) {
+  let current: string | undefined = first
+  let issued = 1
+  const presented: string[] = []
+  const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+    const token = new URLSearchParams(String(init?.body)).get('refresh_token') ?? ''
+    presented.push(token)
+    if (token !== current) {
+      current = undefined
+      return json({ error: 'invalid_grant' }, 400)
+    }
+    issued += 1
+    current = `rt${issued}`
+    return json({ access_token: `at${issued}`, refresh_token: current, expires_in: 3600 })
+  })
+  return { fetch, presented, revoked: () => current === undefined }
+}
+
+/** A lock that refuses outright, as `navigator.locks` does in some sandboxed frames. */
+const brokenLock: RefreshLock = async () => {
+  throw new DOMException('denied', 'SecurityError')
+}
+
+describe('TokenSession across tabs', () => {
+  it('spends each refresh token once when sessions share a store and a lock', async () => {
+    const store = memoryStore('rt1')
+    const idp = rotatingIdp('rt1')
+    const lock = memoryLock()
+    const tabA = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch, lock })
+    const tabB = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch, lock })
+    const [a, b] = await Promise.all([tabA.accessToken(), tabB.accessToken()])
+    // Each tab holds its access token in memory, so each needs one rotation of
+    // its own — but the second one rotates the token the first one stored.
+    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    expect(idp.revoked()).toBe(false)
+    expect([a, b]).toEqual(['at2', 'at3'])
+    expect(store.value).toBe('rt3')
+    expect(lock.names).toEqual(['philo.oidc-refresh:c', 'philo.oidc-refresh:c'])
+    // Both stay signed in: the next refresh in either tab spends the live token.
+    tabA.set({ accessToken: 'stale', refreshToken: undefined, idToken: undefined, scope: undefined, expiresAt: 0 })
+    expect(await tabA.accessToken()).toBe('at4')
+    expect(idp.revoked()).toBe(false)
+  })
+
+  it('prefers the stored refresh token over a copy another tab has already spent', async () => {
+    const store = memoryStore()
+    const idp = rotatingIdp('rt1')
+    const lock = memoryLock()
+    const tab = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch, lock })
+    tab.set({ accessToken: 'old', refreshToken: 'rt1', idToken: undefined, scope: undefined, expiresAt: 0 })
+    const other = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch, lock })
+    expect(await other.accessToken()).toBe('at2')
+    expect(await tab.accessToken()).toBe('at3')
+    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    expect(idp.revoked()).toBe(false)
+  })
+
+  it('skips the refresh when a fresh access token arrived while waiting for the lock', async () => {
+    const queue: Array<() => void> = []
+    const lock: RefreshLock = (_name, fn) => new Promise<void>((resolve) => queue.push(resolve)).then(fn)
+    const fetch = vi.fn()
+    const session = new TokenSession({ metadata, clientId: 'c', store: memoryStore('rt1'), fetch, lock, now: () => 0 })
+    const pending = session.accessToken()
+    session.set({ accessToken: 'fresh', refreshToken: 'rt9', idToken: undefined, scope: undefined, expiresAt: 60_000 })
+    queue.shift()?.()
+    expect(await pending).toBe('fresh')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('refreshes without a lock when the lock itself fails', async () => {
+    const store = memoryStore('rt1')
+    const idp = rotatingIdp('rt1')
+    const session = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch, lock: brokenLock })
+    expect(await session.accessToken()).toBe('at2')
+    expect(store.value).toBe('rt2')
+  })
+
+  it('does not run the refresh twice when it fails inside the lock', async () => {
+    const fetch = vi.fn(async () => {
+      throw new TypeError('offline')
+    })
+    const session = new TokenSession({ metadata, clientId: 'c', store: memoryStore('rt1'), fetch, lock: memoryLock() })
+    await expect(session.accessToken()).rejects.toThrow('offline')
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('without a lock, two sessions still race on one token, as before', async () => {
+    const store = memoryStore('rt1')
+    const idp = rotatingIdp('rt1')
+    const tabA = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch })
+    const tabB = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch })
+    await Promise.all([tabA.accessToken(), tabB.accessToken()])
+    expect(idp.presented).toEqual(['rt1', 'rt1'])
   })
 })
