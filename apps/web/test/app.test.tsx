@@ -110,6 +110,21 @@ describe('App', () => {
     expect(window.localStorage.getItem(REFRESH_TOKEN_KEY)).toBeNull()
   })
 
+  it('refreshes under a Web Lock, so tabs sharing the refresh token take turns', async () => {
+    const request = vi.fn((_name: string, fn: () => Promise<unknown>) => fn())
+    Object.defineProperty(navigator, 'locks', { value: { request }, configurable: true })
+    try {
+      const api = installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
+      render(<App />)
+
+      expect(await screen.findByText('Dana Okafor')).toBeDefined()
+      expect(request).toHaveBeenCalledWith(`philo.oidc-refresh:${TEST_CLIENT_ID}`, expect.any(Function))
+      expect(window.localStorage.getItem(REFRESH_TOKEN_KEY)).toBe(api.refreshToken)
+    } finally {
+      Reflect.deleteProperty(navigator, 'locks')
+    }
+  })
+
   it('opens a lead from the list and comes back', async () => {
     installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
     render(<App />)

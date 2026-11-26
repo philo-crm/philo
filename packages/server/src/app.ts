@@ -10,6 +10,7 @@ import type { EmailSenderFactory } from './email/transport.ts'
 import { ChangeFeed } from './events/feed.ts'
 import { createEventRoutes } from './events/routes.ts'
 import { createFunnelRoutes } from './funnels/routes.ts'
+import { createEmailPreviewFrameRoutes, EMAIL_PREVIEW_FRAME_PATH } from './email/preview-frame.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
 import { llmsTxt } from './llms-txt.ts'
@@ -226,6 +227,10 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
       options.intakeTuning ?? {},
     ),
   )
+
+  // The one page the PWA frames: the email template preview, which needs a
+  // policy of its own (email/preview-frame.ts).
+  app.route(EMAIL_PREVIEW_FRAME_PATH, createEmailPreviewFrameRoutes({ appUrl: options.appUrl }))
 
   // Headless: nothing here is a page, so a miss is JSON for any client.
   app.notFound((c) => c.json({ error: 'not_found' }, 404))

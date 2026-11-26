@@ -24,6 +24,7 @@ describe('loadConfig', () => {
       PHILO_OIDC_AGENT_CLIENT_IDS: ' connector-a, ,connector-b,philo-web',
       PHILO_OIDC_SCOPE: ' openid  email profile offline_access ',
       PHILO_OIDC_RESOURCE: ' https://crm.example.com/api, ,https://agents.example.com/mcp',
+      PHILO_WEB_CONNECT_ORIGINS: ' https://token.example-apis.com, ,https://revoke.example.net/',
     })
     expect(config).toEqual({
       port: 8080,
@@ -34,7 +35,7 @@ describe('loadConfig', () => {
       mcpUrl: 'https://agents.example.com/mcp',
       externalIdp: {
         issuer: 'https://idp.example.com/realms/philo',
-        audience: 'philo-api',
+        audience: ['philo-api'],
         clientId: 'philo-web',
         // Trimmed, blanks dropped, and the operator's own client never doubles as an agent.
         agentClientIds: ['connector-a', 'connector-b'],
@@ -42,6 +43,8 @@ describe('loadConfig', () => {
         scope: 'openid email profile offline_access',
         resource: ['https://crm.example.com/api', 'https://agents.example.com/mcp'],
       },
+      // Trimmed, blanks dropped, and normalized to the bare origin.
+      webConnectOrigins: ['https://token.example-apis.com', 'https://revoke.example.net'],
     })
   })
 
@@ -81,8 +84,61 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ PHILO_OIDC_RESOURCE: 'https://api.example.com' })).toThrow(/PHILO_OIDC_ISSUER/)
   })
 
+  it.each([
+    [' https://crm.example.com/api, ,https://crm.example.com/mcp ,', ['https://crm.example.com/api', 'https://crm.example.com/mcp']],
+    ['philo-api', ['philo-api']],
+    // Empty means no audience check, exactly as unset.
+    ['', undefined],
+  ])('reads PHILO_OIDC_AUDIENCE=%j as a list, dropping blanks', (raw, expected) => {
+    const config = loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x', PHILO_OIDC_AUDIENCE: raw })
+    expect(config.externalIdp?.audience).toEqual(expected)
+  })
+
+  // Set but naming nothing (say, a template whose variables were all unset)
+  // must not quietly turn the audience check off.
+  it.each([' ', ',', ' , '])('refuses PHILO_OIDC_AUDIENCE=%j, which lists no audience', (raw) => {
+    expect(() =>
+      loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x', PHILO_OIDC_AUDIENCE: raw }),
+    ).toThrow(/PHILO_OIDC_AUDIENCE/)
+  })
+
   it('refuses an issuer that is not a URL', () => {
     expect(() => loadConfig({ PHILO_OIDC_ISSUER: 'idp', PHILO_OIDC_CLIENT_ID: 'x' })).toThrow(/PHILO_OIDC_ISSUER/)
+  })
+
+  it('adds no extra connect origins unless told to', () => {
+    expect(loadConfig({}).webConnectOrigins).toEqual([])
+    expect(loadConfig({ PHILO_WEB_CONNECT_ORIGINS: '' }).webConnectOrigins).toEqual([])
+  })
+
+  it('accepts plain http only for a local development origin', () => {
+    expect(
+      loadConfig({ PHILO_WEB_CONNECT_ORIGINS: 'http://localhost:8080,http://127.0.0.1:9000,https://A.example.com:8443' })
+        .webConnectOrigins,
+    ).toEqual(['http://localhost:8080', 'http://127.0.0.1:9000', 'https://a.example.com:8443'])
+  })
+
+  it.each([
+    ["'self'"],
+    ["'unsafe-inline'"],
+    ['*'],
+    ['https://*.example.com'],
+    ['https:'],
+    ['data:'],
+    ['blob:'],
+    ['example.com'],
+    ['http://token.example.com'],
+    ['https://token.example.com/oauth/token'],
+    ['https://token.example.com?x=1'],
+    ['https://token.example.com#x'],
+    ['https://user@token.example.com'],
+    ['https://token.example.com;script-src *'],
+    ['https://token.example.com https://other.example.com'],
+    ['wss://feed.example.com'],
+  ])('refuses %s as an extra connect origin', (entry) => {
+    expect(() => loadConfig({ PHILO_WEB_CONNECT_ORIGINS: `https://ok.example.com,${entry}` })).toThrow(
+      /PHILO_WEB_CONNECT_ORIGINS/,
+    )
   })
 
   it('trusts no proxy unless told to', () => {

@@ -7,6 +7,7 @@ import {
   type AuthConfig,
   type OidcMetadata,
   type PendingAuthorization,
+  type RefreshLock,
   type RefreshTokenStore,
   type User,
 } from '@philo/sdk'
@@ -59,6 +60,18 @@ const refreshTokenStore: RefreshTokenStore = {
 }
 
 /**
+ * Every tab reads the one refresh token above. With rotation, two tabs that
+ * refresh at once would spend it twice, and an IdP with reuse detection then
+ * revokes the grant and signs out every tab. A Web Lock makes them take turns;
+ * a browser without the API refreshes unguarded, as before.
+ */
+function refreshLock(): RefreshLock | undefined {
+  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+  if (locks === undefined) return undefined
+  return (name, fn) => locks.request(name, () => fn())
+}
+
+/**
  * The one way this module leaves the page. An object rather than a bare call so
  * tests can watch the redirect: jsdom cannot navigate, and `window.location`'s
  * own methods cannot be replaced.
@@ -78,6 +91,7 @@ export async function loadAuth(): Promise<Auth> {
     clientId: config.clientId,
     store: refreshTokenStore,
     resource: config.resource,
+    lock: refreshLock(),
   })
   setAccessTokenSource(session.accessToken)
   return { config, metadata, session }

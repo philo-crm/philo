@@ -253,9 +253,16 @@ describe('delivery', () => {
     expect(request!.headers.get('x-philo-event')).toBe('lead.created')
     const timestamp = request!.headers.get('x-philo-timestamp')!
     expect(request!.headers.get('x-philo-signature')).toBe(signPayload(body.secret, timestamp, request!.body))
-    const payload = JSON.parse(request!.body) as { id: string; type: string; data: { lead: { email: string } } }
+    const payload = JSON.parse(request!.body) as {
+      id: string
+      type: string
+      actor: string
+      data: { lead: { email: string } }
+    }
     expect(request!.headers.get('x-philo-delivery')).toBe(payload.id)
     expect(payload.data.lead.email).toBe('dana@example.com')
+    // Who made it, so a receiver that writes back can tell its own changes apart.
+    expect(payload.actor).toBe(`form:${defaultFormKey(h.testApp)}`)
   })
 
   it('sends the auth header beside the signature, and stops once it is cleared', async () => {
@@ -314,6 +321,9 @@ describe('delivery', () => {
 
     expect(received).toHaveLength(3)
     expect(new Set(received.map((request) => request.headers.get('x-philo-delivery'))).size).toBe(1)
+    // A retry refreshes the lead, not who changed it.
+    const actors = received.map((request) => (JSON.parse(request.body) as { actor: string }).actor)
+    expect(actors).toEqual(Array(3).fill(`form:${defaultFormKey(h.testApp)}`))
   })
 
   it('stops retrying once it gets through', async () => {

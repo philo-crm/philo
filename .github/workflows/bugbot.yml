@@ -1,29 +1,123 @@
 # .github/workflows/bugbot.yml
-# Claude reviews every non-draft PR and posts APPROVE or REQUEST_CHANGES as the bot account.
+# Claude reviews non-draft PRs and posts APPROVE or REQUEST_CHANGES as the bot account.
 # That review is half of the merge bar in AGENTS.md; CI green on the same tip is the other half.
+# Bugbot only reads the PR and posts that one review: it never pushes, merges, labels, or runs PR code.
 name: Bugbot
 
 # pull_request_target, unlike CI: the bot token approves pull requests, so this file
 # must come from main. On pull_request a branch could edit it to approve itself.
 # PR code is only read here. Nothing from the PR head is installed, built or run.
+#
+# Who gets reviewed (decided by the trust step on the preflight job below):
+#   - a PR from a branch in this repository: always;
+#   - a PR from a fork whose author has write access to this repository (admin, maintain or
+#     write, read from the collaborator permission API): always;
+#   - any other fork PR: only while it carries the `bugbot` label, which only someone with triage
+#     or write access can add.
+# The author's access is looked up rather than read from author_association in the event: a
+# member whose organization membership is private shows there as CONTRIBUTOR, so that check
+# skipped the maintainers' own fork PRs.
+# pull_request_target hands the run the repository's secrets and the model's quota, and the model
+# reads the PR's title, body, commits and code, which makes them a prompt-injection surface. So an
+# unknown author's PR is reviewed only on a maintainer's say-so. The label stays on the PR, so every
+# later push to it is reviewed too: remove the label if you don't trust a new push.
 on:
   pull_request_target:
     # converted_to_draft only cancels a review in flight: its own job skips below.
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    # labeled starts a review only for the `bugbot` label (checked on preflight).
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled]
 
 permissions: {}
 
-# A newer push cancels the review of the older tip.
+# A newer push cancels the review of the older tip. GitHub has no label filter on the trigger, so
+# a labeled event for any other label still starts a run (every job skips). It gets a group of its
+# own, so adding an unrelated label cannot cancel a review in flight.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}${{ github.event.action == 'labeled' && github.event.label.name != 'bugbot' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
+  # Decides whether this PR is reviewed (see "Who gets reviewed" above). A draft is still being
+  # worked on, so marking it ready for review is what starts the review.
+  # It also reports whether the review secrets exist. A copy of this repository (a GitHub fork, a
+  # mirror) runs this workflow too, usually without them. secrets.* cannot be read in a job-level
+  # if:, so this job checks them and the review below skips cleanly when they are not set, instead
+  # of failing on every PR. It keys on the secrets, not on the repository name, so a copy that
+  # configures them still gets reviews. It checks out nothing, can only read, and prints only
+  # the secret names, the PR author and the trust decision.
+  preflight:
+    if: >-
+      github.event.pull_request.draft == false
+      && (github.event.action != 'labeled' || github.event.label.name == 'bugbot')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # contents: read is for the collaborator permission lookup below. The docs ask only for
+    # Metadata read, but claude-code-action calls the same endpoint from a job with contents: read,
+    # so that is the proven setting; a 403 here would quietly skip every fork PR. The job checks
+    # out nothing, so the read grant exposes nothing to PR code.
+    permissions:
+      contents: read
+    outputs:
+      review: ${{ steps.trust.outputs.trusted == 'true' && steps.check.outputs.configured == 'true' }}
+    steps:
+      # Event fields reach the script only through env, never inside it: a login, label or repo
+      # name spliced into the script body would be a script injection.
+      - id: trust
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted=false
+          if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" = "$REPO" ]; then
+            trusted=true
+            echo "Trusted: the PR is from a branch in $REPO."
+          elif jq -e 'index("bugbot") != null' <<<"$LABELS" >/dev/null; then
+            trusted=true
+            echo "Trusted: the PR carries the bugbot label."
+          else
+            # A 404 (not a collaborator) or any other error leaves the PR untrusted: never fail open.
+            base="" role=""
+            if response=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" 2>/dev/null); then
+              base=$(jq -r '.permission // ""' <<<"$response" 2>/dev/null) || base=""
+              role=$(jq -r '.role_name // ""' <<<"$response" 2>/dev/null) || role=""
+            fi
+            # permission maps maintain to write; role_name keeps it (and names custom roles).
+            case "$base" in admin | write) trusted=true ;; esac
+            case "$role" in admin | maintain | write) trusted=true ;; esac
+            if [ "$trusted" = true ]; then
+              echo "Trusted: $AUTHOR has ${role:-$base} access to $REPO."
+            fi
+          fi
+          if [ "$trusted" != true ]; then
+            echo "::notice::Bugbot skipped: $AUTHOR has no write access to $REPO (or the lookup failed). A maintainer can add the bugbot label to have this PR reviewed."
+          fi
+          echo "trusted=$trusted" >>"$GITHUB_OUTPUT"
+      - id: check
+        env:
+          HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_BOT_TOKEN: ${{ secrets.BUGBOT_GH_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [ "$HAS_CLAUDE_TOKEN" = true ] || missing+=(CLAUDE_CODE_OAUTH_TOKEN)
+          [ "$HAS_BOT_TOKEN" = true ] || missing+=(BUGBOT_GH_TOKEN)
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "configured=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::Bugbot skipped: ${missing[*]} not configured in this repository."
+            echo "configured=false" >>"$GITHUB_OUTPUT"
+          fi
+
   review:
-    # pull_request_target would hand fork PRs the secrets, so they are skipped: maintainer work is
-    # pushed to branches in this repository, and outside contributions get a human review. A draft is still being worked on,
-    # so marking it ready for review is what starts the review.
-    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    needs: preflight
+    # Who is reviewed is decided once, on preflight: a skipped preflight skips this job too.
+    if: needs.preflight.outputs.review == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # GITHUB_TOKEN is read-only. The only write is the review, posted with BUGBOT_GH_TOKEN.
@@ -40,9 +134,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The PR head, from this repository even for a fork PR: GitHub keeps refs/pull/<n>/head here,
+      # so the head SHA is fetchable without naming the fork. checkout fetches a SHA ref directly.
+      # checkout refuses a fork head under pull_request_target unless told otherwise, because
+      # running that code here would be a pwn request. Nothing in pr-head/ is ever run: the history
+      # step only reads it with git log/diff/blame (no hooks; drivers would need local git config),
+      # and Claude Code takes its settings and CLAUDE.md from the workspace root (main), reading
+      # pr-head/ only as files through --add-dir. Keep it that way, or drop this opt-in.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ github.repository }}
           ref: ${{ github.event.pull_request.head.sha }}
+          allow-unsafe-pr-checkout: true
           path: pr-head
           # Full history for the step below.
           fetch-depth: 0
@@ -73,7 +176,21 @@ jobs:
       # posts whatever Claude returns. jq reads its environment (`env`, `$ENV`), and so does gh's own
       # --jq, so there is no jq, gh may not take --jq or -q, and no gh call may contain `env` or `ENV`.
       # Otherwise a PR could prompt-inject a token into a public review. The posting step also
-      # refuses a review that contains a credential.
+      # refuses a review that contains a credential, but an encoded token would slip past it, so
+      # Claude's file tools are kept off every file that holds one:
+      # - blockReadsOutsideWorkingDirectories confines Read, Grep and Glob to the workspace and
+      #   pr-head/ (plus the files Claude Code itself needs under ~/.claude), which keeps them out
+      #   of $HOME, the runner's install and every other path on the machine.
+      # - The Read deny rules (they cover Grep and Glob too) repeat that for the paths that matter
+      #   most, in case the block is lifted: /proc (the process environment holds the tokens),
+      #   /sys, /dev, /etc, and RUNNER_TEMP, where actions write their files. They also cover the
+      #   two .git directories, which sit inside the workspace where the block does not reach.
+      # - allowed_non_write_users: the action refuses a run whose actor (the pusher, or whoever
+      #   added the label) lacks write access, which would stop every push to a fork PR. Who is
+      #   reviewed is decided on preflight instead. The input also makes the action keep the token
+      #   out of .git/config (a credential helper reads it from the environment), scrub credentials
+      #   other than the GitHub token from the shell's environment, and isolate the shell's
+      #   processes where bubblewrap is available.
       - id: review
         uses: anthropics/claude-code-action@c2f4d169232dd04172a8377e871179233cbe44bd # v1.0.240
         # Headless runs start Agent subagents in the background, so without this the structured
@@ -83,11 +200,13 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: "*"
+          settings: '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}'
           claude_args: |
             --model opus
             --add-dir pr-head
             --allowedTools "Read,Grep,Glob,Task,Agent,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh search prs:*),Bash(gh api repos/${{ github.repository }}/pulls/*/comments),Bash(gh api repos/${{ github.repository }}/pulls/*/reviews),Bash(gh api repos/${{ github.repository }}/pulls/*/files)"
-            --disallowedTools "Bash(gh api *-X*),Bash(gh api *--method*),Bash(gh api *-f *),Bash(gh api *-F *),Bash(gh api *--field*),Bash(gh api *--raw-field*),Bash(gh api *--input*),Bash(gh api *--hostname*),Bash(gh *--jq*),Bash(gh *-q*),Bash(gh *env*),Bash(gh *ENV*)"
+            --disallowedTools "Bash(gh api *-X*),Bash(gh api *--method*),Bash(gh api *-f *),Bash(gh api *-F *),Bash(gh api *--field*),Bash(gh api *--raw-field*),Bash(gh api *--input*),Bash(gh api *--hostname*),Bash(gh *--jq*),Bash(gh *-q*),Bash(gh *env*),Bash(gh *ENV*),Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(/${{ runner.temp }}/**),Read(./.git/**),Read(./pr-head/.git/**)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["event","body","comments","passes_completed"],"properties":{"event":{"type":"string","enum":["APPROVE","REQUEST_CHANGES"]},"passes_completed":{"type":"array","items":{"type":"string","enum":["rules","bugs","history","past_reviews","code_comments"]}},"body":{"type":"string","minLength":1},"comments":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","line","body"],"properties":{"path":{"type":"string"},"line":{"type":"integer","minimum":1},"body":{"type":"string"}}}}}}'
           prompt: |
             You are a senior code reviewer acting as Bugbot for Philo, a self-hosted, single-tenant, open-source CRM: a Hono + SQLite (drizzle-orm, better-sqlite3) API server, a React PWA, an MCP server, and the auth server (OAuth 2.1 / OIDC). The layout depends on the branch: older code has the server in `server/` and the PWA in `web/`; the monorepo layout has `packages/server` (headless API and OIDC IdP), `packages/sdk`, `apps/web` (PWA), `apps/mcp` (MCP server) and `apps/standalone`. Check which one the PR head has before naming paths. Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }} at tip ${{ github.event.pull_request.head.sha }}.

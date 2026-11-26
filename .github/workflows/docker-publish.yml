@@ -154,6 +154,11 @@ jobs:
             if curl -fsS http://127.0.0.1:3000/version -o version.json; then ok=1; break; fi
             sleep 1
           done
+          # The app shell must carry its Content-Security-Policy (ADR-0006
+          # relies on it), and the shell must actually be in the image.
+          shell_ok=0
+          if [ "$ok" -eq 1 ] && curl -fsS -D shell-headers.txt -o /dev/null http://127.0.0.1:3000/ \
+            && grep -qi "^content-security-policy: default-src 'self'" shell-headers.txt; then shell_ok=1; fi
           docker logs philo-smoke
           docker rm -f philo-smoke
           if [ "$ok" -ne 1 ]; then
@@ -163,6 +168,11 @@ jobs:
           cat version.json
           jq -e '.name == "philo" and (.version | type == "string" and length > 0)' version.json \
             || { echo "::error::GET /version returned an unexpected payload"; exit 1; }
+          if [ "$shell_ok" -ne 1 ]; then
+            cat shell-headers.txt || true
+            echo "::error::GET / did not serve the app shell with its Content-Security-Policy"
+            exit 1
+          fi
 
       - name: Push
         if: github.event_name != 'pull_request'

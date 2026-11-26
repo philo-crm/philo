@@ -167,10 +167,13 @@ Types: \`lead.created\` (a form submission, a lead filed by hand, or one
 promoted out of spam), \`lead.updated\` (contact, details, a note or a file),
 \`lead.stage_changed\` (with \`data.from\`, which may be another funnel),
 \`lead.deleted\` (\`data.leadId\` only) and \`funnel.changed\` (its stages or
-name). Quarantined leads produce none. A body looks like:
+name). Quarantined leads produce none. \`actor\` says who made the change, as
+the lead timeline does: \`user:<id>\`, \`api_key:<id>\`, \`oauth:<client_id>\`
+or \`form:<form_key>\` — a receiver that writes back can skip its own changes by
+it. A body looks like:
 
-    {"id":"<uuid>","type":"lead.stage_changed","occurredAt":"...","funnelId":1,
-     "data":{"lead":{...},"from":{"id":3,"name":"New","funnelId":1}}}
+    {"id":"<uuid>","type":"lead.stage_changed","occurredAt":"...","actor":"api_key:2",
+     "funnelId":1,"data":{"lead":{...},"from":{"id":3,"name":"New","funnelId":1}}}
 
 A webhook delivery is a POST of that body with \`X-Philo-Event\`,
 \`X-Philo-Delivery\` (the event id), \`X-Philo-Timestamp\` (Unix seconds) and

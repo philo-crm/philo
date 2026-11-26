@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import type { AuthEnv } from '../auth/middleware.ts'
+import { actorOf, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import type { ChangeFeed } from '../events/feed.ts'
 import { parseFunnelParam, resolveFunnelId } from '../funnels/service.ts'
@@ -54,19 +54,19 @@ function parseId(raw: string | undefined): number | undefined {
 export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
-  function changed(funnelId: number | undefined): void {
-    if (funnelId !== undefined) deps.changes.publish('funnel.changed', funnelId)
+  function changed(c: Context<AuthEnv>, funnelId: number | undefined): void {
+    if (funnelId !== undefined) deps.changes.publish('funnel.changed', funnelId, actorOf(c))
   }
 
-  function respondStage(c: Context, result: Result<StageRecord, StageError>, funnelId: number | undefined) {
+  function respondStage(c: Context<AuthEnv>, result: Result<StageRecord, StageError>, funnelId: number | undefined) {
     if (!result.ok) return fail(c, result.error)
-    changed(funnelId)
+    changed(c, funnelId)
     return c.json({ stage: result.value })
   }
 
-  function respondList(c: Context, result: Result<StageRecord[], StageError>, funnelId: number | undefined) {
+  function respondList(c: Context<AuthEnv>, result: Result<StageRecord[], StageError>, funnelId: number | undefined) {
     if (!result.ok) return fail(c, result.error)
-    changed(funnelId)
+    changed(c, funnelId)
     return c.json({ stages: result.value })
   }
 
@@ -86,7 +86,7 @@ export function createStageRoutes(deps: StageRoutesDeps): Hono<AuthEnv> {
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = createStage(deps.db, body, funnel)
     if (!result.ok) return fail(c, result.error)
-    changed(resolveFunnelId(deps.db, funnel))
+    changed(c, resolveFunnelId(deps.db, funnel))
     return c.json({ stage: result.value }, 201)
   })
 

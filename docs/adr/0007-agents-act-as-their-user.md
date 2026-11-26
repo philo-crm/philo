@@ -1,6 +1,8 @@
 # 0007 — An agent acts with its user's authority, no more and no less
 
-- **Status:** Accepted
+- **Status:** Accepted; "one level of access" is superseded by
+  [0012](0012-several-users-with-roles.md): a credential acts with its user's
+  role
 - **Date:** 2026-10-25
 - **Supersedes:** the two-level "operator / agent" authority of
   [ADR-0006](0006-headless-server-sdk-clients.md), and the narrower guard
