@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import type { AuthEnv } from '../auth/middleware.ts'
+import { actorOf, type AuthEnv } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import type { ChangeFeed } from '../events/feed.ts'
 import { readJsonBody } from '../json-body.ts'
@@ -70,7 +70,7 @@ export function createFunnelRoutes(deps: FunnelRoutesDeps): Hono<AuthEnv> {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = createFunnel(deps.db, body)
-    if (result.ok) deps.changes.publish('funnel.changed', result.value.id)
+    if (result.ok) deps.changes.publish('funnel.changed', result.value.id, actorOf(c))
     return one(c, result, 201)
   })
 
@@ -88,7 +88,7 @@ export function createFunnelRoutes(deps: FunnelRoutesDeps): Hono<AuthEnv> {
     const body = await readJsonBody(c)
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = updateFunnel(deps.db, id, body)
-    if (result.ok) deps.changes.publish('funnel.changed', id)
+    if (result.ok) deps.changes.publish('funnel.changed', id, actorOf(c))
     return one(c, result)
   })
 
@@ -97,7 +97,7 @@ export function createFunnelRoutes(deps: FunnelRoutesDeps): Hono<AuthEnv> {
     const id = parseFunnelParam(c.req.param('id'))
     if (id === null || id === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = deleteFunnel(deps.db, id)
-    if (result.ok) deps.changes.publish('funnel.changed', id)
+    if (result.ok) deps.changes.publish('funnel.changed', id, actorOf(c))
     return result.ok ? all(c, result.value) : fail(c, result.error)
   })
 

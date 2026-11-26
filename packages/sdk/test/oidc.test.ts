@@ -243,6 +243,11 @@ describe('TokenSession id token', () => {
     await session.accessToken()
     expect(idp.presented).toEqual(['rt1', 'rt2'])
     expect(session.idToken).toBe('id1')
+    // Still failing: the store keeps rt1, spent two refreshes ago, and memory's grant is still this session's own.
+    now = 8_000_000_000
+    await session.accessToken()
+    expect(idp.presented).toEqual(['rt1', 'rt2', 'rt3'])
+    expect(session.idToken).toBe('id1')
   })
 
   it('forgets the id token on sign-out', async () => {
@@ -488,7 +493,10 @@ describe('TokenSession across tabs', () => {
     expect(await session.accessToken()).toBe('at2')
     now = 4_000_000_000
     expect(await session.accessToken()).toBe('at3')
-    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    // Still failing: the store keeps rt1, which this session spent two refreshes ago.
+    now = 8_000_000_000
+    expect(await session.accessToken()).toBe('at4')
+    expect(idp.presented).toEqual(['rt1', 'rt2', 'rt3'])
     expect(idp.revoked()).toBe(false)
   })
 

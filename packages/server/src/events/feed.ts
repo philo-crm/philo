@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import type { Principal } from '../auth/middleware.ts'
 import type { Db } from '../db/index.ts'
 import { findLead, type LeadRecord } from '../leads/service.ts'
 
@@ -18,6 +19,13 @@ export const CHANGE_TYPES = [
 ] as const
 export type ChangeType = (typeof CHANGE_TYPES)[number]
 
+/**
+ * Who made the change, in the timeline's words: the credential behind the
+ * request (`user:<id>`, `api_key:<id>`, `oauth:<client_id>`), or the form a
+ * submission came through (`form:<form_key>`).
+ */
+export type ChangeActor = Principal['actor'] | `form:${string}`
+
 export interface StageRef {
   id: number
   name: string
@@ -29,6 +37,11 @@ export interface ChangeEvent {
   id: string
   type: ChangeType
   occurredAt: string
+  /**
+   * Who made it — so a receiver that writes back can recognise its own
+   * changes, and an integration can tell a person from an agent.
+   */
+  actor: ChangeActor
   /** The funnel the change happened in — for a moved lead, the one it is in now. */
   funnelId: number
   data: {
@@ -58,8 +71,8 @@ export class ChangeFeed {
     }
   }
 
-  publish(type: ChangeType, funnelId: number, data: ChangeEvent['data'] = {}): void {
-    const event: ChangeEvent = { id: randomUUID(), type, occurredAt: new Date().toISOString(), funnelId, data }
+  publish(type: ChangeType, funnelId: number, actor: ChangeActor, data: ChangeEvent['data'] = {}): void {
+    const event: ChangeEvent = { id: randomUUID(), type, occurredAt: new Date().toISOString(), actor, funnelId, data }
     for (const listener of this.#listeners) {
       try {
         listener(event)
@@ -73,10 +86,16 @@ export class ChangeFeed {
    * A lead event, with the lead as it now stands. Quarantined leads are not
    * announced — ADR-0010 — and neither is one that vanished in between.
    */
-  publishLead(db: Db, type: Exclude<ChangeType, 'lead.deleted' | 'funnel.changed'>, leadId: number, from?: StageRef) {
+  publishLead(
+    db: Db,
+    type: Exclude<ChangeType, 'lead.deleted' | 'funnel.changed'>,
+    leadId: number,
+    actor: ChangeActor,
+    from?: StageRef,
+  ) {
     const lead = findLead(db, leadId)
     if (lead === undefined || lead.isSpam) return
-    this.publish(type, lead.funnelId, from === undefined ? { lead } : { lead, from })
+    this.publish(type, lead.funnelId, actor, from === undefined ? { lead } : { lead, from })
   }
 
   get listenerCount(): number {
