@@ -133,7 +133,8 @@ discovery documents answer 404.
    names an `end_session_endpoint`, also register `<PHILO_APP_URL>/` as the
    client's post-logout redirect URI: "Sign out" then ends the provider's
    session as well (OIDC RP-Initiated Logout), so the next "Sign in" asks
-   again rather than signing straight back in.
+   again rather than signing straight back in. It also signs the person out
+   of any other app sharing that provider session.
 2. Set `PHILO_OIDC_ISSUER` to the provider's issuer exactly as its tokens state
    it, `PHILO_OIDC_CLIENT_ID` to that client's id, and `PHILO_OIDC_AUDIENCE` to
    the audience its access tokens carry. The provider must issue JWT access

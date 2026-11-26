@@ -207,6 +207,44 @@ describe('TokenSession id token', () => {
     expect(session.idToken).toBe('id2')
   })
 
+  it('drops the id token when it refreshes with a token another tab stored', async () => {
+    // Another tab signed out and back in, perhaps as someone else: the stored
+    // grant is not the one this id token came with, so it must not hint.
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) =>
+      json({ access_token: 'at2', refresh_token: 'rt3', expires_in: 3600 }),
+    )
+    const store = memoryStore()
+    const session = new TokenSession({ metadata, clientId: 'c', store, fetch, now: () => 0 })
+    session.set({ accessToken: 'at1', refreshToken: 'rt1', idToken: 'id1', scope: undefined, expiresAt: 0 })
+    store.value = 'rt2'
+    await session.accessToken()
+    expect(String(fetch.mock.calls[0]?.[1]?.body)).toContain('refresh_token=rt2')
+    expect(session.idToken).toBeUndefined()
+  })
+
+  it('takes the id token a refresh of an adopted grant returns', async () => {
+    const fetch = vi.fn(async () => json({ access_token: 'at2', refresh_token: 'rt3', id_token: 'id2', expires_in: 3600 }))
+    const store = memoryStore()
+    const session = new TokenSession({ metadata, clientId: 'c', store, fetch, now: () => 0 })
+    session.set({ accessToken: 'at1', refreshToken: 'rt1', idToken: 'id1', scope: undefined, expiresAt: 0 })
+    store.value = 'rt2'
+    await session.accessToken()
+    expect(session.idToken).toBe('id2')
+  })
+
+  it('keeps the id token when saving the rotated token failed and memory is spent', async () => {
+    const stuck: RefreshTokenStore & { value: string | undefined } = { value: 'rt1', load: () => 'rt1', save: () => {} }
+    const idp = rotatingIdp('rt1')
+    let now = 0
+    const session = new TokenSession({ metadata, clientId: 'c', store: stuck, fetch: idp.fetch, lock: memoryLock(), now: () => now })
+    session.set({ accessToken: 'at1', refreshToken: 'rt1', idToken: 'id1', scope: undefined, expiresAt: 0 })
+    await session.accessToken()
+    now = 4_000_000_000
+    await session.accessToken()
+    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    expect(session.idToken).toBe('id1')
+  })
+
   it('forgets the id token on sign-out', async () => {
     const fetch = vi.fn(async () => new Response(null, { status: 200 }))
     const session = new TokenSession({ metadata, clientId: 'c', store: memoryStore(), fetch })

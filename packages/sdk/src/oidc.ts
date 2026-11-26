@@ -324,8 +324,9 @@ export class TokenSession {
   }
 
   /**
-   * The newest ID token this session holds, kept through a refresh that sends
-   * none. Read it before `signOut()`, which forgets it — it is what an
+   * The newest ID token this session holds, kept through a refresh of its own
+   * grant that sends none, and dropped when it adopts a grant another tab
+   * stored. Read it before `signOut()`, which forgets it — it is what an
    * end-session request hints with (`endSessionUrl`).
    */
   get idToken(): string | undefined {
@@ -447,13 +448,16 @@ export class TokenSession {
         fetch: this.#fetch,
         now: this.#now,
       })
-      this.#presented = refreshToken
       // An IdP that does not rotate answers without a new refresh token, and
-      // most send no new ID token; the old ones are still the ones to keep.
+      // most send no new ID token; the old one names the same subject (OIDC
+      // Core §12.2) only if this session's own grant was spent. A token
+      // another tab stored may be someone else's sign-in, so its hint goes.
+      const ownGrant = refreshToken === this.#tokens?.refreshToken
+      this.#presented = refreshToken
       this.set({
         ...tokens,
         refreshToken: tokens.refreshToken ?? refreshToken,
-        idToken: tokens.idToken ?? this.#tokens?.idToken,
+        idToken: tokens.idToken ?? (ownGrant ? this.#tokens?.idToken : undefined),
       })
       return this.#tokens
     } catch (error) {
