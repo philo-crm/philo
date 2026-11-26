@@ -132,12 +132,15 @@ lacks the admin scope can ask for it.
 
   The role is also stored in `users.role`, with `users.role_confirmed_at`, for
   display, notification recipients, API keys and the last-admin guard — a
-  cache of the IdP's answer, never an authority over a token. **Only a token
-  issued to `PHILO_OIDC_CLIENT_ID` writes it**: the PWA requests both scopes,
-  so its token is the IdP's whole answer for the person. An agent's token
-  names only what that agent asked for — an admin's agent that asked for the
-  user scope does not make the admin a user — so it is checked on its own
-  scopes and changes nothing stored.
+  cache of the IdP's answer, never an authority over a token. **Any admitted
+  token confirms it** (refreshes `role_confirmed_at`), and one that holds the
+  admin scope sets admin: a token holding a scope is the IdP's current word
+  that the person has it. **Only a token issued to `PHILO_OIDC_CLIENT_ID`
+  demotes** (user scope without admin): the PWA requests both scopes, so its
+  token is the IdP's whole answer for the person. An agent's token names only
+  what that agent asked for — an admin's agent that asked for the user scope
+  does not make the admin a user — so it never demotes. No token ever sets
+  the role to null.
 
   An admin cannot change an externally-managed role in Philo (`409
   role_managed_by_idp`); they change it at the IdP. They can deactivate the
@@ -151,7 +154,10 @@ email, the VAPID contact and the last-admin guard. An account has access when
 it is active, its `users.role` is not null, and — for an externally-managed
 account — `role_confirmed_at` is within the last 30 days. "Active admin"
 anywhere in this ADR means an account that has access with the admin role.
-No consumer reads `users.role` without it.
+No consumer reads `users.role` without it. An account is
+**externally managed** when the instance has `PHILO_OIDC_USER_SCOPE` and
+`PHILO_OIDC_ADMIN_SCOPE` set; without them the 30-day rule does not apply, and
+an instance that upgrades without setting them behaves exactly as before.
 
 ### External IdP: admission and provisioning
 
@@ -192,7 +198,7 @@ demotion and rewrites the cached role to `user`. Someone removed at the IdP
 stops being confirmed, and 30 days after the last confirmation the account no
 longer has access (above): its API keys stop, it gets no push and no
 fallback email, and its push subscriptions are deleted. Their account stays,
-with everything it did on the timeline; the next PWA token with a scope
+with everything it did on the timeline; the next admitted token with a scope
 confirms the role again.
 
 **The PWA's client and agents.** A token from `PHILO_OIDC_CLIENT_ID` is the
