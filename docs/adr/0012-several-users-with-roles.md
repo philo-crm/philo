@@ -244,10 +244,10 @@ ADR-0007 stands with one word changed: every credential acts as its user
 
 ### What changes that assumed one account
 
-- **New-lead notification email.** With no funnel override, it goes to every
-  active account with a role that has not turned it off; each person gets a
-  toggle on their account screen, on by default. The funnel's own
-  `notify_recipients` override is unchanged.
+- **New-lead notification email.** The funnel's `notify_recipients` list
+  decides, as today: who works a funnel's leads is configuration, and an
+  admin sets it. With an empty list it goes to every active admin, where
+  today it goes to the only account. There is no per-person toggle.
 - **Web push** already goes to every subscription; subscriptions are per
   device, so turning push on is each person's own choice. A deactivated or
   no-access account's subscriptions are deleted.
