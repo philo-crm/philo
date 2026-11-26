@@ -19,6 +19,8 @@ export interface OidcMetadata {
   revocation_endpoint?: string | undefined
   userinfo_endpoint?: string | undefined
   end_session_endpoint?: string | undefined
+  /** RFC 9207: the provider promises `iss` on every authorization response. */
+  authorization_response_iss_parameter_supported?: boolean | undefined
 }
 
 export interface TokenSet {
@@ -77,6 +79,13 @@ export interface AuthorizationRequestOptions {
   clientId: string
   redirectUri: string
   scope: string
+  /**
+   * RFC 8707 resource indicators: the APIs the access token is for. One
+   * `resource` parameter is sent per value, here and at the token endpoint.
+   */
+  resource?: readonly string[] | undefined
+  /** OIDC Core `prompt`, such as `none` for a silent request. Not sent when unset. */
+  prompt?: string | undefined
 }
 
 /**
@@ -89,6 +98,10 @@ export interface PendingAuthorization {
   nonce: string
   codeVerifier: string
   redirectUri: string
+  /** The resource indicators asked for, sent again with the code exchange. */
+  resource: string[]
+  /** The issuer the request went to, which an RFC 9207 `iss` on the response must name. */
+  issuer: string
 }
 
 export async function createAuthorizationRequest(
@@ -106,7 +119,18 @@ export async function createAuthorizationRequest(
   url.searchParams.set('nonce', nonce)
   url.searchParams.set('code_challenge', await pkceChallenge(codeVerifier))
   url.searchParams.set('code_challenge_method', 'S256')
-  return { url: url.toString(), state, nonce, codeVerifier, redirectUri: options.redirectUri }
+  const resource = [...(options.resource ?? [])]
+  for (const value of resource) url.searchParams.append('resource', value)
+  if (options.prompt !== undefined) url.searchParams.set('prompt', options.prompt)
+  return {
+    url: url.toString(),
+    state,
+    nonce,
+    codeVerifier,
+    redirectUri: options.redirectUri,
+    resource,
+    issuer: options.metadata.issuer,
+  }
 }
 
 interface TokenResponse {
@@ -122,31 +146,34 @@ interface TokenResponse {
 async function tokenRequest(
   metadata: OidcMetadata,
   params: Record<string, string>,
+  resource: readonly string[] | undefined,
   fetchImpl: FetchLike,
   now: () => number,
 ): Promise<TokenSet> {
+  const body = new URLSearchParams(params)
+  for (const value of resource ?? []) body.append('resource', value)
   const res = await fetchImpl(metadata.token_endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-    body: new URLSearchParams(params).toString(),
+    body: body.toString(),
   })
-  let body: TokenResponse = {}
+  let answer: TokenResponse = {}
   try {
-    body = (await res.json()) as TokenResponse
+    answer = (await res.json()) as TokenResponse
   } catch {
     // Falls through to the error below with no code from the server.
   }
-  if (!res.ok || typeof body.access_token !== 'string') {
-    const code = typeof body.error === 'string' ? body.error : 'token_request_failed'
-    const description = typeof body.error_description === 'string' ? body.error_description : undefined
+  if (!res.ok || typeof answer.access_token !== 'string') {
+    const code = typeof answer.error === 'string' ? answer.error : 'token_request_failed'
+    const description = typeof answer.error_description === 'string' ? answer.error_description : undefined
     throw new OidcError(code, description)
   }
-  const expiresIn = typeof body.expires_in === 'number' ? body.expires_in : 3600
+  const expiresIn = typeof answer.expires_in === 'number' ? answer.expires_in : 3600
   return {
-    accessToken: body.access_token,
-    refreshToken: typeof body.refresh_token === 'string' ? body.refresh_token : undefined,
-    idToken: typeof body.id_token === 'string' ? body.id_token : undefined,
-    scope: typeof body.scope === 'string' ? body.scope : undefined,
+    accessToken: answer.access_token,
+    refreshToken: typeof answer.refresh_token === 'string' ? answer.refresh_token : undefined,
+    idToken: typeof answer.id_token === 'string' ? answer.id_token : undefined,
+    scope: typeof answer.scope === 'string' ? answer.scope : undefined,
     expiresAt: now() + expiresIn * 1000,
   }
 }
@@ -175,14 +202,33 @@ function idTokenNonce(idToken: string): string | undefined {
 }
 
 /**
- * Completes the flow on the redirect back: checks `state`, surfaces an IdP
- * error, exchanges the code, and checks the nonce when an id_token came back.
+ * RFC 9207 mix-up defence: the response must come from the issuer the request
+ * went to. An absent `iss` is accepted unless discovery promised one, because
+ * many providers do not send it yet.
+ */
+function checkResponseIssuer(options: CallbackOptions, params: URLSearchParams): void {
+  const expected = options.metadata.issuer
+  // Stored before an upgrade that added the field, a pending request has no issuer.
+  const requested = (options.pending as Partial<PendingAuthorization>).issuer ?? expected
+  const iss = params.get('iss')
+  const promised = options.metadata.authorization_response_iss_parameter_supported === true
+  if (requested !== expected || (iss === null ? promised : iss !== expected)) {
+    throw new OidcError('issuer_mismatch', 'The sign-in response did not come from the identity provider this client asked.')
+  }
+}
+
+/**
+ * Completes the flow on the redirect back: checks `state` and `iss`, surfaces
+ * an IdP error, exchanges the code, and checks the nonce when an id_token came
+ * back.
  */
 export async function exchangeCode(options: CallbackOptions): Promise<TokenSet> {
   const params = new URL(options.callbackUrl).searchParams
   if (params.get('state') !== options.pending.state) {
     throw new OidcError('state_mismatch', 'The sign-in response does not match the request this client made.')
   }
+  // Before the error, too: an error response from the wrong provider is not ours to report.
+  checkResponseIssuer(options, params)
   const error = params.get('error')
   if (error !== null) throw new OidcError(error, params.get('error_description') ?? undefined)
   const code = params.get('code')
@@ -197,6 +243,7 @@ export async function exchangeCode(options: CallbackOptions): Promise<TokenSet> 
       code_verifier: options.pending.codeVerifier,
       redirect_uri: options.pending.redirectUri,
     },
+    options.pending.resource,
     options.fetch ?? defaultFetch,
     options.now ?? Date.now,
   )
@@ -210,12 +257,18 @@ export function refreshTokens(options: {
   metadata: OidcMetadata
   clientId: string
   refreshToken: string
+  /**
+   * The sign-in's resource indicators. RFC 8707 §2.2 allows them on a refresh,
+   * and a provider that picks the audience from them needs them again here.
+   */
+  resource?: readonly string[] | undefined
   fetch?: FetchLike | undefined
   now?: (() => number) | undefined
 }): Promise<TokenSet> {
   return tokenRequest(
     options.metadata,
     { grant_type: 'refresh_token', client_id: options.clientId, refresh_token: options.refreshToken },
+    options.resource,
     options.fetch ?? defaultFetch,
     options.now ?? Date.now,
   )
@@ -272,6 +325,7 @@ export class TokenSession {
   readonly #metadata: OidcMetadata
   readonly #clientId: string
   readonly #store: RefreshTokenStore
+  readonly #resource: readonly string[] | undefined
   readonly #fetch: FetchLike
   readonly #now: () => number
   readonly #lock: RefreshLock | undefined
@@ -290,6 +344,8 @@ export class TokenSession {
     metadata: OidcMetadata
     clientId: string
     store: RefreshTokenStore
+    /** Sent with every refresh — see `refreshTokens`. */
+    resource?: readonly string[] | undefined
     fetch?: FetchLike | undefined
     now?: (() => number) | undefined
     lock?: RefreshLock | undefined
@@ -297,6 +353,7 @@ export class TokenSession {
     this.#metadata = options.metadata
     this.#clientId = options.clientId
     this.#store = options.store
+    this.#resource = options.resource
     this.#fetch = options.fetch ?? defaultFetch
     this.#now = options.now ?? Date.now
     this.#lock = options.lock
@@ -414,6 +471,7 @@ export class TokenSession {
         metadata: this.#metadata,
         clientId: this.#clientId,
         refreshToken,
+        resource: this.#resource,
         fetch: this.#fetch,
         now: this.#now,
       })

@@ -157,12 +157,21 @@ export interface AppOptions {
   createEmailSender?: EmailSenderFactory | undefined
 }
 
-/** What the PWA is told to sign in against — `GET /api/v1/auth/config`. */
+/**
+ * What the PWA is told to sign in against — `GET /api/v1/auth/config`.
+ * `resource` is always present: empty for the built-in IdP, which needs none.
+ */
 function signInConfig(options: AppOptions) {
-  if (options.externalIdp !== undefined) {
-    return { issuer: options.externalIdp.issuer, clientId: options.externalIdp.clientId, scope: 'openid email profile' }
+  const idp = options.externalIdp
+  if (idp !== undefined) {
+    return { issuer: idp.issuer, clientId: idp.clientId, scope: idp.scope, resource: idp.resource }
   }
-  return { issuer: options.publicBaseUrl, clientId: FIRST_PARTY_CLIENT_ID, scope: `${OPENID_SCOPE} ${OPERATOR_SCOPE}` }
+  return {
+    issuer: options.publicBaseUrl,
+    clientId: FIRST_PARTY_CLIENT_ID,
+    scope: `${OPENID_SCOPE} ${OPERATOR_SCOPE}`,
+    resource: [],
+  }
 }
 
 /**

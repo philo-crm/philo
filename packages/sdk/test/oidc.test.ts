@@ -6,6 +6,7 @@ import {
   discover,
   exchangeCode,
   pkceChallenge,
+  refreshTokens,
   type OidcMetadata,
   type RefreshLock,
   type RefreshTokenStore,
@@ -184,6 +185,121 @@ describe('TokenSession', () => {
     expect(store.value).toBeUndefined()
     expect(fetch.mock.calls[0]?.[0]).toBe(metadata.revocation_endpoint)
     expect(String(fetch.mock.calls[0]?.[1]?.body)).toBe('client_id=c&token=rt')
+  })
+})
+
+describe('resource indicators and prompt (RFC 8707)', () => {
+  const resource = ['https://api.example.com', 'https://other.example.com/api']
+
+  it('sends one resource parameter per value, and prompt when asked', async () => {
+    const pending = await createAuthorizationRequest({
+      metadata,
+      clientId: 'c',
+      redirectUri: 'https://a/cb',
+      scope: 'openid offline_access',
+      resource,
+      prompt: 'none',
+    })
+    const url = new URL(pending.url)
+    expect(url.searchParams.getAll('resource')).toEqual(resource)
+    expect(url.searchParams.get('prompt')).toBe('none')
+    expect(url.searchParams.get('scope')).toBe('openid offline_access')
+    expect(pending.resource).toEqual(resource)
+    expect(pending.issuer).toBe(metadata.issuer)
+  })
+
+  it('sends neither when none is asked for', async () => {
+    const pending = await createAuthorizationRequest({ metadata, clientId: 'c', redirectUri: 'https://a/cb', scope: 'openid' })
+    const url = new URL(pending.url)
+    expect(url.searchParams.has('resource')).toBe(false)
+    expect(url.searchParams.has('prompt')).toBe(false)
+    expect(pending.resource).toEqual([])
+  })
+
+  it('sends the same resource values with the code exchange', async () => {
+    const pending = await createAuthorizationRequest({ metadata, clientId: 'c', redirectUri: 'https://a/cb', scope: 'openid', resource })
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => json({ access_token: 'at' }))
+    await exchangeCode({ metadata, clientId: 'c', pending, callbackUrl: `https://a/cb?code=x&state=${pending.state}`, fetch })
+    const body = new URLSearchParams(String(fetch.mock.calls[0]?.[1]?.body))
+    expect(body.getAll('resource')).toEqual(resource)
+    expect(body.get('grant_type')).toBe('authorization_code')
+  })
+
+  it('sends them on refresh too', async () => {
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => json({ access_token: 'at' }))
+    await refreshTokens({ metadata, clientId: 'c', refreshToken: 'rt', resource, fetch })
+    const body = new URLSearchParams(String(fetch.mock.calls[0]?.[1]?.body))
+    expect(body.getAll('resource')).toEqual(resource)
+    expect(body.get('grant_type')).toBe('refresh_token')
+    expect(body.get('refresh_token')).toBe('rt')
+  })
+
+  it('carries them through a TokenSession refresh, and leaves the body alone without them', async () => {
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => json({ access_token: 'at' }))
+    await new TokenSession({ metadata, clientId: 'c', store: memoryStore('rt'), resource, fetch }).accessToken()
+    expect(new URLSearchParams(String(fetch.mock.calls[0]?.[1]?.body)).getAll('resource')).toEqual(resource)
+
+    await new TokenSession({ metadata, clientId: 'c', store: memoryStore('rt'), fetch }).accessToken()
+    expect(String(fetch.mock.calls[1]?.[1]?.body)).toBe('grant_type=refresh_token&client_id=c&refresh_token=rt')
+  })
+})
+
+describe('authorization response issuer (RFC 9207)', () => {
+  async function callback(iss: string | undefined, meta: OidcMetadata = metadata) {
+    const pending = await createAuthorizationRequest({ metadata: meta, clientId: 'c', redirectUri: 'https://a/cb', scope: 'openid' })
+    const fetch = vi.fn(async () => json({ access_token: 'at' }))
+    const query = new URLSearchParams({ code: 'x', state: pending.state })
+    if (iss !== undefined) query.set('iss', iss)
+    const result = exchangeCode({ metadata: meta, clientId: 'c', pending, callbackUrl: `https://a/cb?${query}`, fetch })
+    return { result, fetch }
+  }
+
+  it('accepts an iss that names the issuer', async () => {
+    const { result } = await callback(metadata.issuer)
+    await expect(result).resolves.toMatchObject({ accessToken: 'at' })
+  })
+
+  it('refuses an iss that names another issuer, before any exchange', async () => {
+    const { result, fetch } = await callback('https://attacker.example.com')
+    await expect(result).rejects.toMatchObject({ code: 'issuer_mismatch' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('accepts a response without iss from a provider that does not promise one', async () => {
+    const { result } = await callback(undefined)
+    await expect(result).resolves.toMatchObject({ accessToken: 'at' })
+  })
+
+  it('requires iss from a provider whose discovery promises it', async () => {
+    const promising = { ...metadata, authorization_response_iss_parameter_supported: true }
+    const missing = await callback(undefined, promising)
+    await expect(missing.result).rejects.toMatchObject({ code: 'issuer_mismatch' })
+    expect(missing.fetch).not.toHaveBeenCalled()
+    await expect((await callback(metadata.issuer, promising)).result).resolves.toMatchObject({ accessToken: 'at' })
+  })
+
+  it('checks an error response too, so a mixed-up provider cannot pose as ours', async () => {
+    const pending = await createAuthorizationRequest({ metadata, clientId: 'c', redirectUri: 'https://a/cb', scope: 'openid' })
+    const failure = exchangeCode({
+      metadata,
+      clientId: 'c',
+      pending,
+      callbackUrl: `https://a/cb?error=access_denied&state=${pending.state}&iss=${encodeURIComponent('https://attacker.example.com')}`,
+    })
+    await expect(failure).rejects.toMatchObject({ code: 'issuer_mismatch' })
+  })
+
+  it('refuses a pending request made for a different issuer than the metadata it is finished against', async () => {
+    const pending = await createAuthorizationRequest({ metadata, clientId: 'c', redirectUri: 'https://a/cb', scope: 'openid' })
+    const other = { ...metadata, issuer: 'https://other.example.com' }
+    const failure = exchangeCode({
+      metadata: other,
+      clientId: 'c',
+      pending,
+      callbackUrl: `https://a/cb?code=x&state=${pending.state}`,
+      fetch: async () => json({ access_token: 'at' }),
+    })
+    await expect(failure).rejects.toMatchObject({ code: 'issuer_mismatch' })
   })
 })
 

@@ -225,6 +225,11 @@ export interface AuthConfig {
   clientId: string
   /** What to request. Always includes `openid`. */
   scope: string
+  /**
+   * RFC 8707 resource indicators to send with the request and the token
+   * exchange. Empty unless the operator configured some for an external IdP.
+   */
+  resource: string[]
 }
 
 /** Whose a token is — `GET /api/v1/auth/principal`. */

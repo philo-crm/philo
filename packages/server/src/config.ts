@@ -49,9 +49,18 @@ export interface ExternalIdpConfig {
    * named here are this CRM's agents. Everything else is refused.
    */
   agentClientIds: string[]
+  /** What the PWA asks the IdP for. Always holds `openid`. */
+  scope: string
+  /**
+   * RFC 8707 resource indicators the PWA sends with its sign-in, for an IdP
+   * that picks the access token's audience from them. Empty by default.
+   */
+  resource: string[]
 }
 
 const DEFAULT_PORT = 3000
+/** What the PWA asked an external IdP for before the scope was configurable. */
+const DEFAULT_OIDC_SCOPE = 'openid email profile'
 const DEFAULT_DATA_DIR = 'data'
 
 class ConfigError extends Error {}
@@ -87,6 +96,41 @@ function parseOptionalUrl(name: string, raw: string | undefined, fallback: strin
   return raw === undefined || raw === '' ? fallback : parseUrl(name, raw)
 }
 
+function parseOidcScope(raw: string | undefined): string {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_OIDC_SCOPE
+  const scopes = raw.trim().split(/\s+/)
+  if (!scopes.includes('openid')) {
+    throw new ConfigError(`PHILO_OIDC_SCOPE must include openid, got ${JSON.stringify(raw)}`)
+  }
+  return scopes.join(' ')
+}
+
+/**
+ * RFC 8707 §2: an absolute URI without a fragment. Kept exactly as written,
+ * since the IdP matches it against its own registration as a string.
+ */
+function parseOidcResource(raw: string | undefined): string[] {
+  const values = (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
+  for (const value of values) {
+    let url: URL
+    try {
+      url = new URL(value)
+    } catch {
+      throw new ConfigError(`PHILO_OIDC_RESOURCE values must be absolute URLs, got ${JSON.stringify(value)}`)
+    }
+    if (value.includes('#') || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+      throw new ConfigError(`PHILO_OIDC_RESOURCE values must be http or https URLs without a fragment, got ${JSON.stringify(value)}`)
+    }
+  }
+  return values
+}
+
+/** Settings that only mean something when an external issuer is set. */
+const EXTERNAL_ONLY = ['PHILO_OIDC_SCOPE', 'PHILO_OIDC_RESOURCE'] as const
+
 /**
  * All or nothing: an issuer without the PWA's client id would leave the app
  * itself with no client it accepts tokens from, which looks like a working
@@ -94,7 +138,13 @@ function parseOptionalUrl(name: string, raw: string | undefined, fallback: strin
  */
 function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined {
   const issuer = env['PHILO_OIDC_ISSUER']
-  if (issuer === undefined || issuer === '') return undefined
+  if (issuer === undefined || issuer === '') {
+    // The built-in IdP's scope and resources are its own; a setting that
+    // would silently do nothing is refused rather than ignored.
+    const stray = EXTERNAL_ONLY.find((name) => (env[name] ?? '').trim() !== '')
+    if (stray !== undefined) throw new ConfigError(`${stray} needs PHILO_OIDC_ISSUER: it applies only to an external IdP`)
+    return undefined
+  }
   const clientId = env['PHILO_OIDC_CLIENT_ID']
   if (clientId === undefined || clientId === '') {
     throw new ConfigError('PHILO_OIDC_CLIENT_ID is required when PHILO_OIDC_ISSUER is set')
@@ -121,6 +171,8 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
     clientId,
     audience: audience.length === 0 ? undefined : audience,
     agentClientIds,
+    scope: parseOidcScope(env['PHILO_OIDC_SCOPE']),
+    resource: parseOidcResource(env['PHILO_OIDC_RESOURCE']),
   }
 }
 

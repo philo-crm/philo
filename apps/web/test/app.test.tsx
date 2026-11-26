@@ -27,6 +27,26 @@ describe('App', () => {
     expect(url.searchParams.get('nonce')).not.toBe('')
   })
 
+  it('asks for the configured scope and resource indicators, and sends them again with the exchange', async () => {
+    const resource = ['https://crm.example.com/api', 'https://agents.example.com/mcp']
+    const api = installFakeApi({ signedIn: false, signIn: { scope: 'openid email offline_access', resource } })
+    const authorizeUrl = await startSignIn()
+    const params = new URL(authorizeUrl).searchParams
+    expect(params.get('scope')).toBe('openid email offline_access')
+    expect(params.getAll('resource')).toEqual(resource)
+    expect(params.has('prompt')).toBe(false)
+
+    reloadAt(authorize(api, authorizeUrl))
+    expect(await screen.findByRole('heading', { name: 'Leads' })).toBeDefined()
+    const exchange = api.calls.find((call) => call.path === '/oauth/token')?.body as URLSearchParams
+    expect(exchange.getAll('resource')).toEqual(resource)
+  })
+
+  it('sends no resource parameter when none is configured', async () => {
+    installFakeApi({ signedIn: false })
+    expect(new URL(await startSignIn()).searchParams.has('resource')).toBe(false)
+  })
+
   it('exchanges the code on the way back and lands signed in', async () => {
     const api = installFakeApi({ signedIn: false, leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
     const authorizeUrl = await startSignIn()
