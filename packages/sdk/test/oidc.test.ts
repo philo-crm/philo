@@ -206,8 +206,17 @@ function rotatingIdp(first: string) {
   let current: string | undefined = first
   let issued = 1
   const presented: string[] = []
-  const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
-    const token = new URLSearchParams(String(init?.body)).get('refresh_token') ?? ''
+  const revoked: string[] = []
+  const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+    const body = new URLSearchParams(String(init?.body))
+    if (url === metadata.revocation_endpoint) {
+      // Like the built-in IdP: revoking deletes only the token presented.
+      const token = body.get('token') ?? ''
+      revoked.push(token)
+      if (token === current) current = undefined
+      return new Response(null, { status: 200 })
+    }
+    const token = body.get('refresh_token') ?? ''
     presented.push(token)
     if (token !== current) {
       current = undefined
@@ -217,7 +226,7 @@ function rotatingIdp(first: string) {
     current = `rt${issued}`
     return json({ access_token: `at${issued}`, refresh_token: current, expires_in: 3600 })
   })
-  return { fetch, presented, revoked: () => current === undefined }
+  return { fetch, presented, revokedTokens: revoked, revoked: () => current === undefined }
 }
 
 /** A lock that refuses outright, as `navigator.locks` does in some sandboxed frames. */
@@ -286,6 +295,100 @@ describe('TokenSession across tabs', () => {
     const session = new TokenSession({ metadata, clientId: 'c', store: memoryStore('rt1'), fetch, lock: memoryLock() })
     await expect(session.accessToken()).rejects.toThrow('offline')
     expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a sign-out in one tab when another tab holds a live refresh token', async () => {
+    let now = 0
+    const store = memoryStore('rt1')
+    const idp = rotatingIdp('rt1')
+    const lock = memoryLock()
+    const options = { metadata, clientId: 'c', store, fetch: idp.fetch, lock, now: () => now }
+    const tabA = new TokenSession(options)
+    const tabB = new TokenSession(options)
+    await tabA.accessToken()
+    await tabB.accessToken()
+    // A holds rt2 in memory, already spent; B and the store hold the live rt3.
+    await tabA.signOut()
+    expect(idp.revokedTokens).toEqual(['rt3'])
+    expect(store.value).toBeUndefined()
+    now = 4_000_000_000
+    expect(await tabB.accessToken()).toBeUndefined()
+    expect(tabB.hasCredentials).toBe(false)
+    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    expect(store.value).toBeUndefined()
+  })
+
+  it('does not bring a signed-out session back from memory even when the IdP cannot revoke', async () => {
+    let now = 0
+    const store = memoryStore('rt1')
+    const idp = rotatingIdp('rt1')
+    const { revocation_endpoint: _, ...noRevoke } = metadata
+    const options = { metadata: noRevoke, clientId: 'c', store, fetch: idp.fetch, lock: memoryLock(), now: () => now }
+    const tabA = new TokenSession(options)
+    const tabB = new TokenSession(options)
+    await tabA.accessToken()
+    await tabB.accessToken()
+    await tabA.signOut()
+    now = 4_000_000_000
+    expect(await tabB.accessToken()).toBeUndefined()
+    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    expect(store.value).toBeUndefined()
+  })
+
+  it('signs out after a refresh in flight in another tab, revoking the token it stores', async () => {
+    const store = memoryStore('rt1')
+    const idp = rotatingIdp('rt1')
+    const opened: Array<() => void> = []
+    const gate = new Promise<void>((resolve) => opened.push(resolve))
+    const slowFetch = async (url: string, init?: RequestInit) => {
+      if (url === metadata.token_endpoint) await gate
+      return idp.fetch(url, init)
+    }
+    const lock = memoryLock()
+    const tabA = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch, lock })
+    const tabB = new TokenSession({ metadata, clientId: 'c', store, fetch: slowFetch, lock })
+    const refreshing = tabB.accessToken()
+    const signingOut = tabA.signOut()
+    for (const open of opened) open()
+    expect(await refreshing).toBe('at2')
+    await signingOut
+    expect(idp.revokedTokens).toEqual(['rt2'])
+    expect(idp.revoked()).toBe(true)
+    expect(store.value).toBeUndefined()
+  })
+
+  it('signs out without the lock when the lock itself fails', async () => {
+    const store = memoryStore('rt1')
+    const idp = rotatingIdp('rt1')
+    const session = new TokenSession({ metadata, clientId: 'c', store, fetch: idp.fetch, lock: brokenLock })
+    await session.signOut()
+    expect(idp.revokedTokens).toEqual(['rt1'])
+    expect(store.value).toBeUndefined()
+  })
+
+  it('refreshes from memory when storage never keeps the token', async () => {
+    const blocked: RefreshTokenStore = { load: () => undefined, save: () => {} }
+    const idp = rotatingIdp('rt1')
+    let now = 0
+    const session = new TokenSession({ metadata, clientId: 'c', store: blocked, fetch: idp.fetch, lock: memoryLock(), now: () => now })
+    session.set({ accessToken: 'old', refreshToken: 'rt1', idToken: undefined, scope: undefined, expiresAt: 0 })
+    expect(await session.accessToken()).toBe('at2')
+    now = 4_000_000_000
+    expect(await session.accessToken()).toBe('at3')
+    expect(idp.presented).toEqual(['rt1', 'rt2'])
+  })
+
+  it('spends the token in memory when saving the new one failed', async () => {
+    // A full localStorage: setItem throws and the old value stays readable.
+    const stuck: RefreshTokenStore = { load: () => 'rt1', save: () => {} }
+    let now = 0
+    const idp = rotatingIdp('rt1')
+    const session = new TokenSession({ metadata, clientId: 'c', store: stuck, fetch: idp.fetch, lock: memoryLock(), now: () => now })
+    expect(await session.accessToken()).toBe('at2')
+    now = 4_000_000_000
+    expect(await session.accessToken()).toBe('at3')
+    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    expect(idp.revoked()).toBe(false)
   })
 
   it('without a lock, two sessions still race on one token, as before', async () => {

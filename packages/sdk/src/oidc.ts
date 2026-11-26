@@ -260,7 +260,13 @@ const EXPIRY_MARGIN_MS = 30_000
  * refreshes racing with the same token would spend it twice and sign the
  * person out. Sessions in other tabs that share the store need `lock` as
  * well: with it, a refresh re-reads the store first and spends the token the
- * last tab stored, never one already spent.
+ * last tab stored, never one already spent, and a sign-out waits its turn and
+ * revokes that same token.
+ *
+ * The store is the shared truth. Once it has held a token, finding it empty
+ * means another tab signed out, and this session follows rather than bringing
+ * the grant back from its copy in memory. Only storage that never kept a token
+ * (blocked, or Safari private mode) leaves memory as the source.
  */
 export class TokenSession {
   readonly #metadata: OidcMetadata
@@ -271,6 +277,10 @@ export class TokenSession {
   readonly #lock: RefreshLock | undefined
   #tokens: TokenSet | undefined
   #refreshing: Promise<TokenSet | undefined> | undefined
+  /** The store has held a token this session could read: empty from now on means signed out. */
+  #storeHeld = false
+  /** The refresh token this session last spent, to spot a store whose save failed. */
+  #presented: string | undefined
 
   constructor(options: {
     metadata: OidcMetadata
@@ -290,12 +300,14 @@ export class TokenSession {
 
   /** True when there is anything to sign in with, without spending it. */
   get hasCredentials(): boolean {
-    return this.#tokens !== undefined || this.#store.load() !== undefined
+    return this.#tokens !== undefined || this.#load() !== undefined
   }
 
   set(tokens: TokenSet): void {
     this.#tokens = tokens
-    if (tokens.refreshToken !== undefined) this.#store.save(tokens.refreshToken)
+    if (tokens.refreshToken === undefined) return
+    this.#store.save(tokens.refreshToken)
+    this.#load()
   }
 
   accessToken = async (): Promise<string | undefined> => {
@@ -307,8 +319,14 @@ export class TokenSession {
 
   /** Revokes the refresh token at the IdP and forgets everything locally. */
   async signOut(): Promise<void> {
-    const token = this.#tokens?.refreshToken ?? this.#store.load()
-    this.clear()
+    // Under the lock, so a refresh in another tab cannot store a new token
+    // after this clears it; and from the store first, since that is the live
+    // token and the copy in memory may already be spent.
+    const token = await this.#withLock(() => {
+      const live = this.#refreshTokenToSpend()
+      this.clear()
+      return Promise.resolve(live)
+    })
     if (token === undefined) return
     try {
       await revokeToken({ metadata: this.#metadata, clientId: this.#clientId, token, fetch: this.#fetch })
@@ -333,31 +351,61 @@ export class TokenSession {
     return this.#refreshing
   }
 
-  async #lockedRefresh(): Promise<TokenSet | undefined> {
+  #lockedRefresh(): Promise<TokenSet | undefined> {
+    return this.#withLock(() => {
+      // Tokens set while waiting (a sign-in finishing) need no refresh.
+      const held = this.#tokens
+      if (held !== undefined && this.#isFresh(held)) return Promise.resolve(held)
+      return this.#doRefresh(this.#refreshTokenToSpend())
+    })
+  }
+
+  async #withLock<T>(fn: () => Promise<T>): Promise<T> {
     const lock = this.#lock
-    if (lock === undefined) return this.#doRefresh(this.#tokens?.refreshToken ?? this.#store.load())
+    if (lock === undefined) return fn()
     let started = false
     const inLock = () => {
       started = true
-      // Tokens set while waiting (a sign-in finishing) need no refresh. The
-      // store comes first: another tab may have rotated the token since this
-      // one last read it, and the copy in memory is then already spent.
-      const held = this.#tokens
-      if (held !== undefined && this.#isFresh(held)) return Promise.resolve(held)
-      return this.#doRefresh(this.#store.load() ?? held?.refreshToken)
+      return fn()
     }
     try {
       return await lock(`philo.oidc-refresh:${this.#clientId}`, inLock)
     } catch (error) {
       // A lock that cannot be taken costs only the cross-tab guarantee; one
-      // that ran the refresh has its own answer, which must not run twice.
+      // that ran `fn` has its own answer, which must not run twice.
       if (started) throw error
       return inLock()
     }
   }
 
+  #load(): string | undefined {
+    const token = this.#store.load()
+    if (token !== undefined) this.#storeHeld = true
+    return token
+  }
+
+  /**
+   * The store comes first: another tab may have rotated the token since this
+   * one last read it, and the copy in memory is then already spent. An empty
+   * store that once held a token means another tab signed out, so memory is
+   * dropped, not spent. A stored token this session already spent means its
+   * own save failed, and memory holds the newer one.
+   */
+  #refreshTokenToSpend(): string | undefined {
+    const memory = this.#tokens?.refreshToken
+    const stored = this.#load()
+    if (stored === undefined) {
+      if (!this.#storeHeld) return memory
+      this.#tokens = undefined
+      return undefined
+    }
+    if (stored === this.#presented && memory !== undefined) return memory
+    return stored
+  }
+
   async #doRefresh(refreshToken: string | undefined): Promise<TokenSet | undefined> {
     if (refreshToken === undefined) return undefined
+    this.#presented = refreshToken
     try {
       const tokens = await refreshTokens({
         metadata: this.#metadata,
