@@ -231,7 +231,9 @@ async function findOrProvisionUser(
   claims: JWTPayload,
   userinfo: () => Promise<JWTPayload | undefined>,
 ): Promise<SessionUser | undefined> {
-  const [bound] = db.select(USER_COLUMNS).from(users).where(eq(users.externalSubject, subject)).all()
+  const boundTo = (q: Pick<Db, 'select'>): SessionUser | undefined =>
+    q.select(USER_COLUMNS).from(users).where(eq(users.externalSubject, subject)).all()[0]
+  const bound = boundTo(db)
   if (bound !== undefined) return bound
 
   // Nothing left to bind: refuse before asking the provider anything, so a
@@ -255,7 +257,10 @@ async function findOrProvisionUser(
       .where(and(eq(users.email, email), isNull(users.externalSubject)))
       .returning(USER_COLUMNS)
       .all()
-    return unbound
+    // Lost a race to a parallel request carrying this same subject (another
+    // tab, an agent): that request bound the account, so this one shares it.
+    // A different subject still finds nothing and is refused.
+    return unbound ?? boundTo(db)
   }
 
   // A password nobody knows: the built-in sign-in is switched off in this mode,
@@ -264,8 +269,9 @@ async function findOrProvisionUser(
   const rawName = profile['name']
   const name = typeof rawName === 'string' && rawName.trim() !== '' ? rawName.trim().slice(0, 200) : null
   return db.transaction((tx) => {
-    // Lost a race with another first token: whoever won is the operator.
-    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return undefined
+    // Lost a race with another first token: whoever won is the operator. If
+    // the winner carried this same subject, this request is that operator too.
+    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return boundTo(tx)
     const [created] = tx
       .insert(users)
       .values({ email, passwordHash, name, externalSubject: subject })

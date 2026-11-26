@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, type CryptoKey } from 'jose'
+import { SignJWT, createLocalJWKSet, decodeJwt, exportJWK, generateKeyPair, type CryptoKey } from 'jose'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { createFirstUser } from '../src/auth/credentials.ts'
 import type { ExternalIdp } from '../src/auth/external-idp.ts'
@@ -413,6 +413,58 @@ describe('external IdP', () => {
       fetchSpy.mockResolvedValue(response)
       expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(BARE)}`))).status).toBe(401)
       expect(testApp.db.select().from(users).all()).toHaveLength(0)
+    })
+
+    describe('parallel first requests', () => {
+      // A slow provider that answers each token with that token's own subject
+      // and the email `emails` assigns it, so two requests' userinfo calls overlap.
+      function slowUserinfo(emails: Record<string, string>): void {
+        fetchSpy.mockImplementation(async (_url, init) => {
+          const jwt = new Headers(init?.headers).get('authorization')!.slice('Bearer '.length)
+          const { sub } = decodeJwt(jwt)
+          await new Promise((resolve) => setTimeout(resolve, 30))
+          return Response.json({ sub, email: emails[sub!], email_verified: true })
+        })
+      }
+
+      async function both(testApp: ReturnType<typeof createTestApp>, a: string, b: string): Promise<number[]> {
+        const responses = await Promise.all([a, b].map((jwt) => testApp.app.request('/api/v1/leads', as(`Bearer ${jwt}`))))
+        return responses.map((res) => res.status)
+      }
+
+      it.each([
+        ['provisions the operator once on an empty instance', false],
+        ['binds an account from the built-in IdP era once', true],
+      ])('same subject: %s and lets both in', async (_label, builtin) => {
+        const current = createTestApp({ externalIdp: idp })
+        if (builtin) createFirstUser(current.db, { email: ADMIN_EMAIL, passwordHash: 'unused', name: 'Admin' })
+        slowUserinfo({ 'external-sub': builtin ? ADMIN_EMAIL : 'owner@example.com' })
+
+        expect(await both(current, await token(BARE), await token(BARE))).toEqual([200, 200])
+        expect(fetchSpy).toHaveBeenCalledTimes(2)
+        const rows = current.db.select().from(users).all()
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.externalSubject).toBe(`${ISSUER} external-sub`)
+      })
+
+      it.each([
+        ['provision', false],
+        ['bind', true],
+      ])('a different subject that loses the %s race is still refused', async (_label, builtin) => {
+        const current = createTestApp({ externalIdp: idp })
+        if (builtin) createFirstUser(current.db, { email: ADMIN_EMAIL, passwordHash: 'unused', name: 'Admin' })
+        // On the bind path both vouch for the one unbound address.
+        slowUserinfo(builtin
+          ? { 'external-sub': ADMIN_EMAIL, 'someone-else': ADMIN_EMAIL }
+          : { 'external-sub': 'owner@example.com', 'someone-else': 'someone@example.com' })
+
+        const statuses = await both(current, await token(BARE), await token(BARE, { subject: 'someone-else' }))
+        expect(statuses.toSorted()).toEqual([200, 401])
+        const winner = statuses[0] === 200 ? 'external-sub' : 'someone-else'
+        const rows = current.db.select().from(users).all()
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.externalSubject).toBe(`${ISSUER} ${winner}`)
+      })
     })
 
     it('refuses when the provider names no userinfo endpoint', async () => {
