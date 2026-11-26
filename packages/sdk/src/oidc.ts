@@ -279,8 +279,12 @@ export class TokenSession {
   #refreshing: Promise<TokenSet | undefined> | undefined
   /** The store has held a token this session could read: empty from now on means signed out. */
   #storeHeld = false
-  /** The refresh token this session last spent, to spot a store whose save failed. */
-  #presented: string | undefined
+  /**
+   * Every refresh token this session has spent, to spot a store whose saves
+   * keep failing: it can hold a token several rotations old. One entry per
+   * refresh, for the life of the session — small enough to keep whole.
+   */
+  readonly #spent = new Set<string>()
 
   constructor(options: {
     metadata: OidcMetadata
@@ -389,7 +393,7 @@ export class TokenSession {
    * one last read it, and the copy in memory is then already spent. An empty
    * store that once held a token means another tab signed out, so memory is
    * dropped, not spent. A stored token this session already spent means its
-   * own save failed, and memory holds the newer one.
+   * own saves failed, and memory holds the newer one.
    */
   #refreshTokenToSpend(): string | undefined {
     const memory = this.#tokens?.refreshToken
@@ -399,7 +403,7 @@ export class TokenSession {
       this.#tokens = undefined
       return undefined
     }
-    if (stored === this.#presented && memory !== undefined) return memory
+    if (this.#spent.has(stored) && memory !== undefined) return memory
     return stored
   }
 
@@ -413,7 +417,7 @@ export class TokenSession {
         fetch: this.#fetch,
         now: this.#now,
       })
-      this.#presented = refreshToken
+      this.#spent.add(refreshToken)
       // An IdP that does not rotate answers without a new refresh token; the
       // old one is still the one to keep.
       this.set({ ...tokens, refreshToken: tokens.refreshToken ?? refreshToken })

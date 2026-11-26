@@ -145,6 +145,8 @@ discovery documents answer 404.
 Providers that rotate refresh tokens and revoke the whole grant when one is
 used twice are fine: the PWA's tabs share one refresh token and take turns
 refreshing it under a Web Lock, so two open tabs never spend the same token.
+That holds where the browser offers Web Locks, which needs a secure context
+(HTTPS or localhost).
 Signing out in one tab revokes the token they share, and the other tabs find
 it gone at their next refresh and sign out too.
 

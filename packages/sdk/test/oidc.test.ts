@@ -387,7 +387,10 @@ describe('TokenSession across tabs', () => {
     expect(await session.accessToken()).toBe('at2')
     now = 4_000_000_000
     expect(await session.accessToken()).toBe('at3')
-    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    // Still failing: the store keeps rt1, which this session spent two refreshes ago.
+    now = 8_000_000_000
+    expect(await session.accessToken()).toBe('at4')
+    expect(idp.presented).toEqual(['rt1', 'rt2', 'rt3'])
     expect(idp.revoked()).toBe(false)
   })
 
