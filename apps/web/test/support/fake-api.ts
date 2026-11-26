@@ -814,7 +814,14 @@ export function emitChange(
   data: ChangeEvent['data'] = {},
 ): void {
   nextChangeId += 1
-  const event: ChangeEvent = { id: `change-${nextChangeId}`, type, occurredAt: new Date().toISOString(), funnelId, data }
+  const event: ChangeEvent = {
+    id: `change-${nextChangeId}`,
+    type,
+    occurredAt: new Date().toISOString(),
+    actor: 'api_key:1',
+    funnelId,
+    data,
+  }
   for (const stream of api.changeStreams) {
     if (stream.funnelId === undefined || stream.funnelId === funnelId || data.from?.funnelId === stream.funnelId) {
       stream.send(event)

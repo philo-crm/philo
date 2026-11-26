@@ -2,6 +2,7 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { MCP_PATH, PROTECTED_RESOURCE_METADATA_PATH } from '@philo/mcp'
 import { Hono, type Context } from 'hono'
 import { fileURLToPath } from 'node:url'
+import { pwaContentSecurityPolicy } from './csp.ts'
 
 /** Where `npm run build --workspace apps/web` puts the PWA. */
 export const WEB_DIST_DIR = fileURLToPath(new URL('../../web/dist', import.meta.url))
@@ -23,6 +24,11 @@ export interface StandaloneOptions {
   mcp: Handler
   /** The built PWA. Overridable for tests. */
   webDir?: string | undefined
+  /**
+   * The policy every PWA response carries — csp.ts. Built once at startup from
+   * config; the built-in IdP's default when omitted.
+   */
+  contentSecurityPolicy?: string | undefined
 }
 
 /** Everything the server answers. Never the app shell: HTML here is an unparseable 200. */
@@ -84,6 +90,25 @@ export function createStandaloneApp(options: StandaloneOptions): Hono {
       c.res.headers.set('Cache-Control', failed ? 'no-store' : 'public, max-age=31536000, immutable')
     } else if (PWA_ROOT_FILES.has(c.req.path)) {
       c.res.headers.set('Cache-Control', 'no-cache')
+    }
+  })
+
+  // The PWA's own security headers, on every response that is the PWA: the
+  // shell, client routes, the service worker, the manifest and the assets.
+  // Never on the server or MCP: intake is posted to cross-origin from public
+  // sites and answers exactly as the server does, and the server's own pages
+  // (the IdP dialog, attachment downloads) carry policies of their own.
+  const pwaHeaders: ReadonlyArray<readonly [string, string]> = [
+    ['Content-Security-Policy', options.contentSecurityPolicy ?? pwaContentSecurityPolicy()],
+    ['X-Content-Type-Options', 'nosniff'],
+    ['Referrer-Policy', 'strict-origin-when-cross-origin'],
+  ]
+  app.use('/*', async (c, next) => {
+    await next()
+    if (isMcpPath(c.req.path) || isServerPath(c.req.path)) return
+    // Never over a header a handler already set, as with Cache-Control.
+    for (const [name, value] of pwaHeaders) {
+      if (!c.res.headers.has(name)) c.res.headers.set(name, value)
     }
   })
 

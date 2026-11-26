@@ -85,8 +85,9 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_MCP_URL` | `<public base url>/mcp` | Where the MCP endpoint is reachable. Set it only when the MCP app runs apart. |
 | `PHILO_OIDC_ISSUER` | unset | An external OIDC provider to use instead of the built-in IdP. See [External identity provider](#external-identity-provider). |
 | `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens are recorded as the person rather than as an agent. |
-| `PHILO_OIDC_AUDIENCE` | unset | The `aud` the provider's access tokens must carry. Set it whenever the provider issues one. |
+| `PHILO_OIDC_AUDIENCE` | unset | Comma-separated `aud` values the provider's access tokens may carry; a token naming any one of them is accepted. Set it whenever the provider issues one. |
 | `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. |
+| `PHILO_WEB_CONNECT_ORIGINS` | empty | Comma-separated extra origins added to the PWA's `connect-src`, for a provider whose token or revocation endpoint is on another origin. Each must be a bare `https://` origin (`http://` only for `localhost` and `127.0.0.1`): a path, wildcard or CSP keyword is a startup error. See [Content-Security-Policy](#content-security-policy). |
 
 ### `PHILO_PUBLIC_BASE_URL` earns its keep
 
@@ -135,6 +136,13 @@ discovery documents answer 404.
    the audience its access tokens carry. The provider must issue JWT access
    tokens that include `sub`, `email`, `email_verified` and `azp` (or
    `client_id`).
+
+   If the provider gives the API and the MCP endpoint separate resource
+   identifiers (RFC 8707, as the MCP authorization spec asks), list both,
+   for example
+   `PHILO_OIDC_AUDIENCE=https://crm.example.com/api,https://crm.example.com/mcp`.
+   An agent's token names the MCP endpoint, and the MCP app forwards it to the
+   API, so the API must accept either.
 3. The first operator token on an empty instance, with a verified email,
    creates the account and binds it to that token's subject. From then on the
    subject is the operator — changing the email at the provider changes
@@ -162,6 +170,51 @@ entrypoint:
 Tell the server where the others live with `PHILO_APP_URL` and `PHILO_MCP_URL`.
 The API answers any origin — it takes bearer tokens only, so there is no
 cookie for another site to ride on.
+
+### Content-Security-Policy
+
+The PWA keeps its refresh token in `localStorage`, and
+[ADR-0006](adr/0006-headless-server-sdk-clients.md) relies on a
+Content-Security-Policy and the absence of third-party script to limit what an
+injected script could reach. The image serves the PWA (the shell, every
+client route, `/sw.js`, the manifest and `/assets/*`) with this policy, plus
+`X-Content-Type-Options: nosniff` and
+`Referrer-Policy: strict-origin-when-cross-origin`:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self';
+connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self'; object-src 'none';
+base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+```
+
+(Served on one line; it is wrapped here to fit.) With `PHILO_OIDC_ISSUER` set,
+the issuer's origin is added to `connect-src`, because the PWA fetches the
+provider's discovery document and token endpoint. If the provider's discovery
+document puts its token or revocation endpoint on another origin, list that
+origin in `PHILO_WEB_CONNECT_ORIGINS` (for example
+`PHILO_WEB_CONNECT_ORIGINS=https://oauth2.example-apis.com`); without it the
+browser blocks the code exchange and sign-in fails with only a console
+message.
+
+The server's own responses never get this policy: the API, intake (which public
+websites post to from other origins), `/oauth`, `/.well-known`, `/mcp` and
+attachment downloads, which have a stricter sandbox policy of their own. A
+reverse proxy in front of the image needs to add nothing. It should not
+replace these headers either.
+
+When the PWA is [hosted apart](#running-the-pieces-apart), its static host
+sets the headers. Copy the policy above and add:
+
+- the server's origin (`VITE_PHILO_API_URL`) to `connect-src` and `frame-src`.
+  The email template preview is a page the server serves,
+  `/api/email-preview`, with a policy of its own. A preview rendered directly
+  in the PWA would inherit the PWA's policy and lose the template's inline
+  styles and images.
+- the external IdP's origin to `connect-src`, if you use one.
+
+Serve the policy on `index.html` and on every path that falls back to it. A
+static host that cannot set headers can't apply `frame-ancestors`, so the
+PWA could then be framed by other sites.
 
 ## Reverse proxy
 

@@ -1,5 +1,6 @@
-import { useCallback, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
+  emailPreviewFrameUrl,
   fetchEmailTemplates,
   previewEmailTemplate,
   sendTemplateTestEmail,
@@ -240,17 +241,59 @@ function Preview({ preview, title }: { preview: EmailTemplatePreview; title: str
       <p className="field-label">Subject</p>
       <p className="preview-subject">{preview.subject}</p>
       <p className="field-label">Body</p>
-      {/*
-        Sandboxed, and with no `allow-` tokens: the body is HTML an operator
-        wrote and a lead's answers were rendered into, and a preview must not be
-        able to run either of them against this origin's session.
-      */}
-      <iframe className="preview-body" title={`${title} preview`} sandbox="" srcDoc={preview.body} />
+      <PreviewFrame html={preview.body} title={`${title} preview`} />
       <p className="hint">
         {preview.leadId === null
           ? 'Rendered against a sample lead.'
           : `Rendered against lead #${preview.leadId}.`}
       </p>
     </div>
+  )
+}
+
+const FRAME_READY = 'philo:email-preview-ready'
+const FRAME_RENDER = 'philo:email-preview'
+
+/**
+ * The body is HTML an operator wrote and a lead's answers were rendered into,
+ * so it must not run against this origin's session. It is not a `srcdoc` frame
+ * here: that would inherit this page's Content-Security-Policy, which strips
+ * the inline styles and remote images an email is made of. Instead the
+ * server's preview page is framed (packages/server/src/email/preview-frame.ts)
+ * and handed the HTML; it renders it in a `sandbox=""` frame of its own, under
+ * a policy that allows styles and images and no script.
+ *
+ * `allow-scripts` alone, never `allow-same-origin`: the page's own script runs
+ * in an opaque origin and can reach nothing of this one. Being opaque, it can
+ * only be addressed as `'*'`, which is safe because the window is the one this
+ * frame loaded and nothing in it can navigate it elsewhere.
+ */
+function PreviewFrame({ html, title }: { html: string; title: string }) {
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  const ready = useRef(false)
+
+  useEffect(() => {
+    const frame = frameRef.current
+    const send = () => frame?.contentWindow?.postMessage({ type: FRAME_RENDER, html }, '*')
+    const onMessage = (event: MessageEvent) => {
+      if (frame === null || event.source !== frame.contentWindow) return
+      if ((event.data as { type?: unknown } | null)?.type !== FRAME_READY) return
+      ready.current = true
+      send()
+    }
+    window.addEventListener('message', onMessage)
+    // A new preview while the page is already up: it will not ask again.
+    if (ready.current) send()
+    return () => window.removeEventListener('message', onMessage)
+  }, [html])
+
+  return (
+    <iframe
+      ref={frameRef}
+      className="preview-body"
+      title={title}
+      sandbox="allow-scripts"
+      src={emailPreviewFrameUrl()}
+    />
   )
 }
