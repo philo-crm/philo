@@ -11,6 +11,7 @@ import {
   type Auth,
   type User,
 } from './auth.ts'
+import { configureExtraTokens } from './extra-token.ts'
 import { BrandMark } from './icons.tsx'
 import { syncPushSubscription } from './push.ts'
 
@@ -117,6 +118,14 @@ export function App() {
   useEffect(() => {
     if (signedIn) void syncPushSubscription()
   }, [signedIn])
+
+  // Extra tokens belong to one sign-in: a fresh one clears their cache and
+  // refusals, and leaving the signed-in shell drops them.
+  useEffect(() => {
+    if (screen.kind !== 'ready') return
+    configureExtraTokens(screen.auth)
+    return () => configureExtraTokens(undefined)
+  }, [screen])
 
   const auth = screen.kind === 'ready' || screen.kind === 'signed-out' ? screen.auth : undefined
 
