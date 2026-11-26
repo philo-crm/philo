@@ -65,8 +65,8 @@ PWA's policy stays `'self'`, exactly as before.
 
 ### Configuration
 
-Both values are environment variables, read and validated by the server at
-startup. Neither goes in the settings database: a script URL is code
+All four values are environment variables, read and validated by the
+server at startup. Neither goes in the settings database: a script URL is code
 execution in every person's browser, and a settings field would let any admin
 in the UI inject script into other people's sessions. Only whoever runs the
 server can set it.
@@ -76,15 +76,22 @@ server can set it.
 | `PHILO_WEB_HOST_SCRIPT_URL` | unset | A script the PWA loads after sign-in. An absolute `https:` URL (or `http://localhost` / `http://127.0.0.1` in development), or a path on the PWA's own origin. |
 | `PHILO_WEB_HOST_CONFIG` | `{}` | A JSON object handed to the script verbatim as `ctx.config`. It is public — anyone can read it — so it holds no secrets. |
 | `PHILO_WEB_ASSET_ORIGINS` | empty | Extra sources for the script's own assets (see [CSP](#content-security-policy)). |
+| `PHILO_WEB_HOST_TOKEN_RESOURCES` | empty | A comma-separated allow-list of the resource indicators (RFC 8707) `ctx.getToken` may ask the IdP for. Empty means `getToken` always answers `null`. Philo's own audience (`PHILO_OIDC_AUDIENCE`, or the server's own URL with the built-in IdP) is refused at startup. |
 
-A malformed URL, a `PHILO_WEB_HOST_CONFIG` that is not a JSON object, or an
-asset entry outside the rules below is a startup `ConfigError`, never a silent
-default.
+A malformed URL, a `PHILO_WEB_HOST_CONFIG` that is not a JSON object, an
+asset entry outside the rules below, or a token resource that is not an
+absolute URL or names Philo's own audience is a startup `ConfigError`, never a
+silent default.
+
+Operators put a same-origin script beside the PWA without rebuilding it by
+serving the path from the reverse proxy in front of Philo, or, with the
+standalone image, from a mounted directory the image serves under a fixed
+prefix; `docs/DEPLOYMENT.md` gives both.
 
 ### Delivery
 
 A new public endpoint, `GET /api/v1/web/config`, answers
-`{ "hostScriptUrl": string | null, "hostConfig": object }` with
+`{ "hostScriptUrl": string | null, "hostConfig": object, "hostTokenResources": string[] }` with
 `Cache-Control: no-cache`. The SDK gets `philo.web.config()` and its type in
 the same PR (ADR-0006). It is separate from `GET /api/v1/auth/config` so that
 endpoint stays about sign-in, and it works the same when the PWA is hosted
@@ -117,41 +124,64 @@ interface PhiloHostContext {
   role: 'user' | 'admin'
   /** PHILO_WEB_HOST_CONFIG. */
   config: unknown
-  /** The extra-token helper. null with the built-in IdP, without an external IdP, or when the IdP refused. */
+  /**
+   * The extra-token helper, for a resource in PHILO_WEB_HOST_TOKEN_RESOURCES only.
+   * null for any other resource, with the built-in IdP, or when the IdP refused.
+   */
   getToken(request: { resource: string; scope: string; prompt?: string }): Promise<string | null>
-  /** Client-side navigation inside Philo. */
+  /** Client-side navigation inside Philo. Only a same-app path (one leading `/`, not `//`); anything else is ignored. */
   navigate(path: string): void
   /** Philo's own sign-out, revocation included. */
   signOut(): void
+  /** The host cannot draw what it replaced: Philo shows its own account menu again. */
+  fallback(): void
   /** Philo's own theme store: its stored choice, `data-theme` and the `theme-color` meta. */
   setTheme(theme: 'light' | 'dark' | 'system'): void
   /** Philo's own account-menu entries for this person's role (Server settings for an admin only). */
   accountItems: ReadonlyArray<{ label: string; path: string }>
-  /** Aborted when the signed-in shell unmounts: sign-out, an expired session. */
+  /** Aborted when the signed-in shell unmounts: sign-out, an expired session. The host drops its timers, listeners and tokens then. */
   signal: AbortSignal
 }
 ```
 
-The context hands over capabilities, not data: the host never sees the
-refresh token or Philo's own access token through it, only tokens for the
-audiences it asks the IdP for. That is a contract, not a wall — see
+The context hands over capabilities, not data: through it the host never
+sees the refresh token or Philo's own access token, and gets tokens only for
+the resources the operator allow-listed. That is a contract for a
+well-behaved host, not a wall. The allow-list stops a buggy or over-curious
+script from minting a token for Philo's own API or for every other API the
+PWA's client may reach at the IdP. It does not stop a hostile one: such a
+script can read the refresh token directly, or run the silent flow itself,
+since the issuer must be in `frame-src` for the helper to work and the answer is posted to the page — see
 [Trust](#trust).
 
 ### Behaviour
 
 - The PWA injects the script (`<script async>`, classic) once per page, when
   the signed-in shell first mounts, and calls `mount` again with a fresh
-  context after each later sign-in. **It never loads the script on a
-  signed-out screen** — loading, sign-in, sign-in failure, the callback, or
-  the hidden extra-token frame.
+  context after a later sign-in on the same page (an expired session). When
+  a host script was loaded, **sign-out reloads the page**, so nothing the
+  script left resident survives into the next person's sign-in. **It never
+  loads the script on a signed-out screen** — loading, sign-in, sign-in
+  failure, the callback, or the hidden extra-token frame.
 - **Philo's own controls stay until the host takes over.** The account menu
   renders as it does today and is hidden only once `mount` resolves with
   `replaces: ['account-menu']`. If the script fails to load, sets no
-  `PhiloHost`, throws, rejects, or takes longer than 5 s, Philo logs once to
-  the console, aborts that mount's `signal`, empties the slot and keeps its own
-  menu for the life of the page. A late answer is ignored. A host can never
-  leave a person without a way to sign out, and offline — when the script or
-  what it loads is unreachable — the shell looks as it does without one.
+  `PhiloHost`, throws, rejects, or takes longer than 5 s (counted from
+  injection, so a slow download counts), Philo logs once to the console,
+  aborts that mount's `signal`, empties the slot and keeps its own menu for
+  the life of the page. A late answer is ignored. Offline — when the script
+  or what it loads is unreachable — the shell looks as it does without one.
+- **Sign-out stays reachable after the host takes over.** A resolved `mount`
+  does not prove the host drew a working menu: its own chunk can 404 later,
+  it can throw while rendering, or its CSS can hide the menu at some width.
+  So Philo keeps paths no host can remove:
+  - it re-shows its own account menu if the slot is still empty 5 s after
+    `mount` resolved, if the slot empties later while `signal` is live, or
+    if the host calls `ctx.fallback()` to say it cannot draw;
+  - a `/sign-out` route, reachable by typing it or from a bookmark, that
+    signs out and returns to the sign-in screen whatever the top bar shows.
+  Philo cannot detect a menu that renders but is hidden or unwired; the
+  route is the guarantee for that case, and `DEPLOYMENT.md` names it.
 - When the host replaces the menu, Philo's menu entries reach it as
   `accountItems`, so nothing Philo offers is lost. Philo's theme picker goes
   with its menu: from then on the host owns the theme and reports it through
@@ -159,7 +189,8 @@ audiences it asks the IdP for. That is a contract, not a wall — see
 - The slot sits inside the top bar's action group, so it inherits its spacing
   and its narrow-screen layout. Its contents are the host's to fit.
 - The contract is documented in `docs/DESIGN.md` under "Host chrome", and
-  `docs/DEPLOYMENT.md` gains the three variables and the CSP they produce.
+  `docs/DEPLOYMENT.md` gains the four variables, the CSP they produce, the
+  `/sign-out` route, and the Trust section's warning in its own words.
 
 ### Trust
 
@@ -176,8 +207,15 @@ code.** What this ADR does bound is how far that trust spreads:
   URL trusts that origin's whole supply chain on every page load.
 - Whatever the script loads from elsewhere — a component bundle, a
   stylesheet, fonts, an API — is listed explicitly, origin by origin, and the
-  CSP refuses everything else. A compromised or mistaken host script cannot
-  pull in code from an origin nobody listed, and cannot send data to one.
+  CSP refuses code from everywhere else. **The CSP limits what code can be
+  loaded, not what can leave.** A compromised host script can read the
+  refresh token and act as the person, on this page and off it. It can carry
+  data out by top-level navigation (`location.href = …`, `window.open`),
+  which no directive in the policy restricts; through WebRTC; through any
+  listed origin that accepts writes; and, in an admin's session, by creating
+  a webhook (ADR-0010) or an API key, which keeps pushing data off-box after
+  the script is fixed. The CSP is not a backstop for a script the operator
+  does not fully trust.
 - Subresource integrity is not offered: a host whose script is meant to
   update independently of Philo would have to change Philo's config on every
   update, and the same-origin shape already gets the same pinning for free.
@@ -196,13 +234,30 @@ configured. With a host script:
   query, fragment, wildcard, scheme-only source or keyword — no `*`, `data:`,
   `blob:`, `'unsafe-inline'`, `'unsafe-eval'`, `'strict-dynamic'`, nonce or
   hash. Each entry is added to `script-src`, `style-src` and `font-src` as
-  given, and its origin alone to `img-src`. A path prefix keeps `script-src`
-  off the rest of a shared origin — an IdP that also serves user uploads, say
-  — because a script anywhere on an allowed origin could reach the refresh
-  token.
+  given, and its origin alone to `img-src`.
+- **A path prefix is defense in depth, not a boundary.** Under CSP Level 3 a
+  source's path is checked only for the first request: once a request has
+  been redirected, it needs to match only the scheme, host and port. Paths
+  are also matched after percent-decoding, so `/static/..%2Fuploads/x.js`
+  matches `/static/`, and a server that decodes `%2F` before routing serves
+  `/uploads/x.js`. The same holds for the exact script URL. So the operator
+  lists only origins that host no user-controlled content, and only URLs and
+  prefixes under which nothing redirects. An origin that serves uploads or
+  other user content — an IdP with avatars, say — is not listed at all; its
+  assets are mirrored through a same-origin path instead.
 - The host's API calls go through `PHILO_WEB_CONNECT_ORIGINS`, which the CSP
-  change already defines. The extra-token helper's hidden frame adds the
-  issuer to `frame-src` itself.
+  change already defines.
+- The extra-token helper's hidden frame needs the issuer's origin in
+  `frame-src`, which the CSP change sets to `'self'` alone. Neither that
+  change nor the extra-token change adds it today: **whichever of the
+  extra-token and host-script implementation PRs lands second adds the
+  issuer to `frame-src`** when an external IdP is configured, beside the
+  issuer it already adds to `connect-src`. Until then `getToken` answers
+  `null` after the frame times out.
+- The extra-token helper must key its cache by resource, scope and `prompt`
+  (today it keys by the first two; the host-script PR changes it), so
+  a host call with a `prompt` the IdP will not answer silently does not mark
+  that resource refused for Philo's own callers.
 - The host must work without inline script or inline `<style>`: stylesheets
   come from listed origins, and a component styles itself with constructable
   stylesheets or the CSSOM, which `style-src` does not restrict.
@@ -214,8 +269,10 @@ configured. With a host script:
 - With the variable unset, nothing changes: no script, no extra CSP sources,
   the same account menu.
 - With it set, ADR-0006's bound on the `localStorage` refresh token becomes
-  "the CSP and the operator's own script". That is a real widening, chosen by
-  the operator, and stated in `DEPLOYMENT.md` beside the variable.
+  "the operator's trust in their own script": the script can read the token
+  and act as the person, and the CSP does not stop it sending data out. That
+  is a real widening, chosen by the operator, and `DEPLOYMENT.md` says it in
+  those words beside the variable.
 - `PhiloHost` is a public contract. A change that breaks it bumps `version`
   and is a breaking change in the release notes; the PWA, the SDK type and
   the documentation change together, as with the API.

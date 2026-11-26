@@ -14,6 +14,8 @@ named `NNNN-short-kebab-title.md`.
 
 - **Proposed** — under discussion, not yet binding.
 - **Accepted** — the current decision; code should conform to it.
+- **Amended by [NNNN]** — a later ADR changes one bound or clause and says
+  so in its own `Amends:` line; the rest stands.
 - **Superseded by [NNNN]** — replaced by a later ADR. Never edit an accepted
   ADR's decision retroactively; write a new one that supersedes it.
 
