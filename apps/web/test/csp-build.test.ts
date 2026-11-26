@@ -24,8 +24,10 @@ describe('the build, under the PWA’s Content-Security-Policy', async () => {
   const html = source('index.html')
 
   it('has no inline script in index.html', () => {
-    const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+    const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)]
     expect(scripts.length).toBeGreaterThan(0)
+    // Every opening tag was matched, so no script slips past the checks below.
+    expect(scripts.length).toBe([...html.matchAll(/<script\b/gi)].length)
     for (const [, attributes, body] of scripts) {
       expect(attributes).toMatch(/\bsrc="\/assets\//)
       expect(body!.trim()).toBe('')
