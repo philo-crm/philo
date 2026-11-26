@@ -19,11 +19,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A copy of this repository (a GitHub fork, a mirror) runs this workflow too, usually without the
+  # review secrets. secrets.* cannot be read in a job-level if:, so this job reports whether both
+  # are configured and the review below skips cleanly when they are not, instead of failing on every
+  # PR. It keys on the secrets, not on the repository name, so a copy that configures them still
+  # gets reviews. It checks out nothing, has no permissions, and prints only the secret names.
+  preflight:
+    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - id: check
+        env:
+          HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_BOT_TOKEN: ${{ secrets.BUGBOT_GH_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [ "$HAS_CLAUDE_TOKEN" = true ] || missing+=(CLAUDE_CODE_OAUTH_TOKEN)
+          [ "$HAS_BOT_TOKEN" = true ] || missing+=(BUGBOT_GH_TOKEN)
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "configured=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::Bugbot skipped: ${missing[*]} not configured in this repository."
+            echo "configured=false" >>"$GITHUB_OUTPUT"
+          fi
+
   review:
+    needs: preflight
     # pull_request_target would hand fork PRs the secrets, so they are skipped: maintainer work is
     # pushed to branches in this repository, and outside contributions get a human review. A draft is still being worked on,
-    # so marking it ready for review is what starts the review.
-    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    # so marking it ready for review is what starts the review. preflight carries the same condition
+    # (a skipped preflight skips this job too) and adds whether the review secrets are configured.
+    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft && needs.preflight.outputs.configured == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # GITHUB_TOKEN is read-only. The only write is the review, posted with BUGBOT_GH_TOKEN.
