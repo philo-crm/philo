@@ -405,7 +405,6 @@ export class TokenSession {
 
   async #doRefresh(refreshToken: string | undefined): Promise<TokenSet | undefined> {
     if (refreshToken === undefined) return undefined
-    this.#presented = refreshToken
     try {
       const tokens = await refreshTokens({
         metadata: this.#metadata,
@@ -414,6 +413,7 @@ export class TokenSession {
         fetch: this.#fetch,
         now: this.#now,
       })
+      this.#presented = refreshToken
       // An IdP that does not rotate answers without a new refresh token; the
       // old one is still the one to keep.
       this.set({ ...tokens, refreshToken: tokens.refreshToken ?? refreshToken })

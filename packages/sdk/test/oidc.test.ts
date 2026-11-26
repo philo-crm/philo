@@ -391,6 +391,31 @@ describe('TokenSession across tabs', () => {
     expect(idp.revoked()).toBe(false)
   })
 
+  it('retries with the stored token after a network failure, not a copy already spent', async () => {
+    let now = 0
+    let offline = false
+    const store = memoryStore('rt1')
+    const idp = rotatingIdp('rt1')
+    const flakyFetch = async (url: string, init?: RequestInit) => {
+      if (offline) throw new TypeError('Failed to fetch')
+      return idp.fetch(url, init)
+    }
+    const options = { metadata, clientId: 'c', store, fetch: flakyFetch, lock: memoryLock(), now: () => now }
+    const tabA = new TokenSession(options)
+    const tabB = new TokenSession(options)
+    await tabB.accessToken()
+    await tabA.accessToken()
+    // B holds rt2 in memory, already spent; A and the store hold the live rt3.
+    now = 4_000_000_000
+    offline = true
+    await expect(tabB.accessToken()).rejects.toThrow('Failed to fetch')
+    offline = false
+    expect(await tabB.accessToken()).toBe('at4')
+    expect(idp.presented).toEqual(['rt1', 'rt2', 'rt3'])
+    expect(idp.revoked()).toBe(false)
+    expect(store.value).toBe('rt4')
+  })
+
   it('without a lock, two sessions still race on one token, as before', async () => {
     const store = memoryStore('rt1')
     const idp = rotatingIdp('rt1')
