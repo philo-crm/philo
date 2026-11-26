@@ -20,10 +20,12 @@ import { StageColumn, type QuickLead } from './StageColumn.tsx'
 import { useResource, useSessionGuard } from './useResource.ts'
 
 export interface FunnelBoardProps {
+  /** Stage editing and funnel settings, which are an admin's — ADR-0012. */
+  canConfigure: boolean
   onSessionExpired: () => void
 }
 
-export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
+export function FunnelBoard({ canConfigure, onSessionExpired }: FunnelBoardProps) {
   const funnels = useFunnels()
   const [funnelId] = useSelectedFunnel(funnels.data)
   // Waits for the funnel list, so the board never flashes the default funnel's
@@ -155,10 +157,12 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
               : `${leadTotal} ${leadTotal === 1 ? 'lead' : 'leads'} in ${stages.length} ${stages.length === 1 ? 'stage' : 'stages'}`}
           </p>
         </div>
-        <Link to="/funnel" className="button-link button-quiet">
-          <SettingsIcon />
-          <span>Funnel settings</span>
-        </Link>
+        {canConfigure && (
+          <Link to="/funnel" className="button-link button-quiet">
+            <SettingsIcon />
+            <span>Funnel settings</span>
+          </Link>
+        )}
       </header>
 
       {error !== undefined && (
@@ -176,6 +180,7 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
             index={index}
             columnCount={columns.length}
             busy={busy}
+            canEditStage={canConfigure}
             draggingId={draggingId}
             draggingStageId={draggingStageId}
             touchOverId={touchOverId}
@@ -192,44 +197,47 @@ export function FunnelBoard({ onSessionExpired }: FunnelBoardProps) {
         ))}
 
         {/* A column of its own, at the end, so adding a stage is where the
-            stage will land rather than somewhere in the page furniture. */}
-        <section className="board-column board-add" aria-label="Add a stage">
-          {addingStage ? (
-            <form className="stage-form" onSubmit={(event) => void handleCreateStage(event)}>
-              <label className="field">
-                <span className="field-label">New stage</span>
-                <input
-                  value={newName}
-                  autoFocus
-                  placeholder="Stage name"
-                  maxLength={MAX_STAGE_NAME_LENGTH}
-                  onChange={(event) => setNewName(event.target.value)}
-                />
-              </label>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={newTerminal}
-                  onChange={(event) => setNewTerminal(event.target.checked)}
-                />
-                <span>Terminal stage — where leads finish</span>
-              </label>
-              <div className="stage-form-actions">
-                <button type="submit" disabled={busy || newName.trim() === ''}>
-                  Add stage
-                </button>
-                <button type="button" disabled={busy} onClick={() => setAddingStage(false)}>
-                  Cancel
-                </button>
-              </div>
-            </form>
-          ) : (
-            <button type="button" className="board-add-button" disabled={busy} onClick={() => setAddingStage(true)}>
-              <PlusIcon />
-              <span>New stage</span>
-            </button>
-          )}
-        </section>
+            stage will land rather than somewhere in the page furniture.
+            Stages are configuration — ADR-0012. */}
+        {canConfigure && (
+          <section className="board-column board-add" aria-label="Add a stage">
+            {addingStage ? (
+              <form className="stage-form" onSubmit={(event) => void handleCreateStage(event)}>
+                <label className="field">
+                  <span className="field-label">New stage</span>
+                  <input
+                    value={newName}
+                    autoFocus
+                    placeholder="Stage name"
+                    maxLength={MAX_STAGE_NAME_LENGTH}
+                    onChange={(event) => setNewName(event.target.value)}
+                  />
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={newTerminal}
+                    onChange={(event) => setNewTerminal(event.target.checked)}
+                  />
+                  <span>Terminal stage — where leads finish</span>
+                </label>
+                <div className="stage-form-actions">
+                  <button type="submit" disabled={busy || newName.trim() === ''}>
+                    Add stage
+                  </button>
+                  <button type="button" disabled={busy} onClick={() => setAddingStage(false)}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button type="button" className="board-add-button" disabled={busy} onClick={() => setAddingStage(true)}>
+                <PlusIcon />
+                <span>New stage</span>
+              </button>
+            )}
+          </section>
+        )}
       </div>
     </section>
   )

@@ -7,7 +7,7 @@ import { Link } from './router.tsx'
  * The working funnel, chosen once in the top bar for every screen scoped to
  * one — the board, the lead list, a new lead, the funnel's own settings.
  */
-export function FunnelSwitcher() {
+export function FunnelSwitcher({ isAdmin }: { isAdmin: boolean }) {
   const funnels = useFunnels()
   const [selectedId, select] = useSelectedFunnel(funnels.data)
   const list = funnels.data ?? []
@@ -57,15 +57,20 @@ export function FunnelSwitcher() {
               </li>
             ))}
           </ul>
-          <hr className="menu-rule" />
-          <Link to="/funnel" className="menu-item" onClick={close}>
-            <span className="menu-check" />
-            <span className="menu-item-text">Funnel settings</span>
-          </Link>
-          <Link to="/settings/funnels" className="menu-item" onClick={close}>
-            <span className="menu-check" />
-            <span className="menu-item-text">Add or remove funnels</span>
-          </Link>
+          {/* Funnels are configuration — ADR-0012. */}
+          {isAdmin && (
+            <>
+              <hr className="menu-rule" />
+              <Link to="/funnel" className="menu-item" onClick={close}>
+                <span className="menu-check" />
+                <span className="menu-item-text">Funnel settings</span>
+              </Link>
+              <Link to="/settings/funnels" className="menu-item" onClick={close}>
+                <span className="menu-check" />
+                <span className="menu-item-text">Add or remove funnels</span>
+              </Link>
+            </>
+          )}
         </>
       )}
     </Menu>

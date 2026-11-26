@@ -29,6 +29,8 @@ export interface StageColumnProps {
   columnCount: number
   /** Something is in flight somewhere on the board; every control waits for it. */
   busy: boolean
+  /** Rename, reorder and delete — an admin's, ADR-0012. Adding a lead is anyone's. */
+  canEditStage: boolean
   /** The card being dragged, so a column knows whether a drop is worth taking. */
   draggingId: number | undefined
   /** The column being dragged by its grip, so the others know to make room. */
@@ -53,6 +55,7 @@ export function StageColumn({
   index,
   columnCount,
   busy,
+  canEditStage,
   draggingId,
   draggingStageId,
   touchOverId,
@@ -213,22 +216,24 @@ export function StageColumn({
           </form>
         ) : (
           <>
-            <span
-              className="column-grip"
-              title="Drag to reorder"
-              aria-hidden="true"
-              draggable={!busy}
-              onDragStart={(event) => {
-                event.dataTransfer.setData('text/plain', `stage:${stage.id}`)
-                event.dataTransfer.effectAllowed = 'move'
-                const columnElement = event.currentTarget.closest('section')
-                if (columnElement !== null) event.dataTransfer.setDragImage?.(columnElement, 20, 20)
-                onDragStage(stage.id)
-              }}
-              onDragEnd={() => onDragStage(undefined)}
-            >
-              <GripIcon />
-            </span>
+            {canEditStage && (
+              <span
+                className="column-grip"
+                title="Drag to reorder"
+                aria-hidden="true"
+                draggable={!busy}
+                onDragStart={(event) => {
+                  event.dataTransfer.setData('text/plain', `stage:${stage.id}`)
+                  event.dataTransfer.effectAllowed = 'move'
+                  const columnElement = event.currentTarget.closest('section')
+                  if (columnElement !== null) event.dataTransfer.setDragImage?.(columnElement, 20, 20)
+                  onDragStage(stage.id)
+                }}
+                onDragEnd={() => onDragStage(undefined)}
+              >
+                <GripIcon />
+              </span>
+            )}
             <h2 className="board-column-title">
               <span className="board-column-name">{stage.name}</span>
               <span className="board-column-count numeric">{column.total}</span>
@@ -244,73 +249,75 @@ export function StageColumn({
               >
                 <PlusIcon />
               </button>
-              <Menu
-                ariaLabel={`${stage.name} options`}
-                triggerClassName="icon-button"
-                label={<MoreIcon />}
-                disabled={busy}
-              >
-                {(close) => (
-                  <>
-                    <button
-                      type="button"
-                      className="menu-item"
-                      onClick={() => {
-                        close()
-                        startEditing()
-                      }}
-                    >
-                      <span className="menu-item-text">Rename or change type</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="menu-item"
-                      aria-label={`Move ${stage.name} earlier`}
-                      disabled={index === 0}
-                      onClick={() => {
-                        close()
-                        onReorderStage(stage.id, -1)
-                      }}
-                    >
-                      <span className="menu-item-text">Move left</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="menu-item"
-                      aria-label={`Move ${stage.name} later`}
-                      disabled={index === columnCount - 1}
-                      onClick={() => {
-                        close()
-                        onReorderStage(stage.id, 1)
-                      }}
-                    >
-                      <span className="menu-item-text">Move right</span>
-                    </button>
-                    <hr className="menu-rule" />
-                    <button
-                      type="button"
-                      className="menu-item menu-item-danger"
-                      aria-label={`Delete ${stage.name}`}
-                      disabled={!deletable}
-                      onClick={() => {
-                        close()
-                        onDeleteStage(stage.id)
-                      }}
-                    >
-                      <span className="menu-item-text">Delete stage</span>
-                    </button>
-                    {/* Why Delete is off. A disabled button shows no tooltip,
-                        so the reason is written out under it instead. */}
-                    {!deletable && (
-                      <p className="menu-note">
-                        {columnCount <= 1
-                          ? 'A funnel keeps its last stage.'
-                          : 'Only an empty stage can be deleted.'}
-                      </p>
-                    )}
-                  </>
-                )}
-              </Menu>
+              {canEditStage && (
+                <Menu
+                  ariaLabel={`${stage.name} options`}
+                  triggerClassName="icon-button"
+                  label={<MoreIcon />}
+                  disabled={busy}
+                >
+                  {(close) => (
+                    <>
+                      <button
+                        type="button"
+                        className="menu-item"
+                        onClick={() => {
+                          close()
+                          startEditing()
+                        }}
+                      >
+                        <span className="menu-item-text">Rename or change type</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="menu-item"
+                        aria-label={`Move ${stage.name} earlier`}
+                        disabled={index === 0}
+                        onClick={() => {
+                          close()
+                          onReorderStage(stage.id, -1)
+                        }}
+                      >
+                        <span className="menu-item-text">Move left</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="menu-item"
+                        aria-label={`Move ${stage.name} later`}
+                        disabled={index === columnCount - 1}
+                        onClick={() => {
+                          close()
+                          onReorderStage(stage.id, 1)
+                        }}
+                      >
+                        <span className="menu-item-text">Move right</span>
+                      </button>
+                      <hr className="menu-rule" />
+                      <button
+                        type="button"
+                        className="menu-item menu-item-danger"
+                        aria-label={`Delete ${stage.name}`}
+                        disabled={!deletable}
+                        onClick={() => {
+                          close()
+                          onDeleteStage(stage.id)
+                        }}
+                      >
+                        <span className="menu-item-text">Delete stage</span>
+                      </button>
+                      {/* Why Delete is off. A disabled button shows no tooltip,
+                          so the reason is written out under it instead. */}
+                      {!deletable && (
+                        <p className="menu-note">
+                          {columnCount <= 1
+                            ? 'A funnel keeps its last stage.'
+                            : 'Only an empty stage can be deleted.'}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </Menu>
+              )}
             </div>
             {stage.isTerminal && <span className="tag tag-terminal">Terminal</span>}
           </>

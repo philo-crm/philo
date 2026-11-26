@@ -51,7 +51,7 @@ const lift = () => new Promise((resolve) => setTimeout(resolve, LIFT_DELAY_MS + 
 describe('dragging with a finger', () => {
   it('lifts a held card and drops it on the column under the finger', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
     const dana = cardOf('Dana Okafor')
 
@@ -70,7 +70,7 @@ describe('dragging with a finger', () => {
 
   it('treats a finger that moves before the lift as a scroll', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
     const dana = cardOf('Dana Okafor')
 
@@ -86,7 +86,7 @@ describe('dragging with a finger', () => {
 
   it('puts the card back when it is let go over no column', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
     const dana = cardOf('Dana Okafor')
 
@@ -138,7 +138,7 @@ describe('FunnelBoard', () => {
     installFakeApi({
       leads: [...leads(), makeLead({ id: 3, name: 'Bot Submission', isSpam: true })],
     })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
 
     const newStage = await screen.findByRole('region', { name: 'New' })
     expect(within(newStage).getByText('Dana Okafor')).toBeDefined()
@@ -152,7 +152,7 @@ describe('FunnelBoard', () => {
 
   it('marks the terminal stage', async () => {
     installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
 
     const closed = await screen.findByRole('region', { name: 'Closed' })
     expect(within(closed).getByText('Terminal')).toBeDefined()
@@ -161,7 +161,7 @@ describe('FunnelBoard', () => {
 
   it('moves a card to another stage from the card itself', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Move Dana Okafor to another stage' }), {
@@ -175,7 +175,7 @@ describe('FunnelBoard', () => {
 
   it('records the move on the lead timeline', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Sam Reyes')
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Move Sam Reyes to another stage' }), {
@@ -190,7 +190,7 @@ describe('FunnelBoard', () => {
 
   it('moves a card dropped on another column', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     const card = (await screen.findByText('Dana Okafor')).closest('li')
     expect(card).not.toBeNull()
 
@@ -204,7 +204,7 @@ describe('FunnelBoard', () => {
 
   it('ignores a card dropped back on the column it came from', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     const card = (await screen.findByText('Dana Okafor')).closest('li')
 
     dragStart(card as HTMLElement)
@@ -223,7 +223,7 @@ describe('FunnelBoard', () => {
 
   it('adds a stage to the end of the funnel', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     fireEvent.click(screen.getByRole('button', { name: 'New stage' }))
@@ -240,7 +240,7 @@ describe('FunnelBoard', () => {
 
   it('adds a lead straight into the column it was started from', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     fireEvent.click(screen.getByRole('button', { name: 'Add a lead to Contacted' }))
@@ -257,7 +257,7 @@ describe('FunnelBoard', () => {
 
   it('asks the column form for a way to reach the lead before sending anything', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     fireEvent.click(screen.getByRole('button', { name: 'Add a lead to New' }))
@@ -271,7 +271,7 @@ describe('FunnelBoard', () => {
 
   it('reorders the board by dragging a column by its grip', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     dragStart(gripOf('Closed'))
@@ -289,7 +289,7 @@ describe('FunnelBoard', () => {
 
   it('reorders the board by holding a column’s grip with a finger', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
     const closed = column('Closed')
 
@@ -314,7 +314,7 @@ describe('FunnelBoard', () => {
 
   it('lifts no column for a finger held on a card in it', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     fireEvent.pointerDown(cardOf('Dana Okafor'), { pointerType: 'touch', pointerId: 8, clientX: 10, clientY: 10 })
@@ -329,7 +329,7 @@ describe('FunnelBoard', () => {
 
   it('does not treat a dragged card as a column', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
     dragStart(cardOf('Dana Okafor'))
     fireEvent.dragOver(column('Closed'))
@@ -342,7 +342,7 @@ describe('FunnelBoard', () => {
 
   it('renames a stage, and the leads in it follow', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     openOptions('New')
@@ -357,7 +357,7 @@ describe('FunnelBoard', () => {
 
   it('marks a stage terminal from the rename form', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     const contacted = column('Contacted')
@@ -373,7 +373,7 @@ describe('FunnelBoard', () => {
 
   it('reorders the board and persists the whole new order', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     openOptions('Contacted')
@@ -391,7 +391,7 @@ describe('FunnelBoard', () => {
 
   it('cannot move the first stage earlier or the last one later', async () => {
     installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     openOptions('New')
@@ -402,7 +402,7 @@ describe('FunnelBoard', () => {
 
   it('deletes an empty stage and refuses a stage holding leads', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     // New holds two leads, so its delete is not offered at all.
@@ -421,7 +421,7 @@ describe('FunnelBoard', () => {
     installFakeApi({
       leads: [makeLead({ id: 4, stageId: 2, stageName: 'Contacted', isSpam: true })],
     })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
 
     const contacted = await screen.findByRole('region', { name: 'Contacted' })
     // The board shows none of them, so the column counts zero — but the stage
@@ -439,7 +439,7 @@ describe('FunnelBoard', () => {
       stages: [{ id: 1, name: 'New', position: 0, isTerminal: false, leadCount: 0 }],
       leads: [],
     })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
 
     const only = await screen.findByRole('region', { name: 'New' })
     expect(within(only).getByText('A funnel keeps its last stage.')).toBeDefined()
@@ -449,7 +449,7 @@ describe('FunnelBoard', () => {
 
   it('explains a rejected stage edit in the funnel’s own words', async () => {
     const api = installFakeApi({ leads: leads() })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
 
     // The stage is gone by the time the rename lands — the message has to be
@@ -469,7 +469,7 @@ describe('FunnelBoard', () => {
   it('says how many cards a column is not showing', async () => {
     const many = Array.from({ length: 30 }, (_, index) => makeLead({ id: index + 1 }))
     installFakeApi({ leads: many })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
 
     expect(await screen.findByText('Showing 25 of 30')).toBeDefined()
   })
@@ -477,7 +477,7 @@ describe('FunnelBoard', () => {
   it('hands back to the login screen when the session has expired', async () => {
     const onSessionExpired = vi.fn()
     installFakeApi({ leads: leads(), expired: true })
-    render(<FunnelBoard onSessionExpired={onSessionExpired} />)
+    render(<FunnelBoard canConfigure onSessionExpired={onSessionExpired} />)
 
     await waitFor(() => expect(onSessionExpired).toHaveBeenCalled())
   })

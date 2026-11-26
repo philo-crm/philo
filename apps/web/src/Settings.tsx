@@ -33,27 +33,48 @@ export const SETTINGS_SECTIONS = {
 
 export type SettingsSection = keyof typeof SETTINGS_SECTIONS
 
-const SETTINGS_NAV = Object.entries(SETTINGS_SECTIONS).map(([key, label]) => ({ to: `/settings/${key}`, label }))
+/** A person's own sections: everything else here configures the instance, which is an admin's — ADR-0012. */
+export const OWN_SETTINGS_SECTIONS: readonly SettingsSection[] = ['notifications', 'api-keys']
+
+function settingsNav(isAdmin: boolean) {
+  return Object.entries(SETTINGS_SECTIONS)
+    .filter(([key]) => isAdmin || OWN_SETTINGS_SECTIONS.includes(key as SettingsSection))
+    .map(([key, label]) => ({ to: `/settings/${key}`, label }))
+}
 
 export interface SettingsProps {
   section?: SettingsSection
+  /** An admin sees the server's settings; anyone else only their own sections. */
+  isAdmin: boolean
   onSessionExpired: () => void
 }
 
-export function Settings({ section = 'email', onSessionExpired }: SettingsProps) {
+export function Settings({ section, isAdmin, onSessionExpired }: SettingsProps) {
+  const showing = section ?? (isAdmin ? 'email' : 'notifications')
+  const allowed = isAdmin || OWN_SETTINGS_SECTIONS.includes(showing)
   return (
     <SettingsLayout
-      title="Server settings"
-      description="Shared by every funnel and everyone who signs in."
-      nav={SETTINGS_NAV}
-      current={`/settings/${section}`}
+      title={isAdmin ? 'Server settings' : 'Settings'}
+      description={isAdmin ? 'Shared by every funnel and everyone who signs in.' : 'Your own notifications and API keys.'}
+      nav={settingsNav(isAdmin)}
+      current={`/settings/${showing}`}
     >
-      {section === 'email' && <EmailSettings onSessionExpired={onSessionExpired} />}
-      {section === 'funnels' && <FunnelList onSessionExpired={onSessionExpired} />}
-      {section === 'notifications' && <PushNotifications onSessionExpired={onSessionExpired} />}
-      {section === 'api-keys' && <ApiKeys onSessionExpired={onSessionExpired} />}
-      {section === 'webhooks' && <Webhooks onSessionExpired={onSessionExpired} />}
+      {!allowed && <AdminOnly />}
+      {allowed && showing === 'email' && <EmailSettings onSessionExpired={onSessionExpired} />}
+      {allowed && showing === 'funnels' && <FunnelList onSessionExpired={onSessionExpired} />}
+      {showing === 'notifications' && <PushNotifications onSessionExpired={onSessionExpired} />}
+      {showing === 'api-keys' && <ApiKeys onSessionExpired={onSessionExpired} />}
+      {allowed && showing === 'webhooks' && <Webhooks onSessionExpired={onSessionExpired} />}
     </SettingsLayout>
+  )
+}
+
+/** What a deep link to an admin's screen shows anyone else. */
+export function AdminOnly() {
+  return (
+    <p className="notice" role="status">
+      Only an admin can change this. Ask an admin on your team.
+    </p>
   )
 }
 

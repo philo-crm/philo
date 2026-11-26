@@ -51,7 +51,7 @@ function switchTo(name: string, from: string) {
 describe('the funnel switcher', () => {
   it('names the selected funnel and lists them all with their lead counts', async () => {
     twoFunnels({ leads: [makeLead({ id: 1 })] })
-    render(<FunnelSwitcher />)
+    render(<FunnelSwitcher isAdmin />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Funnel: Default' }))
     const current = screen.getByRole('button', { name: /^Default/ })
@@ -63,7 +63,7 @@ describe('the funnel switcher', () => {
   it('still opens, with a retry, when the funnels fail to load', async () => {
     const api = installFakeApi()
     api.offline = /^\/api\/v1\/funnels$/
-    render(<FunnelSwitcher />)
+    render(<FunnelSwitcher isAdmin />)
 
     const trigger = await screen.findByRole('button', { name: 'Funnel' })
     await waitFor(() => expect((trigger as HTMLButtonElement).disabled).toBe(false))
@@ -79,8 +79,8 @@ describe('the funnel switcher', () => {
     const api = twoFunnels()
     render(
       <>
-        <FunnelSwitcher />
-        <FunnelBoard onSessionExpired={vi.fn()} />
+        <FunnelSwitcher isAdmin />
+        <FunnelBoard canConfigure onSessionExpired={vi.fn()} />
       </>,
     )
     await screen.findByRole('region', { name: 'New' })
@@ -102,12 +102,12 @@ describe('the funnel switcher', () => {
 
   it('remembers the funnel it was last showing', async () => {
     twoFunnels()
-    const first = render(<FunnelSwitcher />)
+    const first = render(<FunnelSwitcher isAdmin />)
     await screen.findByRole('button', { name: 'Funnel: Default' })
     switchTo('Owner-operators', 'Default')
     first.unmount()
 
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     expect(await screen.findByRole('region', { name: 'Lease review' })).toBeDefined()
     expect(window.localStorage.getItem('philo.funnel')).toBe('2')
   })
@@ -247,7 +247,7 @@ describe('funnel-scoped leads', () => {
     })
     render(
       <>
-        <FunnelSwitcher />
+        <FunnelSwitcher isAdmin />
         <LeadList isSpam={false} onSessionExpired={vi.fn()} />
       </>,
     )

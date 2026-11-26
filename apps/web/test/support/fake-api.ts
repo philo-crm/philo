@@ -93,7 +93,7 @@ export interface FakeApi {
   }[]
 }
 
-export const TEST_USER: User = { id: 7, email: 'owner@example.com', name: 'Owner' }
+export const TEST_USER: User = { id: 7, email: 'owner@example.com', name: 'Owner', role: 'admin' }
 
 /** What the server stores. `smtpPasswordSet` is derived on the way out, never held. */
 export type StoredEmailSettings = Omit<EmailSettings, 'smtpPasswordSet'> & { smtpPassword: string }
