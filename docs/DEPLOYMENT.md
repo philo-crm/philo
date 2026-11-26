@@ -85,7 +85,7 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_MCP_URL` | `<public base url>/mcp` | Where the MCP endpoint is reachable. Set it only when the MCP app runs apart. |
 | `PHILO_OIDC_ISSUER` | unset | An external OIDC provider to use instead of the built-in IdP. See [External identity provider](#external-identity-provider). |
 | `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens are recorded as the person rather than as an agent. |
-| `PHILO_OIDC_AUDIENCE` | unset | The `aud` the provider's access tokens must carry. Set it whenever the provider issues one. |
+| `PHILO_OIDC_AUDIENCE` | unset | Comma-separated `aud` values the provider's access tokens may carry; a token naming any one of them is accepted. Set it whenever the provider issues one. |
 | `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. |
 
 ### `PHILO_PUBLIC_BASE_URL` earns its keep
@@ -135,6 +135,13 @@ discovery documents answer 404.
    the audience its access tokens carry. The provider must issue JWT access
    tokens that include `sub`, `email`, `email_verified` and `azp` (or
    `client_id`).
+
+   If the provider gives the API and the MCP endpoint separate resource
+   identifiers (RFC 8707, as the MCP authorization spec asks), list both,
+   for example
+   `PHILO_OIDC_AUDIENCE=https://crm.example.com/api,https://crm.example.com/mcp`.
+   An agent's token names the MCP endpoint, and the MCP app forwards it to the
+   API, so the API must accept either.
 3. The first operator token on an empty instance, with a verified email,
    creates the account and binds it to that token's subject. From then on the
    subject is the operator — changing the email at the provider changes

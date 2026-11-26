@@ -28,8 +28,13 @@ export interface Config {
 export interface ExternalIdpConfig {
   /** The issuer, exactly as its tokens' `iss` claim states it. */
   issuer: string
-  /** Required `aud` on access tokens, when the IdP sets one. */
-  audience: string | undefined
+  /**
+   * The `aud` values access tokens may carry, when the IdP sets one: a token
+   * naming any of them is accepted. A list because one resource can have
+   * several identifiers (the API and the MCP endpoint, RFC 8707), and the MCP
+   * app forwards its token to the API.
+   */
+  audience: string[] | undefined
   /** The PWA's client id at that IdP: tokens it holds are the person themself. */
   clientId: string
   /**
@@ -91,7 +96,10 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
   // The issuer is compared to `iss` byte for byte, so it is kept as written
   // apart from the validation.
   parseUrl('PHILO_OIDC_ISSUER', issuer)
-  const audience = env['PHILO_OIDC_AUDIENCE']
+  const audience = (env['PHILO_OIDC_AUDIENCE'] ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
   const agentClientIds = (env['PHILO_OIDC_AGENT_CLIENT_IDS'] ?? '')
     .split(',')
     .map((id) => id.trim())
@@ -99,7 +107,7 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
   return {
     issuer,
     clientId,
-    audience: audience === undefined || audience === '' ? undefined : audience,
+    audience: audience.length === 0 ? undefined : audience,
     agentClientIds,
   }
 }

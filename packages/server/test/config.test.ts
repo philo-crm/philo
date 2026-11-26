@@ -32,7 +32,7 @@ describe('loadConfig', () => {
       mcpUrl: 'https://agents.example.com/mcp',
       externalIdp: {
         issuer: 'https://idp.example.com/realms/philo',
-        audience: 'philo-api',
+        audience: ['philo-api'],
         clientId: 'philo-web',
         // Trimmed, blanks dropped, and the operator's own client never doubles as an agent.
         agentClientIds: ['connector-a', 'connector-b'],
@@ -49,6 +49,17 @@ describe('loadConfig', () => {
 
   it('refuses an external issuer without the client id that marks the operator', () => {
     expect(() => loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com' })).toThrow(/PHILO_OIDC_CLIENT_ID/)
+  })
+
+  it.each([
+    [' https://crm.example.com/api, ,https://crm.example.com/mcp ,', ['https://crm.example.com/api', 'https://crm.example.com/mcp']],
+    ['philo-api', ['philo-api']],
+    // Nothing left after the blanks go means no audience check, exactly as unset.
+    [' , ', undefined],
+    ['', undefined],
+  ])('reads PHILO_OIDC_AUDIENCE=%j as a list, dropping blanks', (raw, expected) => {
+    const config = loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x', PHILO_OIDC_AUDIENCE: raw })
+    expect(config.externalIdp?.audience).toEqual(expected)
   })
 
   it('refuses an issuer that is not a URL', () => {
