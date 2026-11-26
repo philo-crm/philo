@@ -161,8 +161,10 @@ A PR is mergeable only when, **on its current tip commit**:
    `ergofobe-bot`, with no unresolved Blocking findings.
 
 Bugbot reviews every non-draft PR from a branch in this repo, and every
-non-draft fork PR whose author is an owner, member or collaborator, and
-re-reviews on each push; a pass applies only to the SHA it names.
+non-draft fork PR whose author has write access to this repo (looked up through
+the collaborator permission API, not `author_association`, which shows a private
+org member as `CONTRIBUTOR`), and re-reviews on each push; a pass applies only
+to the SHA it names.
 `REQUEST_CHANGES` means fix the Blocking items and push. A Blocking finding you
 believe is wrong gets a reply on its thread with the concrete reason; escalate
 to the user rather than merging over it. Non-blocking findings follow the

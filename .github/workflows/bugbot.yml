@@ -8,11 +8,15 @@ name: Bugbot
 # must come from main. On pull_request a branch could edit it to approve itself.
 # PR code is only read here. Nothing from the PR head is installed, built or run.
 #
-# Who gets reviewed (the condition is on the preflight job below):
+# Who gets reviewed (decided by the trust step on the preflight job below):
 #   - a PR from a branch in this repository: always;
-#   - a PR from a fork whose author is an OWNER, MEMBER or COLLABORATOR (author_association): always;
+#   - a PR from a fork whose author has write access to this repository (admin, maintain or
+#     write, read from the collaborator permission API): always;
 #   - any other fork PR: only while it carries the `bugbot` label, which only someone with triage
 #     or write access can add.
+# The author's access is looked up rather than read from author_association in the event: a
+# member whose organization membership is private shows there as CONTRIBUTOR, so that check
+# skipped the maintainers' own fork PRs.
 # pull_request_target hands the run the repository's secrets and the model's quota, and the model
 # reads the PR's title, body, commits and code, which makes them a prompt-injection surface. So an
 # unknown author's PR is reviewed only on a maintainer's say-so. The label stays on the PR, so every
@@ -40,20 +44,56 @@ jobs:
   # if:, so this job checks them and the review below skips cleanly when they are not set, instead
   # of failing on every PR. It keys on the secrets, not on the repository name, so a copy that
   # configures them still gets reviews. It checks out nothing, has no permissions, and prints only
-  # the secret names.
+  # the secret names, the PR author and the trust decision.
   preflight:
     if: >-
       github.event.pull_request.draft == false
       && (github.event.action != 'labeled' || github.event.label.name == 'bugbot')
-      && (github.event.pull_request.head.repo.full_name == github.repository
-          || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
-          || contains(github.event.pull_request.labels.*.name, 'bugbot'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # The permission lookup below needs only Metadata read, which every GITHUB_TOKEN has, so the
+    # job needs no permissions of its own.
     permissions: {}
     outputs:
-      configured: ${{ steps.check.outputs.configured }}
+      review: ${{ steps.trust.outputs.trusted == 'true' && steps.check.outputs.configured == 'true' }}
     steps:
+      # Event fields reach the script only through env, never inside it: a login, label or repo
+      # name spliced into the script body would be a script injection.
+      - id: trust
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted=false
+          if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" = "$REPO" ]; then
+            trusted=true
+            echo "Trusted: the PR is from a branch in $REPO."
+          elif jq -e 'index("bugbot") != null' <<<"$LABELS" >/dev/null; then
+            trusted=true
+            echo "Trusted: the PR carries the bugbot label."
+          else
+            # A 404 (not a collaborator) or any other error leaves the PR untrusted: never fail open.
+            base="" role=""
+            if response=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" 2>/dev/null); then
+              base=$(jq -r '.permission // ""' <<<"$response" 2>/dev/null) || base=""
+              role=$(jq -r '.role_name // ""' <<<"$response" 2>/dev/null) || role=""
+            fi
+            # permission maps maintain to write; role_name keeps it (and names custom roles).
+            case "$base" in admin | write) trusted=true ;; esac
+            case "$role" in admin | maintain | write) trusted=true ;; esac
+            if [ "$trusted" = true ]; then
+              echo "Trusted: $AUTHOR has ${role:-$base} access to $REPO."
+            fi
+          fi
+          if [ "$trusted" != true ]; then
+            echo "::notice::Bugbot skipped: $AUTHOR has no write access to $REPO (or the lookup failed). A maintainer can add the bugbot label to have this PR reviewed."
+          fi
+          echo "trusted=$trusted" >>"$GITHUB_OUTPUT"
       - id: check
         env:
           HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
@@ -74,7 +114,7 @@ jobs:
   review:
     needs: preflight
     # Who is reviewed is decided once, on preflight: a skipped preflight skips this job too.
-    if: needs.preflight.outputs.configured == 'true'
+    if: needs.preflight.outputs.review == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # GITHUB_TOKEN is read-only. The only write is the review, posted with BUGBOT_GH_TOKEN.
