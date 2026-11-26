@@ -5,6 +5,7 @@ import {
   CALLBACK_PATH,
   completeSignIn,
   fetchCurrentUser,
+  finishSignOut,
   loadAuth,
   signInErrorMessage,
   signOut,
@@ -45,6 +46,7 @@ async function finishCallback(auth: Auth): Promise<Screen> {
 }
 
 async function boot(): Promise<Screen> {
+  finishSignOut()
   try {
     const auth = await loadAuth()
     if (window.location.pathname === CALLBACK_PATH) return await finishCallback(auth)

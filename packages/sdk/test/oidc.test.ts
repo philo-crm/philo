@@ -4,6 +4,7 @@ import {
   TokenSession,
   createAuthorizationRequest,
   discover,
+  endSessionUrl,
   exchangeCode,
   pkceChallenge,
   refreshTokens,
@@ -300,6 +301,111 @@ describe('authorization response issuer (RFC 9207)', () => {
       fetch: async () => json({ access_token: 'at' }),
     })
     await expect(failure).rejects.toMatchObject({ code: 'issuer_mismatch' })
+  })
+})
+
+describe('TokenSession id token', () => {
+  it('exposes the newest id token, keeping it through a refresh that sends none', async () => {
+    const fetch = vi.fn(async () => json({ access_token: 'at2', refresh_token: 'rt2', expires_in: 3600 }))
+    const session = new TokenSession({ metadata, clientId: 'c', store: memoryStore(), fetch, now: () => 0 })
+    expect(session.idToken).toBeUndefined()
+    session.set({ accessToken: 'at1', refreshToken: 'rt1', idToken: 'id1', scope: undefined, expiresAt: 0 })
+    expect(session.idToken).toBe('id1')
+    await session.accessToken()
+    expect(session.idToken).toBe('id1')
+  })
+
+  it('takes the id token a refresh renews', async () => {
+    const fetch = vi.fn(async () => json({ access_token: 'at2', refresh_token: 'rt2', id_token: 'id2', expires_in: 3600 }))
+    const session = new TokenSession({ metadata, clientId: 'c', store: memoryStore(), fetch, now: () => 0 })
+    session.set({ accessToken: 'at1', refreshToken: 'rt1', idToken: 'id1', scope: undefined, expiresAt: 0 })
+    await session.accessToken()
+    expect(session.idToken).toBe('id2')
+  })
+
+  it('drops the id token when it refreshes with a token another tab stored', async () => {
+    // Another tab signed out and back in, perhaps as someone else: the stored
+    // grant is not the one this id token came with, so it must not hint.
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) =>
+      json({ access_token: 'at2', refresh_token: 'rt3', expires_in: 3600 }),
+    )
+    const store = memoryStore()
+    const session = new TokenSession({ metadata, clientId: 'c', store, fetch, now: () => 0 })
+    session.set({ accessToken: 'at1', refreshToken: 'rt1', idToken: 'id1', scope: undefined, expiresAt: 0 })
+    store.value = 'rt2'
+    await session.accessToken()
+    expect(String(fetch.mock.calls[0]?.[1]?.body)).toContain('refresh_token=rt2')
+    expect(session.idToken).toBeUndefined()
+  })
+
+  it('takes the id token a refresh of an adopted grant returns', async () => {
+    const fetch = vi.fn(async () => json({ access_token: 'at2', refresh_token: 'rt3', id_token: 'id2', expires_in: 3600 }))
+    const store = memoryStore()
+    const session = new TokenSession({ metadata, clientId: 'c', store, fetch, now: () => 0 })
+    session.set({ accessToken: 'at1', refreshToken: 'rt1', idToken: 'id1', scope: undefined, expiresAt: 0 })
+    store.value = 'rt2'
+    await session.accessToken()
+    expect(session.idToken).toBe('id2')
+  })
+
+  it('keeps the id token when saving the rotated token failed and memory is spent', async () => {
+    const stuck: RefreshTokenStore & { value: string | undefined } = { value: 'rt1', load: () => 'rt1', save: () => {} }
+    const idp = rotatingIdp('rt1')
+    let now = 0
+    const session = new TokenSession({ metadata, clientId: 'c', store: stuck, fetch: idp.fetch, lock: memoryLock(), now: () => now })
+    session.set({ accessToken: 'at1', refreshToken: 'rt1', idToken: 'id1', scope: undefined, expiresAt: 0 })
+    await session.accessToken()
+    now = 4_000_000_000
+    await session.accessToken()
+    expect(idp.presented).toEqual(['rt1', 'rt2'])
+    expect(session.idToken).toBe('id1')
+    // Still failing: the store keeps rt1, spent two refreshes ago, and memory's grant is still this session's own.
+    now = 8_000_000_000
+    await session.accessToken()
+    expect(idp.presented).toEqual(['rt1', 'rt2', 'rt3'])
+    expect(session.idToken).toBe('id1')
+  })
+
+  it('forgets the id token on sign-out', async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 200 }))
+    const session = new TokenSession({ metadata, clientId: 'c', store: memoryStore(), fetch })
+    session.set({ accessToken: 'at', refreshToken: 'rt', idToken: 'id', scope: undefined, expiresAt: 0 })
+    await session.signOut()
+    expect(session.idToken).toBeUndefined()
+  })
+})
+
+describe('endSessionUrl', () => {
+  const withEndSession: OidcMetadata = { ...metadata, end_session_endpoint: 'https://idp.example.com/logout?tenant=a' }
+  const base = {
+    metadata: withEndSession,
+    clientId: 'c',
+    postLogoutRedirectUri: 'https://app.example.com/',
+    state: 'st',
+  }
+
+  it('sends the id token as a hint, with the return address and state', () => {
+    const url = new URL(endSessionUrl({ ...base, idToken: 'id.token.x' }) ?? '')
+    expect(`${url.origin}${url.pathname}`).toBe('https://idp.example.com/logout')
+    // The endpoint's own query survives.
+    expect(url.searchParams.get('tenant')).toBe('a')
+    expect(url.searchParams.get('id_token_hint')).toBe('id.token.x')
+    // RP-Initiated Logout §2 lets both travel; the provider checks they agree.
+    expect(url.searchParams.get('client_id')).toBe('c')
+    expect(url.searchParams.get('post_logout_redirect_uri')).toBe('https://app.example.com/')
+    expect(url.searchParams.get('state')).toBe('st')
+  })
+
+  it('names the client instead when there is no id token to hint with', () => {
+    const url = new URL(endSessionUrl({ ...base, idToken: undefined }) ?? '')
+    expect(url.searchParams.has('id_token_hint')).toBe(false)
+    expect(url.searchParams.get('client_id')).toBe('c')
+    expect(url.searchParams.get('post_logout_redirect_uri')).toBe('https://app.example.com/')
+    expect(url.searchParams.get('state')).toBe('st')
+  })
+
+  it('answers undefined when the provider names no end-session endpoint', () => {
+    expect(endSessionUrl({ ...base, metadata, idToken: 'id' })).toBeUndefined()
   })
 })
 
