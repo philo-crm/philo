@@ -29,6 +29,13 @@ import { CALLBACK_PATH, type Auth } from './auth.ts'
  * refusal until the next sign-in. With an IdP that issues opaque access tokens
  * and the id_token gone after a reload, that means `null` until the person
  * signs in again; the alternative would be a token for someone unknown.
+ *
+ * The session's person is worked out afresh on every call, after its access
+ * token is refreshed: a refresh that adopts a grant another tab stored drops
+ * the sign-in's id_token (TokenSession's own-grant rule), since that grant may
+ * be someone else's, and the person is then whoever the new access token
+ * names. Cached tokens and refusals are kept per person, so a token fetched
+ * for one is never handed to another.
  * `prompt` is still only what the caller asked for: `id_token_hint` makes
  * `prompt=none` safer, but does not imply it.
  *
@@ -110,7 +117,37 @@ export function getExtraToken(request: ExtraTokenRequest): Promise<string | null
   if (current === undefined || isBuiltInIdp(current.auth) || !current.auth.session.hasCredentials) {
     return Promise.resolve(null)
   }
-  const key = JSON.stringify([request.resource, request.scope])
+  return lookup(current, request)
+}
+
+interface Person {
+  subject: string
+  /** The sign-in's id_token, to hint with, when the session still holds one. */
+  idToken: string | undefined
+}
+
+/**
+ * Who the session is for right now, or undefined when that is unknown or the
+ * session could not be refreshed. The refresh comes first, and the id_token is
+ * read after it: one read before could belong to a grant the refresh replaced.
+ */
+async function signedInPerson(auth: Auth): Promise<Person | undefined> {
+  let accessToken: string | undefined
+  try {
+    accessToken = await auth.session.accessToken()
+  } catch {
+    return undefined // A network failure refreshing the session; ask again later.
+  }
+  const idToken = auth.session.idToken
+  const subject = jwtSubject(idToken) ?? jwtSubject(accessToken)
+  return subject === undefined ? undefined : { subject, idToken }
+}
+
+async function lookup(current: State, request: ExtraTokenRequest): Promise<string | null> {
+  // With no person to compare an answer with, no answer could be handed out.
+  const person = await signedInPerson(current.auth)
+  if (person === undefined || current.ended.signal.aborted) return null
+  const key = JSON.stringify([person.subject, request.resource, request.scope])
   const cached = current.cache.get(key)
   if (cached !== undefined && cached.expiresAt - EXPIRY_MARGIN_MS > Date.now()) {
     return Promise.resolve(cached.accessToken)
@@ -118,7 +155,7 @@ export function getExtraToken(request: ExtraTokenRequest): Promise<string | null
   if (current.refused.has(key)) return Promise.resolve(null)
   let pending = current.inFlight.get(key)
   if (pending === undefined) {
-    pending = ask(current, key, request).finally(() => current.inFlight.delete(key))
+    pending = ask(current, key, request, person).finally(() => current.inFlight.delete(key))
     current.inFlight.set(key, pending)
   }
   return pending
@@ -146,22 +183,8 @@ function withOpenid(scope: string): string {
   return values.includes('openid') ? scope : ['openid', ...values].join(' ')
 }
 
-async function ask(current: State, key: string, request: ExtraTokenRequest): Promise<string | null> {
+async function ask(current: State, key: string, request: ExtraTokenRequest, person: Person): Promise<string | null> {
   const { auth } = current
-  const idTokenHint = auth.session.idToken
-  let subject: string | undefined
-  try {
-    subject = jwtSubject(idTokenHint) ?? jwtSubject(await auth.session.accessToken())
-  } catch {
-    return null // A network failure refreshing the session; ask again later.
-  }
-  if (current.ended.signal.aborted) return null
-  if (subject === undefined) {
-    // Nothing to compare an answer with, so no answer could be handed out.
-    current.refused.add(key)
-    return null
-  }
-
   let authorization: PendingAuthorization
   try {
     authorization = await createAuthorizationRequest({
@@ -171,7 +194,7 @@ async function ask(current: State, key: string, request: ExtraTokenRequest): Pro
       scope: withOpenid(request.scope),
       resource: [request.resource],
       prompt: request.prompt,
-      idTokenHint,
+      idTokenHint: person.idToken,
     })
   } catch {
     return null
@@ -193,7 +216,7 @@ async function ask(current: State, key: string, request: ExtraTokenRequest): Pro
     })
     if (current.ended.signal.aborted) return null
     // Before the cache: a token for someone else, or someone unknown, is a refusal.
-    if ((jwtSubject(tokens.idToken) ?? jwtSubject(tokens.accessToken)) !== subject) {
+    if ((jwtSubject(tokens.idToken) ?? jwtSubject(tokens.accessToken)) !== person.subject) {
       current.refused.add(key)
       return null
     }

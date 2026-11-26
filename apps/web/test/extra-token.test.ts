@@ -433,6 +433,82 @@ describe('getExtraToken binds the token to the signed-in person', () => {
   })
 })
 
+describe('getExtraToken after a refresh adopts another tab’s grant', () => {
+  const BOB = 'bob-subject'
+
+  /**
+   * A session signed in as ALICE, with her id_token, whose shared store
+   * another tab then fills with its own sign-in; `expire` makes the next
+   * access-token read refresh, which spends that other grant (BOB's).
+   */
+  function sharedTabAuth(): { auth: Auth; expire: () => void } {
+    let stored: string | undefined
+    let clock = Date.now()
+    const session = new TokenSession({
+      metadata,
+      clientId: 'philo-pwa',
+      store: { load: () => stored, save: (token) => void (stored = token) },
+      now: () => clock,
+    })
+    session.set({
+      accessToken: jwt({ sub: ALICE }),
+      refreshToken: 'alice-refresh',
+      idToken: jwt({ sub: ALICE }),
+      scope: undefined,
+      expiresAt: clock + 3_600_000,
+    })
+    const auth: Auth = {
+      config: { issuer: ISSUER, clientId: 'philo-pwa', scope: 'openid email', resource: [] },
+      metadata,
+      session,
+    }
+    return {
+      auth,
+      expire: () => {
+        stored = 'bob-refresh'
+        clock += 3_600_000
+      },
+    }
+  }
+
+  /** Refreshes answer as BOB with no id_token; every extra answer is ALICE's. */
+  function installEndpoint() {
+    return installTokenEndpoint((call) =>
+      call.body.get('grant_type') === 'refresh_token'
+        ? Response.json({ access_token: jwt({ sub: BOB }), refresh_token: 'bob-refresh-2', expires_in: 3600 })
+        : Response.json({ access_token: 'opaque-extra', id_token: jwt({ sub: ALICE, nonce: lastNonce }), expires_in: 300 }),
+    )
+  }
+
+  it('neither hints with nor matches the old id_token once the session is someone else’s', async () => {
+    const { auth, expire } = sharedTabAuth()
+    configureExtraTokens(auth)
+    const calls = installEndpoint()
+    expire()
+    const token = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    const frame = await answerNext()
+    // ALICE's answer is not BOB's, and BOB's session holds no id_token of ALICE's to hint with.
+    expect(await token).toBeNull()
+    expect(auth.session.idToken).toBeUndefined()
+    expect(new URL(frame.src).searchParams.has('id_token_hint')).toBe(false)
+    expect(calls.map((call) => call.body.get('grant_type'))).toEqual(['refresh_token', 'authorization_code'])
+  })
+
+  it('does not hand out a token cached for the person signed in before', async () => {
+    const { auth, expire } = sharedTabAuth()
+    configureExtraTokens(auth)
+    installEndpoint()
+    const first = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    await answerNext()
+    expect(await first).toBe('opaque-extra')
+
+    expire()
+    const second = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    await answerNext()
+    expect(await second).toBeNull()
+  })
+})
+
 function fakeParent() {
   return { postMessage: vi.fn() }
 }

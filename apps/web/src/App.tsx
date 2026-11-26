@@ -133,6 +133,9 @@ export function App() {
 
   const handleSignOut = useCallback(async () => {
     if (auth === undefined) return
+    // First, not on leaving the shell: sign-out may send the browser on to the
+    // provider's end-session page, and nothing should be handed out meanwhile.
+    configureExtraTokens(undefined)
     await signOut(auth)
     setScreen({ kind: 'signed-out', auth })
   }, [auth])
