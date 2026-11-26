@@ -55,8 +55,10 @@ A headless server, an SDK that tracks it, and two clients of the SDK —
 ```
 
 - **The server is headless.** It serves the API, form intake, and the IdP —
-  whose sign-in, consent and first-boot setup pages are the only HTML it
-  renders. It serves no UI files.
+  whose sign-in, consent and first-boot setup pages are, with the static email
+  template preview frame (`/api/email-preview`, which holds no data and needs
+  its own Content-Security-Policy), the only HTML it renders. It serves no UI
+  files.
 - **The SDK is the only way a client reaches the API.** A response shape and
   the SDK type that mirrors it change in the same PR.
 - **The PWA and MCP are clients on equal footing** with any third-party
@@ -149,7 +151,10 @@ Full rationale for the generality decision:
   [ADR-0011](adr/0011-webhook-auth-header.md)), `actor`, `created_at`,
   and the last delivery's `last_attempt_at`, `last_status`, `last_error`
   ([ADR-0010](adr/0010-change-feed-and-webhooks.md)).
-- **`push_subscriptions`**, **`users`**, **`api_keys`**, **`oauth_clients`**,
+- **`users`** — `id`, `email`, `password_hash`, `name`, `external_subject`,
+  `role` (`user` | `admin`; null is no access), `role_confirmed_at`,
+  `disabled_at` ([ADR-0012](adr/0012-several-users-with-roles.md)).
+- **`push_subscriptions`**, **`api_keys`**, **`oauth_clients`**,
   **`authorization_codes`**, **`access_tokens`**, **`refresh_tokens`**,
   **`settings`** — supporting tables per the sections below. (`sessions` is a
   leftover of the cookie era and unused — ADR-0006.)
@@ -161,15 +166,17 @@ Full rationale for the generality decision:
   ever needs one-person-many-deals, that is the moment to introduce it.
 - Current stage is a mutable `current_stage_id` column (fast queries); stage
   history comes from `lead_events` (cheap history, no event sourcing).
-- **No `assigned_to`** on leads for now (1–2 users per instance).
+- **No `assigned_to`** on leads: every user works every lead in every funnel
+  ([ADR-0012](adr/0012-several-users-with-roles.md)); a small team that trusts
+  each other with the whole funnel has no use for an owner yet.
 - Duplicate handling is a short intake dedupe window only — a reapplicant
   months later is a **new lead**, never auto-merged. A repeat inside the
   window whose lead has since been deleted is filed again.
 
 ### Erasure
 
-`DELETE /api/v1/leads/{id}` is a hard delete, open to any credential
-(ADR-0007). `lead_events`, `lead_attachments` and `lead_attachment_blobs`
+`DELETE /api/v1/leads/{id}` is a hard delete, open to any user's credential
+(ADR-0007, ADR-0012) — an erasure request does not wait for an admin. `lead_events`, `lead_attachments` and `lead_attachment_blobs`
 cascade from `leads`, and `leads_fts_delete` drops the search row. Nothing is
 written in its place — a timeline entry or tombstone that named the person
 would keep the thing that was asked to go; the server log gets the id and the
@@ -261,7 +268,8 @@ Full rationale: [ADR-0004](adr/0004-push-best-effort-email-guaranteed.md).
   iOS has no PWA push at all (DMA) — a docs footnote for self-hosters.
   The PWA ships an install-helper screen (detect iOS Safari, walk through
   Add to Home Screen, request permission from a tap).
-- Subscriptions stored in `push_subscriptions`; pruned on 404/410.
+- Subscriptions stored in `push_subscriptions`; pruned on 404/410. A new lead
+  goes to every subscription of an account that has access (ADR-0012).
 - **In-app fallback.** The push service is the browser vendor's choice, and
   some browsers grant notification permission with none to subscribe to
   (Brave with Google's push messaging off, de-Googled Chromium). When
@@ -286,6 +294,14 @@ Full rationale: [ADR-0010](adr/0010-change-feed-and-webhooks.md).
   one event after the commit: `lead.created`, `lead.updated`,
   `lead.stage_changed` (with the stage it left), `lead.deleted` (the id
   only — see Erasure) and `funnel.changed`. Quarantined leads publish nothing.
+  An entrypoint that embeds the server can listen in process too:
+  `bootServer` returns the feed as `changes`, listen-only, and `ChangeEvent`
+  is exported from `@philo/server`.
+  Every event names its `actor` in the timeline's words — `user:<id>`,
+  `api_key:<id>`, `oauth:<client_id>`, or `form:<form_key>` for an intake
+  submission; a lead promoted out of spam names whoever promoted it. A receiver
+  that writes back uses it to skip its own changes, and an integration to tell
+  a person from an agent.
 - **The PWA stays current.** `GET /api/v1/events` (optional `?funnel=`) streams
   the feed as SSE, read with `fetch` like `/push/live`. The board, the lead list
   and an open lead refetch what an event touches.
@@ -320,8 +336,8 @@ Full rationale: [ADR-0010](adr/0010-change-feed-and-webhooks.md).
 - **Instance-wide vs funnel-scoped** ([ADR-0009](adr/0009-multiple-funnels.md)).
   The SMTP server and credentials, the From address and the business name are
   the instance's. A funnel may override the From display name, the reply-to,
-  and who receives the new-lead notification (default: everyone who can sign
-  in).
+  and who receives the new-lead notification (default: every active admin,
+  ADR-0012).
 - **Triggers: lead creation only** (notify owner + acknowledge submitter).
   The `trigger` enum on `email_templates` is the designed-in door for
   stage-transition emails (e.g. a templated rejection) as a fast-follow.
@@ -348,6 +364,19 @@ authority — the PWA's token, an API key, a connector's grant alike — and the
 timeline records which credential acted. Details in
 [ADR-0006](adr/0006-headless-server-sdk-clients.md) and
 [ADR-0007](adr/0007-agents-act-as-their-user.md).
+
+**Roles** ([ADR-0012](adr/0012-several-users-with-roles.md)). Every account is
+a `user` or an `admin`, and every credential acts with its account's role, read
+on every request. A user works leads (deleting included), reads the funnels and
+stages, and holds their own API keys and push devices. Everything else under
+`/api/v1` needs an admin: funnel and stage changes, all of `/settings` and all
+of `/webhooks`, reads included. The rule is deny by default — `USER_API_ROUTES`
+in `app.ts` lists what a user may call, a route nobody listed is admin-only,
+and a test walks every registered route. A refusal is `403
+{"error":"admin_required"}`. One predicate, *has access* (`auth/access.ts`),
+decides whether an account may act at all — active and holding a role — for
+every credential and for push and email recipients. The first-boot account is
+an admin.
 
 1. **UI: OIDC sign-in.** The PWA is a public OIDC client of the built-in IdP:
    authorization code + PKCE, an operator-scoped access token in memory and a
@@ -378,6 +407,9 @@ Streamable HTTP at `/mcp`, served by `apps/mcp` — a client of the API like the
 PWA, calling it through `@philo/sdk` with the caller's own token. Auth: an API
 key bearer, or an OAuth access token for a connector client — the `401` names
 the protected-resource metadata that leads one to the authorization server.
+`tools/list` shows only the tools the caller's role can use: a user's token
+gets no funnel or stage changes, email-template or webhook tools
+(`ADMIN_TOOLS` in `tools.ts`); the API still refuses each call on its own.
 
 MVP tool set:
 
@@ -414,7 +446,7 @@ an agent-oriented tour of every surface (a convention carried from Ollie).
 | Passkeys / 2FA | argon2id + rate limiting + single-tenant blast radius is the MVP line. |
 | Delivery webhooks (bounce/open tracking) | Lost by choosing SMTP-generic; revisit only if deliverability becomes a real problem. |
 | Agent automation workflows (triage, shadow review) | Ollie's are repo-proven; adopt after there's code to review. |
-| `assigned_to` / ownership | 1–2 users per instance; add when a real second user needs it. |
+| `assigned_to` / ownership | Leads stay unowned (ADR-0012); add an owner when a team needs one, as a new ADR. |
 | Logo / visual branding | Business name only in MVP; revisit once attachments ([ADR-0008](adr/0008-lead-details-and-attachments.md)) have built the upload machinery. |
 
 ## Open questions

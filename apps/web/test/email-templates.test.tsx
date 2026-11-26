@@ -93,14 +93,58 @@ describe('EmailTemplates', () => {
     click(ack, 'Preview')
 
     expect(await within(ack).findByText('Draft for Sample Applicant')).toBeDefined()
-    const frame = within(ack).getByTitle('Applicant acknowledgment preview')
-    expect(frame.getAttribute('srcdoc')).toBe('<p>Hi Sample Applicant</p>')
-    // Sandboxed with no capabilities: operator HTML must not run against this origin.
-    expect(frame.getAttribute('sandbox')).toBe('')
+    const frame = within(ack).getByTitle('Applicant acknowledgment preview') as HTMLIFrameElement
+    expect(await renderedInto(frame)).toBe('<p>Hi Sample Applicant</p>')
     expect(within(ack).getByText('Rendered against a sample lead.')).toBeDefined()
     expect(api.emailTemplates.find((row) => row.trigger === 'new_lead_ack')?.subject).toBe(
       'Thanks for getting in touch',
     )
+  })
+
+  it('previews in the server’s frame page, which keeps a template’s styles and images', async () => {
+    // A srcdoc frame would inherit the PWA's CSP (style-src 'self'; img-src
+    // 'self') and drop all three. The frame page has a policy of its own.
+    installFakeApi()
+    renderTemplates()
+    const ack = await ackEditor()
+    const styled =
+      '<style>p { color: #c00 }</style><p style="font-weight: bold">Hi</p><img src="https://img.example.com/logo.png">'
+
+    type(ack, 'Body (HTML)', styled)
+    click(ack, 'Preview')
+
+    const frame = (await within(ack).findByTitle('Applicant acknowledgment preview')) as HTMLIFrameElement
+    expect(frame.getAttribute('src')).toBe('/api/email-preview')
+    expect(frame.hasAttribute('srcdoc')).toBe(false)
+    // Its own script runs, in an opaque origin; the template's never does
+    // (the page renders it in a sandbox="" frame of its own).
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(await renderedInto(frame)).toBe(styled)
+  })
+
+  it('sends the preview only to its own frame, and only once that frame asks', async () => {
+    installFakeApi()
+    renderTemplates()
+    const ack = await ackEditor()
+    click(ack, 'Preview')
+    const frame = (await within(ack).findByTitle('Applicant acknowledgment preview')) as HTMLIFrameElement
+    const post = vi.spyOn(frame.contentWindow!, 'postMessage')
+
+    // Another window announcing itself gets nothing.
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'philo:email-preview-ready' }, source: window }))
+    expect(post).not.toHaveBeenCalled()
+
+    window.dispatchEvent(
+      new MessageEvent('message', { data: { type: 'philo:email-preview-ready' }, source: frame.contentWindow }),
+    )
+    expect(post).toHaveBeenCalledTimes(1)
+
+    // A new preview reaches the frame on screen, whichever it is.
+    type(ack, 'Body (HTML)', '<p>Again</p>')
+    click(ack, 'Preview')
+    await within(ack).findByText('Rendered against a sample lead.')
+    const current = within(ack).getByTitle('Applicant acknowledgment preview') as HTMLIFrameElement
+    await waitFor(async () => expect(await renderedInto(current)).toBe('<p>Again</p>'))
   })
 
   it('previews against a real lead when one is named', async () => {
@@ -174,4 +218,21 @@ describe('EmailTemplates', () => {
 function lastPreviewBody(api: FakeApi): Record<string, unknown> {
   const call = api.calls.findLast((entry) => entry.path.endsWith('/preview'))
   return (call?.body ?? {}) as Record<string, unknown>
+}
+
+/**
+ * What the preview frame is handed once its page says it is ready — the page
+ * itself is the server's (packages/server/src/email/preview-frame.ts).
+ */
+async function renderedInto(frame: HTMLIFrameElement): Promise<string> {
+  const post = vi.spyOn(frame.contentWindow!, 'postMessage')
+  window.dispatchEvent(
+    new MessageEvent('message', { data: { type: 'philo:email-preview-ready' }, source: frame.contentWindow }),
+  )
+  await waitFor(() => expect(post).toHaveBeenCalled())
+  const [message, target] = post.mock.lastCall!
+  // The page is an opaque origin (sandboxed), which only '*' can address.
+  expect(target).toBe('*')
+  expect(message).toMatchObject({ type: 'philo:email-preview' })
+  return (message as { html: string }).html
 }

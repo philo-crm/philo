@@ -8,7 +8,7 @@ import type { ExternalIdp } from '../../src/auth/external-idp.ts'
 import { hashPassword } from '../../src/auth/password.ts'
 import type { AuthTuning } from '../../src/auth/routes.ts'
 import { openDatabase, type Db } from '../../src/db/index.ts'
-import { intakeForms } from '../../src/db/schema.ts'
+import { intakeForms, users } from '../../src/db/schema.ts'
 import {
   writeEmailSettings,
   DEFAULT_EMAIL_SETTINGS,
@@ -220,6 +220,27 @@ export async function setupAdmin(
   const user = createFirstUser(testApp.db, { email, passwordHash: await hashPassword(password), name: 'Admin' })
   if (user === undefined) throw new Error('setup failed: an account already exists')
   return operatorAuth(testApp, user.id)
+}
+
+/**
+ * Another person on the instance, with a role — ADR-0012. Inserted directly;
+ * the password is unusable, since tests sign them in with `operatorAuth`.
+ */
+export function createPerson(
+  testApp: TestApp,
+  options: { email?: string; name?: string; role?: 'user' | 'admin' | null } = {},
+): number {
+  const [row] = testApp.db
+    .insert(users)
+    .values({
+      email: options.email ?? 'user@example.com',
+      name: options.name ?? 'User',
+      passwordHash: 'unusable',
+      role: options.role === undefined ? 'user' : options.role,
+    })
+    .returning({ id: users.id })
+    .all()
+  return row!.id
 }
 
 /** A fresh operator token for an existing account. */

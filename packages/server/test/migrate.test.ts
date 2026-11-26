@@ -8,7 +8,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { Db } from '../src/db/index.ts'
 import { DB_FILENAME, MIGRATIONS_DIR, openDatabase } from '../src/db/index.ts'
 import { DEFAULT_EMAIL_TEMPLATES, SEEDED_AT_KEY } from '../src/db/seed.ts'
-import { emailTemplates, intakeForms, leadEvents, leads, pipelines, settings, stages } from '../src/db/schema.ts'
+import { apiKeyDisplayPrefix, generateApiKey, hashApiKey } from '../src/auth/api-keys.ts'
+import { resolvePrincipal } from '../src/auth/middleware.ts'
+import { emailTemplates, intakeForms, leadEvents, leads, pipelines, settings, stages, users } from '../src/db/schema.ts'
 
 interface Journal {
   entries: { idx: number; tag: string }[]
@@ -246,5 +248,52 @@ describe('API key ownership (ADR-0007)', () => {
     const db = openTracked(dataDir)
     const rows = db.$client.prepare('SELECT user_id AS userId FROM api_keys').all()
     expect(rows).toEqual([{ userId: 1 }])
+  })
+})
+
+describe('roles (ADR-0012)', () => {
+  const migration = journal.entries.find((entry) => entry.tag.endsWith('_user_roles'))!
+
+  it('adds the columns in place, never rebuilding users', () => {
+    // A rebuild drops `users`, and the drop cascades to every key, token and
+    // push subscription the moment foreign keys are on.
+    const sql = readFileSync(join(MIGRATIONS_DIR, `${migration.tag}.sql`), 'utf8')
+    expect(sql).not.toMatch(/DROP TABLE|CREATE TABLE|RENAME/i)
+  })
+
+  it('makes every existing account an admin and keeps what it holds', async () => {
+    const dataDir = tempDir('philo-roles-')
+    const sqlite = new Database(join(dataDir, DB_FILENAME))
+    sqlite.pragma('foreign_keys = ON')
+    migrate(drizzle(sqlite), { migrationsFolder: partialMigrationsDir(migration.idx) })
+    sqlite.prepare("INSERT INTO users (email, password_hash, created_at, updated_at) VALUES ('owner@example.com', 'x', 0, 0)").run()
+    const key = generateApiKey()
+    sqlite
+      .prepare('INSERT INTO api_keys (name, key_hash, key_prefix, created_at, user_id) VALUES (?, ?, ?, 0, 1)')
+      .run('Cron job', hashApiKey(key), apiKeyDisplayPrefix(key))
+    sqlite
+      .prepare("INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at) VALUES (1, 'https://push.example.com/1', 'p', 'a', 0)")
+      .run()
+    sqlite
+      .prepare("INSERT INTO oauth_clients (client_id, redirect_uris, token_endpoint_auth_method, created_at) VALUES ('c1', '[]', 'none', 0)")
+      .run()
+    sqlite
+      .prepare("INSERT INTO refresh_tokens (token_hash, client_id, user_id, scope, created_at, expires_at) VALUES ('rt', 'c1', 1, 'mcp', 0, 1)")
+      .run()
+    sqlite.close()
+
+    const before = Date.now()
+    const db = openTracked(dataDir)
+    const count = (table: string) =>
+      (db.$client.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n
+    expect([count('api_keys'), count('push_subscriptions'), count('refresh_tokens')]).toEqual([1, 1, 1])
+    const [owner] = db.select({ role: users.role, confirmed: users.roleConfirmedAt, disabled: users.disabledAt }).from(users).all()
+    expect(owner?.role).toBe('admin')
+    expect(owner?.disabled).toBeNull()
+    // Confirmed at upgrade time, so an external-IdP account's keys get the full window.
+    expect(owner!.confirmed!.getTime()).toBeGreaterThanOrEqual(before - 1000)
+
+    const principal = await resolvePrincipal({ db, trustProxy: false }, key)
+    expect(principal).toMatchObject({ role: 'admin', actor: 'api_key:1' })
   })
 })

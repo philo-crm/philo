@@ -1,14 +1,13 @@
-import { asc } from 'drizzle-orm'
 import webpush, { WebPushError } from 'web-push'
 import type { Db } from '../db/index.ts'
-import { users } from '../db/schema.ts'
+import { activeAdmins, ROLES_ON_ACCOUNTS, type AccessPolicy } from '../auth/access.ts'
 import { getLead, type LeadRecord } from '../leads/service.ts'
 import type { LeadCreatedHook } from '../notify.ts'
 import { vapidSubject, type VapidKeys, type VapidKeysResult } from './keys.ts'
 import {
   deleteAllSubscriptions,
   deleteSubscription,
-  listSubscriptions,
+  deliverableSubscriptions,
   type StoredSubscription,
 } from './subscriptions.ts'
 
@@ -71,6 +70,8 @@ export interface PushDeps {
   appUrl: string
   vapidKeys: VapidKeys
   send?: SendPush | undefined
+  /** Whose devices count — ADR-0012. Unset: roles live on the account. */
+  access?: AccessPolicy | undefined
 }
 
 function clamp(value: string): string {
@@ -103,9 +104,8 @@ export function buildLeadNotification(lead: LeadRecord, appUrl: string): Declara
  * The earliest account, as fallback contact for the VAPID `sub` claim. Only
  * consulted for a non-https base URL — see `vapidSubject`.
  */
-function firstOperatorEmail(db: Db): string | undefined {
-  const [row] = db.select({ email: users.email }).from(users).orderBy(asc(users.id)).limit(1).all()
-  return row?.email
+function firstAdminEmail(db: Db, policy: AccessPolicy): string | undefined {
+  return activeAdmins(db, policy)[0]?.email
 }
 
 function realSend(keys: VapidKeys, subject: string): SendPush {
@@ -147,7 +147,7 @@ export async function sendNewLeadPush(deps: PushDeps, leadId: number): Promise<v
     // the hook for a quarantined lead already.
     if (lead.isSpam) return
 
-    const subscriptions = listSubscriptions(deps.db)
+    const subscriptions = deliverableSubscriptions(deps.db, deps.access ?? ROLES_ON_ACCOUNTS)
     if (subscriptions.length === 0) return
 
     const send = deps.send ?? buildSender(deps)
@@ -170,7 +170,7 @@ export async function sendNewLeadPush(deps: PushDeps, leadId: number): Promise<v
 
 /** Undefined when there is no usable VAPID subject, which is a send that cannot be signed. */
 function buildSender(deps: PushDeps): SendPush | undefined {
-  const subject = vapidSubject(deps.appUrl, firstOperatorEmail(deps.db))
+  const subject = vapidSubject(deps.appUrl, firstAdminEmail(deps.db, deps.access ?? ROLES_ON_ACCOUNTS))
   if (subject === undefined) {
     console.warn(
       'push: no VAPID contact could be determined, so no notification was sent. ' +

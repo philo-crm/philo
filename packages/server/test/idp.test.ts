@@ -122,7 +122,7 @@ describe('first-boot setup dialog', () => {
       headers: { authorization: `Bearer ${tokens.access_token}` },
     })
     // Lowercased on the way in, so case cannot make a second account later.
-    expect(await session.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner' } })
+    expect(await session.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner', role: 'admin' } })
     const [stored] = testApp.db.select().from(users).all()
     expect(stored?.passwordHash).toMatch(/^\$argon2id\$/)
   })

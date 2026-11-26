@@ -3,6 +3,7 @@ import { createExternalIdp } from './auth/external-idp.ts'
 import type { Config } from './config.ts'
 import { openDatabase, type Db } from './db/index.ts'
 import { ChangeFeed } from './events/feed.ts'
+import { ROLES_ON_ACCOUNTS } from './auth/access.ts'
 import { createLeadEmailHook, sweepUnsentEmails, type EmailDeps } from './email/service.ts'
 import { isEmailConfigured, readEmailSettings } from './email/settings.ts'
 import { createSmtpSender, smtpGreetingName } from './email/transport.ts'
@@ -17,9 +18,16 @@ import { startWebhookDelivery } from './webhooks/deliver.ts'
 
 export { loadConfig, type Config } from './config.ts'
 export { VERSION } from './version.ts'
+export type { ChangeEvent, ChangeType } from './events/feed.ts'
 
 export interface BootedServer {
   app: ReturnType<typeof createApp>
+  /**
+   * Every committed change, as webhooks and `GET /api/v1/events` get it —
+   * ADR-0010 — for an entrypoint that wants to act on it in process. Listen
+   * only: what the routes publish is the record of what happened.
+   */
+  changes: Pick<ChangeFeed, 'listen'>
   /**
    * Call once the socket is listening: prints what the operator needs to know
    * and starts the work that must not hold up serving.
@@ -42,19 +50,22 @@ export function bootServer(config: Config): BootedServer {
 
   // Links in emails and notifications open the PWA, wherever it is served.
   const createSender = createSmtpSender(smtpGreetingName(config.publicBaseUrl))
-  const emailDeps: EmailDeps = { db, appUrl: config.appUrl, createSender }
+  // Roles live on the account until an external IdP grants them by scope — ADR-0012.
+  const access = ROLES_ON_ACCOUNTS
+  const emailDeps: EmailDeps = { db, appUrl: config.appUrl, createSender, access }
 
   // Also after openDatabase, for the data dir.
   const vapid = loadOrCreateVapidKeys(config.dataDir)
   resetSubscriptionsForNewKeys(db, vapid)
 
-  const pushDeps = { db, appUrl: config.appUrl, vapidKeys: vapid.keys }
+  const pushDeps = { db, appUrl: config.appUrl, vapidKeys: vapid.keys, access }
   const liveFeed = new LiveFeed()
   const changeFeed = new ChangeFeed()
   startWebhookDelivery(db, changeFeed)
 
   const app = createApp({
     db,
+    access,
     publicBaseUrl: config.publicBaseUrl,
     appUrl: config.appUrl,
     mcpUrl: config.mcpUrl,
@@ -75,7 +86,11 @@ export function bootServer(config: Config): BootedServer {
     ),
   })
 
-  return { app, onListening: () => onListening(config, db, emailDeps) }
+  return {
+    app,
+    changes: { listen: (listener) => changeFeed.listen(listener) },
+    onListening: () => onListening(config, db, emailDeps),
+  }
 }
 
 function onListening(config: Config, db: Db, emailDeps: EmailDeps): void {

@@ -69,6 +69,17 @@ work, and neither is the operator's password:
 Both reach MCP and /api/v1 with the same authority. MCP forwards your token to
 the API unchanged, so what one refuses the other refuses too.
 
+### Roles
+
+Every person on the instance is a **user** or an **admin**, and a credential
+acts with its person's role. A user works leads: everything under /leads, reading
+/funnels and /stages, their own /api-keys and push devices, and /auth. Everything
+else needs an admin — funnel and stage changes, all of /settings (email
+settings and templates, reads included) and all of /webhooks. A call that needs
+an admin answers 403 \`{"error":"admin_required"}\`; GET /auth/principal says
+which role your credential has. Over MCP, a user's token lists only the tools a
+user can call.
+
 ### OAuth, if you need it
 
 POST to the MCP endpoint without a token answers 401 and a \`WWW-Authenticate\`
@@ -89,7 +100,8 @@ unattended client cannot complete the flow.
 
 ## What you can do over MCP
 
-Call \`tools/list\` for the schemas. In outline:
+Call \`tools/list\` for the schemas. In outline (the funnel and stage changes,
+email and webhook tools are for admins):
 
 - Funnels: \`list_funnels\`, \`create_funnel\`, \`update_funnel\`,
   \`delete_funnel\`. Stage and template tools take an optional \`funnelId\`.
@@ -167,10 +179,13 @@ Types: \`lead.created\` (a form submission, a lead filed by hand, or one
 promoted out of spam), \`lead.updated\` (contact, details, a note or a file),
 \`lead.stage_changed\` (with \`data.from\`, which may be another funnel),
 \`lead.deleted\` (\`data.leadId\` only) and \`funnel.changed\` (its stages or
-name). Quarantined leads produce none. A body looks like:
+name). Quarantined leads produce none. \`actor\` says who made the change, as
+the lead timeline does: \`user:<id>\`, \`api_key:<id>\`, \`oauth:<client_id>\`
+or \`form:<form_key>\` — a receiver that writes back can skip its own changes by
+it. A body looks like:
 
-    {"id":"<uuid>","type":"lead.stage_changed","occurredAt":"...","funnelId":1,
-     "data":{"lead":{...},"from":{"id":3,"name":"New","funnelId":1}}}
+    {"id":"<uuid>","type":"lead.stage_changed","occurredAt":"...","actor":"api_key:2",
+     "funnelId":1,"data":{"lead":{...},"from":{"id":3,"name":"New","funnelId":1}}}
 
 A webhook delivery is a POST of that body with \`X-Philo-Event\`,
 \`X-Philo-Delivery\` (the event id), \`X-Philo-Timestamp\` (Unix seconds) and

@@ -202,10 +202,17 @@ export interface ApiKeyRecord {
   lastUsedAt: string | null
 }
 
+/**
+ * ADR-0012. A `user` works leads; an `admin` also configures the instance and
+ * manages people. An admin can do everything a user can.
+ */
+export type Role = 'user' | 'admin'
+
 export interface User {
   id: number
   email: string
   name: string | null
+  role: Role
 }
 
 /**
@@ -229,6 +236,8 @@ export interface AuthConfig {
 export interface Principal {
   /** The user the credential acts for, with exactly their authority. */
   user: User
+  /** What the credential may do: its user's role — ADR-0012. */
+  role: Role
   /** How the timeline names this credential: `user:<id>`, `api_key:<id>` or `oauth:<client>`. */
   actor: string
 }
@@ -257,6 +266,13 @@ export interface ChangeEvent {
   id: string
   type: ChangeType
   occurredAt: string
+  /**
+   * Who made it, as the lead timeline names it: `user:<id>` (the person, from
+   * the PWA), `api_key:<id>`, `oauth:<client_id>` (an agent or connector), or
+   * `form:<form_key>` (an intake submission). A receiver that writes back can
+   * skip its own changes by this.
+   */
+  actor: string
   /** For a moved lead, the funnel it is in now; `data.from` says where it was. */
   funnelId: number
   data: {

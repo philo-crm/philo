@@ -1,10 +1,15 @@
 # 0006 — Headless server, an SDK that tracks it, and the PWA and MCP as clients
 
 - **Status:** Accepted; the "two levels of authority" decision is superseded
-  by [0007](0007-agents-act-as-their-user.md)
+  by [0007](0007-agents-act-as-their-user.md), and the single-operator
+  external-IdP binding and agent allow-list by
+  [0012](0012-several-users-with-roles.md)
 - **Date:** 2026-10-25
 - **Supersedes:** the "a token reaches `/mcp` only" and "one scope" decisions
   of [ADR-0005](0005-oauth-server-on-hono.md); the rest of ADR-0005 stands.
+- **Amended by:** [0013](0013-operator-host-script.md), which lets an
+  operator opt in to a host script of their own beside "the absence of
+  third-party script".
 
 ## Context
 

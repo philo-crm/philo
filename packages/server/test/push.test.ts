@@ -1,7 +1,7 @@
-import { desc } from 'drizzle-orm'
+import { desc, eq } from 'drizzle-orm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebPushError } from 'web-push'
-import { leads, pushSubscriptions } from '../src/db/schema.ts'
+import { leads, pushSubscriptions, users } from '../src/db/schema.ts'
 import { HONEYPOT_FIELD } from '../src/intake/payload.ts'
 import {
   createLeadPushHook,
@@ -12,6 +12,7 @@ import {
 import { listSubscriptions } from '../src/push/subscriptions.ts'
 import {
   cleanupTestApps,
+  createPerson,
   createTestApp,
   defaultFormKey,
   jsonPost,
@@ -221,6 +222,22 @@ describe('sendNewLeadPush', () => {
         tag: `philo-lead-${leadId}`,
       },
     })
+  })
+
+  it('reaches only the devices of accounts that have access — ADR-0012', async () => {
+    const { testApp, leadId } = await seeded()
+    const worker = createPerson(testApp, { email: 'worker@example.com', role: 'user' })
+    const gone = createPerson(testApp, { email: 'gone@example.com', role: 'user' })
+    testApp.db.update(users).set({ disabledAt: new Date() }).where(eq(users.id, gone)).run()
+    const none = createPerson(testApp, { email: 'none@example.com', role: null })
+    storeSubscription(testApp, worker, 'https://push.example.com/subscription/worker')
+    storeSubscription(testApp, gone, 'https://push.example.com/subscription/gone')
+    storeSubscription(testApp, none, 'https://push.example.com/subscription/none')
+    const push = recordingPush()
+
+    await sendNewLeadPush(deps(testApp, push.send), leadId)
+
+    expect(push.sent.map((entry) => entry.endpoint)).toEqual(['https://push.example.com/subscription/worker'])
   })
 
   it('does nothing when nobody has subscribed', async () => {

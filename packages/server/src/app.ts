@@ -2,14 +2,16 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
 import { createApiKeyRoutes } from './auth/api-key-routes.ts'
+import type { AccessPolicy } from './auth/access.ts'
 import type { ExternalIdp } from './auth/external-idp.ts'
-import { bearerMiddleware, requireAuth, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
+import { bearerMiddleware, requireAdmin, requireAuth, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
 import { createAuthGuards, createAuthRoutes, type AuthTuning } from './auth/routes.ts'
 import type { Db } from './db/index.ts'
 import type { EmailSenderFactory } from './email/transport.ts'
 import { ChangeFeed } from './events/feed.ts'
 import { createEventRoutes } from './events/routes.ts'
 import { createFunnelRoutes } from './funnels/routes.ts'
+import { createEmailPreviewFrameRoutes, EMAIL_PREVIEW_FRAME_PATH } from './email/preview-frame.ts'
 import { createIntakeRoutes, type IntakeTuning } from './intake/routes.ts'
 import { createLeadRoutes } from './leads/routes.ts'
 import { llmsTxt } from './llms-txt.ts'
@@ -48,7 +50,63 @@ const ATTACHMENT_UPLOAD_PATH = new RegExp(`^${API_PREFIX}/leads/\\d+/attachments
  * Reachable without a token. Everything else under `API_PREFIX` is guarded, so
  * a route added later is private until it is listed here on purpose.
  */
-const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([`${API_PREFIX}/auth/config`])
+export const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([`${API_PREFIX}/auth/config`])
+
+/** A route as Hono registers it: a method and a path with `:param` segments. */
+export type RouteKey = readonly [method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string]
+
+/**
+ * What a `user` may call — ADR-0012. Everything else under `API_PREFIX` needs
+ * an `admin`, so a route added later is admin-only until it is listed here on
+ * purpose, as a route is private until it is listed public. Working leads, the
+ * funnels and stages the board reads, and a person's own keys and devices;
+ * not configuration (funnel and stage writes, `/settings`, `/webhooks`).
+ * `test/authz.test.ts` walks every registered route against this list.
+ */
+export const USER_API_ROUTES: readonly RouteKey[] = [
+  ['GET', `${API_PREFIX}/auth/session`],
+  ['GET', `${API_PREFIX}/auth/principal`],
+  ['GET', `${API_PREFIX}/api-keys`],
+  ['POST', `${API_PREFIX}/api-keys`],
+  ['DELETE', `${API_PREFIX}/api-keys/:id`],
+  ['GET', `${API_PREFIX}/leads`],
+  ['POST', `${API_PREFIX}/leads`],
+  ['GET', `${API_PREFIX}/leads/:id`],
+  ['PATCH', `${API_PREFIX}/leads/:id`],
+  ['DELETE', `${API_PREFIX}/leads/:id`],
+  ['POST', `${API_PREFIX}/leads/:id/stage`],
+  ['POST', `${API_PREFIX}/leads/:id/notes`],
+  ['POST', `${API_PREFIX}/leads/:id/not-spam`],
+  ['POST', `${API_PREFIX}/leads/:id/attachments`],
+  ['GET', `${API_PREFIX}/leads/:id/attachments/:attachmentId`],
+  ['DELETE', `${API_PREFIX}/leads/:id/attachments/:attachmentId`],
+  ['GET', `${API_PREFIX}/funnels`],
+  ['GET', `${API_PREFIX}/funnels/:id`],
+  ['GET', `${API_PREFIX}/stages`],
+  ['GET', `${API_PREFIX}/events`],
+  ['GET', `${API_PREFIX}/push/key`],
+  ['GET', `${API_PREFIX}/push/live`],
+  ['POST', `${API_PREFIX}/push/subscriptions`],
+  ['DELETE', `${API_PREFIX}/push/subscriptions`],
+]
+
+/**
+ * `:param` matches one path segment, as it does in Hono's router. The listed
+ * paths are letters, digits, `-` and `/`, none of which a regex reads specially.
+ */
+function routeMatcher(routes: readonly RouteKey[]): (method: string, path: string) => boolean {
+  const compiled = routes.map(([method, path]) => ({
+    method,
+    pattern: new RegExp(`^${path.replace(/:[A-Za-z]+/g, '[^/]+')}$`),
+  }))
+  return (method, path) => {
+    // Hono answers HEAD with the GET handler, so HEAD is allowed where GET is.
+    const effective = method === 'HEAD' ? 'GET' : method
+    return compiled.some((route) => route.method === effective && route.pattern.test(path))
+  }
+}
+
+const isUserRoute = routeMatcher(USER_API_ROUTES)
 
 export interface AppOptions {
   db: Db
@@ -63,6 +121,8 @@ export interface AppOptions {
   signingKey: SigningKey
   /** Replaces the built-in IdP when set — ADR-0006. */
   externalIdp?: ExternalIdp | undefined
+  /** Where roles are decided — ADR-0012. Unset: on the account. */
+  access?: AccessPolicy | undefined
   /**
    * The VAPID public key the settings toggle subscribes with. Auto-generated
    * into the data dir at first boot — ADR-0004, zero operator setup.
@@ -120,7 +180,12 @@ function signInConfig(options: AppOptions) {
  * hosted elsewhere or beside it by apps/standalone.
  */
 export function createApp(options: AppOptions): Hono<AuthEnv> {
-  const deps: AuthDeps = { db: options.db, trustProxy: options.trustProxy, externalIdp: options.externalIdp }
+  const deps: AuthDeps = {
+    db: options.db,
+    trustProxy: options.trustProxy,
+    externalIdp: options.externalIdp,
+    access: options.access,
+  }
   const app = new Hono<AuthEnv>()
   const changes = options.changeFeed ?? new ChangeFeed()
 
@@ -157,6 +222,12 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   app.use(`${API_PREFIX}/*`, async (c, next) => {
     if (c.req.method === 'OPTIONS' || PUBLIC_API_PATHS.has(c.req.path)) return next()
     return requireAuth(c, next)
+  })
+  // One role guard for the whole surface, deny by default — ADR-0012.
+  app.use(`${API_PREFIX}/*`, async (c, next) => {
+    if (c.req.method === 'OPTIONS' || PUBLIC_API_PATHS.has(c.req.path)) return next()
+    if (isUserRoute(c.req.method, c.req.path)) return next()
+    return requireAdmin(c, next)
   })
 
   app.route(`${API_PREFIX}/auth`, createAuthRoutes({ signIn: signInConfig(options) }))
@@ -226,6 +297,10 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
       options.intakeTuning ?? {},
     ),
   )
+
+  // The one page the PWA frames: the email template preview, which needs a
+  // policy of its own (email/preview-frame.ts).
+  app.route(EMAIL_PREVIEW_FRAME_PATH, createEmailPreviewFrameRoutes({ appUrl: options.appUrl }))
 
   // Headless: nothing here is a page, so a miss is JSON for any client.
   app.notFound((c) => c.json({ error: 'not_found' }, 404))

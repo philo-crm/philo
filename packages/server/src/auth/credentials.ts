@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hashPassword, verifyPassword } from './password.ts'
+import { ACCOUNT_COLUMNS, ROLES_ON_ACCOUNTS, sessionUserOf } from './access.ts'
 import type { SessionUser } from './session.ts'
 
 /** RFC 5321's practical ceiling; also stops a giant string reaching the database. */
@@ -45,7 +46,7 @@ export async function verifyCredentials(
   password: string,
 ): Promise<SessionUser | undefined> {
   const [found] = db
-    .select({ id: users.id, email: users.email, name: users.name, passwordHash: users.passwordHash })
+    .select({ ...ACCOUNT_COLUMNS, passwordHash: users.passwordHash })
     .from(users)
     .where(eq(users.email, email))
     .limit(1)
@@ -55,7 +56,10 @@ export async function verifyCredentials(
   // match, so a missing account and a wrong password take the same time.
   const ok = await verifyPassword(found?.passwordHash ?? (await unmatchableHash()), password)
   if (found === undefined || !ok) return undefined
-  return { id: found.id, email: found.email, name: found.name }
+  // A deactivated or no-access account is refused like a wrong password, so
+  // the dialog says nothing about which accounts exist.
+  // The built-in dialog only runs when roles live on the account.
+  return sessionUserOf(found, ROLES_ON_ACCOUNTS)
 }
 
 let unmatchable: Promise<string> | undefined
@@ -79,8 +83,8 @@ export function hasAnyUser(db: Db): boolean {
 }
 
 /**
- * First-boot setup: the instance's one account, created only while there is
- * none. Hash before calling — better-sqlite3 is synchronous, so awaiting inside
+ * First-boot setup: the instance's first account, created only while there is
+ * none, and an admin — ADR-0012. Hash before calling — better-sqlite3 is synchronous, so awaiting inside
  * the transaction would hold it open across the whole hash.
  *
  * The existence check and the insert share a transaction, so two racing setups
@@ -100,9 +104,9 @@ export function createFirstUser(
     if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return undefined
     const [user] = tx
       .insert(users)
-      .values(account)
-      .returning({ id: users.id, email: users.email, name: users.name })
+      .values({ ...account, role: 'admin', roleConfirmedAt: new Date() })
+      .returning(ACCOUNT_COLUMNS)
       .all()
-    return user
+    return sessionUserOf(user, ROLES_ON_ACCOUNTS)
   })
 }

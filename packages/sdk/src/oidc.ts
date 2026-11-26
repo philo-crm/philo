@@ -295,11 +295,42 @@ export async function revokeToken(options: {
   })
 }
 
+/**
+ * OIDC RP-Initiated Logout 1.0: where to send the browser so the provider ends
+ * its own session too, or undefined when discovery names no
+ * `end_session_endpoint` — the provider then has no session to end, or none it
+ * lets a client end. With no ID token to hint with, the provider usually asks
+ * the person to confirm.
+ */
+export function endSessionUrl(options: {
+  metadata: OidcMetadata
+  clientId: string
+  idToken: string | undefined
+  postLogoutRedirectUri: string
+  state: string
+}): string | undefined {
+  const endpoint = options.metadata.end_session_endpoint
+  if (endpoint === undefined) return undefined
+  const url = new URL(endpoint)
+  if (options.idToken !== undefined) url.searchParams.set('id_token_hint', options.idToken)
+  // Allowed beside the hint (§2), and some providers want it to accept the return address.
+  url.searchParams.set('client_id', options.clientId)
+  url.searchParams.set('post_logout_redirect_uri', options.postLogoutRedirectUri)
+  url.searchParams.set('state', options.state)
+  return url.toString()
+}
+
 /** Where a session keeps its refresh token between page loads. */
 export interface RefreshTokenStore {
   load(): string | undefined
   save(token: string | undefined): void
 }
+
+/**
+ * Runs `fn` while no other holder of `name` runs, across every tab sharing the
+ * refresh token store — the shape of the Web Locks API's `navigator.locks.request`.
+ */
+export type RefreshLock = <T>(name: string, fn: () => Promise<T>) => Promise<T>
 
 /** Renew this long before expiry, so a request in flight never carries a dead token. */
 const EXPIRY_MARGIN_MS = 30_000
@@ -311,7 +342,15 @@ const EXPIRY_MARGIN_MS = 30_000
  *
  * Concurrent callers share one refresh, which matters with rotation — two
  * refreshes racing with the same token would spend it twice and sign the
- * person out.
+ * person out. Sessions in other tabs that share the store need `lock` as
+ * well: with it, a refresh re-reads the store first and spends the token the
+ * last tab stored, never one already spent, and a sign-out waits its turn and
+ * revokes that same token.
+ *
+ * The store is the shared truth. Once it has held a token, finding it empty
+ * means another tab signed out, and this session follows rather than bringing
+ * the grant back from its copy in memory. Only storage that never kept a token
+ * (blocked, or Safari private mode) leaves memory as the source.
  */
 export class TokenSession {
   readonly #metadata: OidcMetadata
@@ -320,8 +359,17 @@ export class TokenSession {
   readonly #resource: readonly string[] | undefined
   readonly #fetch: FetchLike
   readonly #now: () => number
+  readonly #lock: RefreshLock | undefined
   #tokens: TokenSet | undefined
   #refreshing: Promise<TokenSet | undefined> | undefined
+  /** The store has held a token this session could read: empty from now on means signed out. */
+  #storeHeld = false
+  /**
+   * Every refresh token this session has spent, to spot a store whose saves
+   * keep failing: it can hold a token several rotations old. One entry per
+   * refresh, for the life of the session — small enough to keep whole.
+   */
+  readonly #spent = new Set<string>()
 
   constructor(options: {
     metadata: OidcMetadata
@@ -331,6 +379,7 @@ export class TokenSession {
     resource?: readonly string[] | undefined
     fetch?: FetchLike | undefined
     now?: (() => number) | undefined
+    lock?: RefreshLock | undefined
   }) {
     this.#metadata = options.metadata
     this.#clientId = options.clientId
@@ -338,38 +387,48 @@ export class TokenSession {
     this.#resource = options.resource
     this.#fetch = options.fetch ?? defaultFetch
     this.#now = options.now ?? Date.now
-  }
-
-  /** True when there is anything to sign in with, without spending it. */
-  get hasCredentials(): boolean {
-    return this.#tokens !== undefined || this.#store.load() !== undefined
+    this.#lock = options.lock
   }
 
   /**
-   * The id_token of this sign-in, held in memory only, so gone after a reload.
-   * A refresh that brings none keeps the old one: OIDC Core §12.2 makes a
-   * refreshed id_token name the same person, so the old one still does.
+   * The newest ID token this session holds, kept through a refresh of its own
+   * grant that sends none, and dropped when it adopts a grant another tab
+   * stored. Read it before `signOut()`, which forgets it — it is what an
+   * end-session request hints with (`endSessionUrl`).
    */
   get idToken(): string | undefined {
     return this.#tokens?.idToken
   }
 
+  /** True when there is anything to sign in with, without spending it. */
+  get hasCredentials(): boolean {
+    return this.#tokens !== undefined || this.#load() !== undefined
+  }
+
   set(tokens: TokenSet): void {
     this.#tokens = tokens
-    if (tokens.refreshToken !== undefined) this.#store.save(tokens.refreshToken)
+    if (tokens.refreshToken === undefined) return
+    this.#store.save(tokens.refreshToken)
+    this.#load()
   }
 
   accessToken = async (): Promise<string | undefined> => {
     const tokens = this.#tokens
-    if (tokens !== undefined && tokens.expiresAt - EXPIRY_MARGIN_MS > this.#now()) return tokens.accessToken
+    if (tokens !== undefined && this.#isFresh(tokens)) return tokens.accessToken
     const refreshed = await this.#refresh()
     return refreshed?.accessToken
   }
 
   /** Revokes the refresh token at the IdP and forgets everything locally. */
   async signOut(): Promise<void> {
-    const token = this.#tokens?.refreshToken ?? this.#store.load()
-    this.clear()
+    // Under the lock, so a refresh in another tab cannot store a new token
+    // after this clears it; and from the store first, since that is the live
+    // token and the copy in memory may already be spent.
+    const token = await this.#withLock(() => {
+      const live = this.#refreshTokenToSpend()
+      this.clear()
+      return Promise.resolve(live)
+    })
     if (token === undefined) return
     try {
       await revokeToken({ metadata: this.#metadata, clientId: this.#clientId, token, fetch: this.#fetch })
@@ -383,15 +442,70 @@ export class TokenSession {
     this.#store.save(undefined)
   }
 
+  #isFresh(tokens: TokenSet): boolean {
+    return tokens.expiresAt - EXPIRY_MARGIN_MS > this.#now()
+  }
+
   #refresh(): Promise<TokenSet | undefined> {
-    this.#refreshing ??= this.#doRefresh().finally(() => {
+    this.#refreshing ??= this.#lockedRefresh().finally(() => {
       this.#refreshing = undefined
     })
     return this.#refreshing
   }
 
-  async #doRefresh(): Promise<TokenSet | undefined> {
-    const refreshToken = this.#tokens?.refreshToken ?? this.#store.load()
+  #lockedRefresh(): Promise<TokenSet | undefined> {
+    return this.#withLock(() => {
+      // Tokens set while waiting (a sign-in finishing) need no refresh.
+      const held = this.#tokens
+      if (held !== undefined && this.#isFresh(held)) return Promise.resolve(held)
+      return this.#doRefresh(this.#refreshTokenToSpend())
+    })
+  }
+
+  async #withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const lock = this.#lock
+    if (lock === undefined) return fn()
+    let started = false
+    const inLock = () => {
+      started = true
+      return fn()
+    }
+    try {
+      return await lock(`philo.oidc-refresh:${this.#clientId}`, inLock)
+    } catch (error) {
+      // A lock that cannot be taken costs only the cross-tab guarantee; one
+      // that ran `fn` has its own answer, which must not run twice.
+      if (started) throw error
+      return inLock()
+    }
+  }
+
+  #load(): string | undefined {
+    const token = this.#store.load()
+    if (token !== undefined) this.#storeHeld = true
+    return token
+  }
+
+  /**
+   * The store comes first: another tab may have rotated the token since this
+   * one last read it, and the copy in memory is then already spent. An empty
+   * store that once held a token means another tab signed out, so memory is
+   * dropped, not spent. A stored token this session already spent means its
+   * own saves failed, and memory holds the newer one.
+   */
+  #refreshTokenToSpend(): string | undefined {
+    const memory = this.#tokens?.refreshToken
+    const stored = this.#load()
+    if (stored === undefined) {
+      if (!this.#storeHeld) return memory
+      this.#tokens = undefined
+      return undefined
+    }
+    if (this.#spent.has(stored) && memory !== undefined) return memory
+    return stored
+  }
+
+  async #doRefresh(refreshToken: string | undefined): Promise<TokenSet | undefined> {
     if (refreshToken === undefined) return undefined
     try {
       const tokens = await refreshTokens({
@@ -402,12 +516,16 @@ export class TokenSession {
         fetch: this.#fetch,
         now: this.#now,
       })
-      // An IdP that does not rotate answers without a new refresh token; the
-      // old one is still the one to keep.
+      // An IdP that does not rotate answers without a new refresh token, and
+      // most send no new ID token; the old one names the same subject (OIDC
+      // Core §12.2) only if this session's own grant was spent. A token
+      // another tab stored may be someone else's sign-in, so its hint goes.
+      const ownGrant = refreshToken === this.#tokens?.refreshToken
+      this.#spent.add(refreshToken)
       this.set({
         ...tokens,
         refreshToken: tokens.refreshToken ?? refreshToken,
-        idToken: tokens.idToken ?? this.#tokens?.idToken,
+        idToken: tokens.idToken ?? (ownGrant ? this.#tokens?.idToken : undefined),
       })
       return this.#tokens
     } catch (error) {

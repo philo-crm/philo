@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ApiError, PhiloClient, isUnauthorized } from '../src/index.ts'
+import { ApiError, PhiloClient, isAdminRequired, isUnauthorized } from '../src/index.ts'
 
 interface Call {
   url: string
@@ -105,6 +105,24 @@ describe('PhiloClient', () => {
     expect(isUnauthorized(failure)).toBe(true)
   })
 
+  it('tells an admin-only refusal apart from other 403s', async () => {
+    const adminOnly = await new PhiloClient({ fetch: recorder(() => json({ error: 'admin_required' }, 403)).fetch })
+      .webhooks.list()
+      .catch((e) => e)
+    expect(isAdminRequired(adminOnly)).toBe(true)
+    expect(isUnauthorized(adminOnly)).toBe(false)
+    const other = await new PhiloClient({ fetch: recorder(() => json({ error: 'insufficient_scope' }, 403)).fetch })
+      .webhooks.list()
+      .catch((e) => e)
+    expect(isAdminRequired(other)).toBe(false)
+  })
+
+  it('returns the role with the principal', async () => {
+    const principal = { user: { id: 1, email: 'a@example.com', name: null, role: 'user' }, role: 'user', actor: 'api_key:3' }
+    const { fetch } = recorder(() => json(principal))
+    await expect(new PhiloClient({ fetch }).auth.principal()).resolves.toEqual(principal)
+  })
+
   it('deletes a lead', async () => {
     const { calls, fetch } = recorder(() => new Response(null, { status: 204 }))
     await expect(new PhiloClient({ fetch }).leads.delete(4)).resolves.toBeUndefined()
@@ -121,6 +139,13 @@ describe('PhiloClient', () => {
     const { calls, fetch } = recorder(() => json({ template: {} }))
     await new PhiloClient({ fetch }).emailTemplates.get('a/b')
     expect(calls[0]?.url).toBe('/api/v1/settings/email/templates/a%2Fb')
+  })
+
+  it('points the template preview frame at the server, wherever it is', () => {
+    expect(new PhiloClient().emailTemplates.previewFrameUrl()).toBe('/api/email-preview')
+    expect(new PhiloClient({ baseUrl: 'https://api.example.com/' }).emailTemplates.previewFrameUrl()).toBe(
+      'https://api.example.com/api/email-preview',
+    )
   })
 
   it('scopes stages, templates and leads to a funnel when one is named', async () => {
@@ -211,7 +236,7 @@ describe('push.live', () => {
 })
 
 describe('events.stream', () => {
-  const CHANGE = { id: 'e1', type: 'lead.deleted', occurredAt: '2026-10-25T00:00:00.000Z', funnelId: 2, data: { leadId: 4 } }
+  const CHANGE = { id: 'e1', type: 'lead.deleted', occurredAt: '2026-10-25T00:00:00.000Z', actor: 'user:1', funnelId: 2, data: { leadId: 4 } }
 
   it('hands over every change, scoped to a funnel when asked', async () => {
     const event = `event: lead.deleted\ndata: ${JSON.stringify(CHANGE)}\n\n`

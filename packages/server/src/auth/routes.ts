@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
-import { actorOf, currentUser, type AuthEnv } from './middleware.ts'
+import { actorOf, currentUser, principalRole, type AuthEnv } from './middleware.ts'
 import { ConcurrencyGate, FailureThrottle, type ThrottleOptions } from './rate-limit.ts'
-import type { SessionUser } from './session.ts'
+import type { Role, SessionUser } from './session.ts'
 
 /**
  * Failed attempts per key that cost nothing. Above this the next attempt waits,
@@ -24,10 +24,11 @@ interface UserResponse {
   id: number
   email: string
   name: string | null
+  role: Role
 }
 
 function toUserResponse(user: SessionUser): UserResponse {
-  return { id: user.id, email: user.email, name: user.name }
+  return { id: user.id, email: user.email, name: user.name, role: user.role }
 }
 
 export const DEFAULT_THROTTLE: ThrottleOptions = {
@@ -83,7 +84,9 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono<AuthEnv> {
   // Any credential: whose it is and how the timeline will name it. The
   // cheapest way for a client — the MCP app among them — to check a token
   // before relying on it.
-  routes.get('/principal', (c) => c.json({ user: toUserResponse(currentUser(c)), actor: actorOf(c) }))
+  routes.get('/principal', (c) =>
+    c.json({ user: toUserResponse(currentUser(c)), role: principalRole(c), actor: actorOf(c) }),
+  )
 
   return routes
 }

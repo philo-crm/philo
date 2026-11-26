@@ -56,9 +56,15 @@ export function AccountMenu({ user, onSignOut }: AccountMenuProps) {
             })}
           </div>
           <hr className="menu-rule" />
-          <Link to="/settings" className="menu-item" onClick={close}>
-            <span className="menu-item-text">Server settings</span>
-          </Link>
+          {user.role === 'admin' ? (
+            <Link to="/settings" className="menu-item" onClick={close}>
+              <span className="menu-item-text">Server settings</span>
+            </Link>
+          ) : (
+            <Link to="/settings/notifications" className="menu-item" onClick={close}>
+              <span className="menu-item-text">Settings</span>
+            </Link>
+          )}
           <Link to="/install" className="menu-item" onClick={close}>
             <span className="menu-item-text">Install the app</span>
           </Link>

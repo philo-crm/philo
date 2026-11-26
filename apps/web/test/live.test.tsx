@@ -13,7 +13,7 @@ async function streaming(api: FakeApi) {
 describe('live updates', () => {
   it('puts a lead somebody else filed on the board, scoped to the funnel shown', async () => {
     const api = installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
     await streaming(api)
     expect(api.changeStreams[0]!.funnelId).toBe(1)
@@ -28,7 +28,7 @@ describe('live updates', () => {
 
   it('moves a card an agent moved', async () => {
     const api = installFakeApi({ leads: [makeLead({ id: 1, name: 'Dana Okafor' })] })
-    render(<FunnelBoard onSessionExpired={vi.fn()} />)
+    render(<FunnelBoard canConfigure onSessionExpired={vi.fn()} />)
     await screen.findByText('Dana Okafor')
     await streaming(api)
 

@@ -1,4 +1,4 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import {
   ApiError,
@@ -23,6 +23,7 @@ import {
   MAX_WEBHOOK_URL_LENGTH,
   TEMPLATE_TRIGGERS,
   type PhiloClient,
+  type Role,
 } from '@philo/sdk'
 import { z } from 'zod'
 import { VERSION } from './version.ts'
@@ -133,11 +134,12 @@ const STAGE_NAME = z.string().min(1).max(MAX_STAGE_NAME_LENGTH).describe('The st
  * whether a stage exists, whether a template compiles, whether a lead is left
  * contactable — is decided in exactly one place for every client.
  */
-export function createMcpServer(philo: PhiloClient): McpServer {
+export function createMcpServer(philo: PhiloClient, role: Role): McpServer {
   const server = new McpServer(
     { name: 'philo', version: VERSION },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   )
+  if (role !== 'admin') hideAdminTools(server)
 
   server.registerTool(
     'list_leads',
@@ -549,6 +551,46 @@ export function createMcpServer(philo: PhiloClient): McpServer {
   registerWebhookTools(server, philo)
 
   return server
+}
+
+/**
+ * The tools that need an admin — ADR-0012: funnel and stage changes, email
+ * templates (reads included, as all of /settings is admin) and webhooks. A
+ * user's server does not register them, so `tools/list` shows a user only what
+ * they can call; the API still refuses each call on its own, which is what
+ * holds if a role changes between the listing and the call.
+ */
+export const ADMIN_TOOLS: ReadonlySet<string> = new Set([
+  'create_funnel',
+  'update_funnel',
+  'delete_funnel',
+  'create_stage',
+  'update_stage',
+  'reorder_stages',
+  'delete_stage',
+  'list_email_templates',
+  'get_email_template',
+  'update_email_template',
+  'preview_email_template',
+  'list_webhooks',
+  'create_webhook',
+  'update_webhook',
+  'test_webhook',
+  'delete_webhook',
+])
+
+/**
+ * Makes `registerTool` drop the admin tools. Removed straight after
+ * registering, before the server connects, so no list-changed notice is sent
+ * and the registration code above stays one flat list.
+ */
+function hideAdminTools(server: McpServer): void {
+  const register = server.registerTool.bind(server) as (...args: unknown[]) => RegisteredTool
+  server.registerTool = ((name: string, ...rest: unknown[]) => {
+    const tool = register(name, ...rest)
+    if (ADMIN_TOOLS.has(name)) tool.remove()
+    return tool
+  }) as typeof server.registerTool
 }
 
 const FUNNEL_SETTINGS = {

@@ -6,6 +6,7 @@ import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import { normalizeEmail } from './credentials.ts'
 import { hashPassword } from './password.ts'
+import { ACCOUNT_COLUMNS, ROLES_ON_ACCOUNTS, sessionUserOf, type AccountRow } from './access.ts'
 import type { SessionUser } from './session.ts'
 
 /**
@@ -15,6 +16,27 @@ import type { SessionUser } from './session.ts'
  */
 export interface ExternalIdp extends ExternalIdpConfig {
   keys: JWTVerifyGetKey
+  /**
+   * The provider's userinfo endpoint, from the same discovery document as the
+   * keys, or undefined when it names none. Asked only to bind a subject whose
+   * access token carries no verified email.
+   */
+  userinfoEndpoint: () => Promise<string | undefined>
+}
+
+interface Discovery {
+  keys: JWTVerifyGetKey
+  userinfoEndpoint: string | undefined
+}
+
+/** An absolute URL, or nothing: a malformed endpoint is no endpoint. */
+function endpointOf(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  try {
+    return new URL(value).href
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -23,24 +45,27 @@ export interface ExternalIdp extends ExternalIdpConfig {
  * should cost the requests made while it is down, not the whole process.
  */
 export function createExternalIdp(config: ExternalIdpConfig): ExternalIdp {
-  let keySet: Promise<JWTVerifyGetKey> | undefined
-  const discover = async (): Promise<JWTVerifyGetKey> => {
+  let discovered: Promise<Discovery> | undefined
+  const discover = async (): Promise<Discovery> => {
     const res = await fetch(`${config.issuer.replace(/\/+$/, '')}/.well-known/openid-configuration`)
     if (!res.ok) throw new Error(`OIDC discovery for ${config.issuer} answered ${res.status}`)
-    const { jwks_uri: jwksUri } = (await res.json()) as { jwks_uri?: unknown }
-    if (typeof jwksUri !== 'string') throw new Error(`OIDC discovery for ${config.issuer} names no jwks_uri`)
-    return createRemoteJWKSet(new URL(jwksUri))
+    const document = (await res.json()) as { jwks_uri?: unknown; userinfo_endpoint?: unknown }
+    if (typeof document.jwks_uri !== 'string') throw new Error(`OIDC discovery for ${config.issuer} names no jwks_uri`)
+    return {
+      keys: createRemoteJWKSet(new URL(document.jwks_uri)),
+      userinfoEndpoint: endpointOf(document.userinfo_endpoint),
+    }
   }
+  const discovery = (): Promise<Discovery> =>
+    (discovered ??= discover().catch((error: unknown) => {
+      // A failed discovery must be retried by the next request, not cached.
+      discovered = undefined
+      throw error
+    }))
   return {
     ...config,
-    keys: async (header, token) => {
-      keySet ??= discover().catch((error: unknown) => {
-        // A failed discovery must be retried by the next request, not cached.
-        keySet = undefined
-        throw error
-      })
-      return (await keySet)(header, token)
-    },
+    keys: async (header, token) => (await discovery()).keys(header, token),
+    userinfoEndpoint: async () => (await discovery()).userinfoEndpoint,
   }
 }
 
@@ -99,11 +124,83 @@ export async function verifyExternalToken(
   // The PWA and a listed agent alike act for the user the token names —
   // ADR-0007 — so both are resolved the same way, by the bound subject.
   if (typeof claims.sub !== 'string' || claims.sub === '') return undefined
-  const user = await findOrProvisionUser(db, `${idp.issuer} ${claims.sub}`, claims)
+  const sub = claims.sub
+  const user = await findOrProvisionUser(db, `${idp.issuer} ${sub}`, claims, () => fetchUserinfo(idp, token, sub))
   return user === undefined ? undefined : { user, clientId }
 }
 
-const USER_COLUMNS = { id: users.id, email: users.email, name: users.name }
+/** A slow provider costs one request this long, not a hung one. */
+export const USERINFO_TIMEOUT_MS = 10_000
+/** A profile is a few hundred bytes; anything this large is not one. */
+export const MAX_USERINFO_BYTES = 16 * 1024
+
+/**
+ * The provider's profile of the token's subject, from its userinfo endpoint
+ * (OIDC Core §5.3), or undefined for an answer that vouches for nothing. An
+ * RFC 9068 access token often carries no profile claims at all; the email
+ * that binds the account is then only here.
+ *
+ * Like key discovery, a provider that cannot be reached — or fails on its own
+ * side — throws rather than refuses: a 401 would tell the client to discard a
+ * token that may be perfectly good.
+ */
+async function fetchUserinfo(idp: ExternalIdp, token: string, sub: string): Promise<JWTPayload | undefined> {
+  const endpoint = await idp.userinfoEndpoint()
+  if (endpoint === undefined) return undefined
+  const res = await fetch(endpoint, {
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    // A redirect would carry the token somewhere discovery never named.
+    redirect: 'manual',
+    signal: AbortSignal.timeout(USERINFO_TIMEOUT_MS),
+  })
+  if (res.status >= 500) throw new Error(`OIDC userinfo for ${idp.issuer} answered ${res.status}`)
+  if (res.status !== 200) {
+    await res.body?.cancel()
+    return undefined
+  }
+  const body = await readCapped(res, MAX_USERINFO_BYTES)
+  if (body === undefined) return undefined
+  let profile: unknown
+  try {
+    profile = JSON.parse(body)
+  } catch {
+    // Includes a signed (application/jwt) answer, which this does not read.
+    return undefined
+  }
+  if (typeof profile !== 'object' || profile === null || Array.isArray(profile)) return undefined
+  // §5.3.2: the answer must be about the subject the token names, or it
+  // could be a profile substituted for someone else's.
+  const claims = profile as JWTPayload
+  return claims.sub === sub ? claims : undefined
+}
+
+/** The body as text, or undefined once it passes `limit` bytes. */
+async function readCapped(res: Response, limit: number): Promise<string | undefined> {
+  const declared = Number(res.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > limit) {
+    await res.body?.cancel()
+    return undefined
+  }
+  if (res.body === null) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > limit) {
+      await reader.cancel()
+      return undefined
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/** Roles are not read from scopes yet, so the stored role decides, as with the built-in IdP. */
+const USER_COLUMNS = ACCOUNT_COLUMNS
+const access = (row: Parameters<typeof sessionUserOf>[0]) => sessionUserOf(row, ROLES_ON_ACCOUNTS)
 
 /** Positive proof only: a provider that says nothing about the address has not vouched for it. */
 function verifiedEmail(claims: JWTPayload): string | undefined {
@@ -117,50 +214,76 @@ function verifiedEmail(claims: JWTPayload): string | undefined {
  * email is consulted only to make that binding, never to match afterwards:
  *
  * - **Known subject:** that account.
- * - **No account yet:** the first token with a verified email creates one —
- *   the external equivalent of first-boot setup, bounded the same way: only
- *   someone the operator's IdP issues a token to, for one of the clients
- *   configured here, gets here.
+ * - **No account yet:** the first token with a verified email creates one.
+ *   This is the external equivalent of first-boot setup, bounded the same
+ *   way: only someone the operator's IdP issues a token to, for one of the
+ *   clients configured here, gets here.
  * - **An account never bound** (an instance that used the built-in IdP until
  *   now): a verified email matching it binds it, once.
  *
+ * The verified email is the token's own when it carries one, and otherwise
+ * the one the provider's userinfo vouches for.
+ *
  * Anything else — a second person, an address already bound to another
- * subject — is refused.
+ * subject — is refused. Userinfo is asked only on the unbound path, so it
+ * costs one request per account, once.
  */
 async function findOrProvisionUser(
   db: Db,
   subject: string,
   claims: JWTPayload,
+  userinfo: () => Promise<JWTPayload | undefined>,
 ): Promise<SessionUser | undefined> {
-  const [bound] = db.select(USER_COLUMNS).from(users).where(eq(users.externalSubject, subject)).all()
-  if (bound !== undefined) return bound
+  // Every path below hands back an account row, and every row goes through
+  // the has-access rule before it acts for anyone — ADR-0012.
+  const boundTo = (q: Pick<Db, 'select'>): AccountRow | undefined =>
+    q.select(USER_COLUMNS).from(users).where(eq(users.externalSubject, subject)).all()[0]
+  const bound = boundTo(db)
+  if (bound !== undefined) return access(bound)
 
-  const email = verifiedEmail(claims)
+  // Nothing left to bind: refuse before asking the provider anything, so a
+  // second person's every request is not also a userinfo call.
+  const empty = db.select({ id: users.id }).from(users).limit(1).all().length === 0
+  if (!empty && db.select({ id: users.id }).from(users).where(isNull(users.externalSubject)).limit(1).all().length === 0) {
+    return undefined
+  }
+
+  // The token's own email wins when it vouches for one; the name travels
+  // with whichever claims supplied the email.
+  const profile = verifiedEmail(claims) === undefined ? await userinfo() : claims
+  if (profile === undefined) return undefined
+  const email = verifiedEmail(profile)
   if (email === undefined) return undefined
 
-  if (db.select({ id: users.id }).from(users).limit(1).all().length > 0) {
+  if (!empty) {
     const [unbound] = db
       .update(users)
       .set({ externalSubject: subject })
       .where(and(eq(users.email, email), isNull(users.externalSubject)))
       .returning(USER_COLUMNS)
       .all()
-    return unbound
+    // Lost a race to a parallel request carrying this same subject (another
+    // tab, an agent): that request bound the account, so this one shares it.
+    // A different subject still finds nothing and is refused.
+    return access(unbound ?? boundTo(db))
   }
 
   // A password nobody knows: the built-in sign-in is switched off in this mode,
   // and if it is ever switched back on the operator resets rather than inherits.
   const passwordHash = await hashPassword(`external-idp:${randomUUID()}`)
-  const rawName = claims['name']
+  const rawName = profile['name']
   const name = typeof rawName === 'string' && rawName.trim() !== '' ? rawName.trim().slice(0, 200) : null
   return db.transaction((tx) => {
-    // Lost a race with another first token: whoever won is the operator.
-    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return undefined
+    // Lost a race with another first token: whoever won is the operator. If
+    // the winner carried this same subject, this request is that operator too.
+    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return access(boundTo(tx))
     const [created] = tx
       .insert(users)
-      .values({ email, passwordHash, name, externalSubject: subject })
+      // Without the role scopes there is one account, and it runs the
+      // instance — ADR-0012.
+      .values({ email, passwordHash, name, externalSubject: subject, role: 'admin', roleConfirmedAt: new Date() })
       .returning(USER_COLUMNS)
       .all()
-    return created
+    return access(created)
   })
 }

@@ -333,7 +333,7 @@ export function createIntakeRoutes(deps: IntakeDeps, tuning: IntakeTuning = {}):
 
     if (!created.isSpam) {
       notifyLeadCreated(deps.onLeadCreated, created)
-      deps.changes.publishLead(deps.db, 'lead.created', created.id)
+      deps.changes.publishLead(deps.db, 'lead.created', created.id, `form:${form.formKey}`)
     }
     return accepted(c)
   })

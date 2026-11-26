@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import { accountIdsWithAccess, type AccessPolicy } from '../auth/access.ts'
 import type { Db } from '../db/index.ts'
 import { pushSubscriptions } from '../db/schema.ts'
 import { err, ok, type Result } from '../result.ts'
@@ -105,7 +106,10 @@ export function deleteSubscription(db: Db, endpoint: string): void {
   db.delete(pushSubscriptions).where(eq(pushSubscriptions.endpoint, endpoint)).run()
 }
 
-/** Every browser to notify. Single-tenant: everyone who subscribed wants the lead. */
+/**
+ * Every stored browser, whoever it belongs to. Delivery uses
+ * `deliverableSubscriptions` instead.
+ */
 export function listSubscriptions(db: Db): StoredSubscription[] {
   return db
     .select({
@@ -121,4 +125,25 @@ export function listSubscriptions(db: Db): StoredSubscription[] {
 /** Used when a regenerated VAPID pair leaves every stored row undeliverable. */
 export function deleteAllSubscriptions(db: Db): number {
   return db.delete(pushSubscriptions).run().changes
+}
+
+/**
+ * The browsers a new lead goes to: every subscription of an account that has
+ * access — ADR-0012. Single-tenant: everyone who works leads and turned push
+ * on wants the lead.
+ */
+export function deliverableSubscriptions(db: Db, policy: AccessPolicy, now = new Date()): StoredSubscription[] {
+  const allowed = accountIdsWithAccess(db, policy, now)
+  return db
+    .select({
+      id: pushSubscriptions.id,
+      userId: pushSubscriptions.userId,
+      endpoint: pushSubscriptions.endpoint,
+      p256dh: pushSubscriptions.p256dh,
+      auth: pushSubscriptions.auth,
+    })
+    .from(pushSubscriptions)
+    .all()
+    .filter((row) => allowed.has(row.userId))
+    .map(({ userId: _userId, ...subscription }) => subscription)
 }

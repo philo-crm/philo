@@ -34,6 +34,13 @@ export interface FakeApi {
   authorizations: Map<string, { challenge: string; redirectUri: string; nonce: string }>
   /** Every token sent to the revocation endpoint. */
   revoked: string[]
+  /**
+   * Discovery's `end_session_endpoint`. The built-in IdP names none, so it is
+   * unset unless a test stands in for an external provider that does.
+   */
+  endSessionEndpoint: string | undefined
+  /** The last id_token the token endpoint handed out. */
+  idToken: string | undefined
   /** Which funnel a stage is in is held beside it; the API's StageRecord does not carry it. */
   stages: FakeStage[]
   leads: LeadDetail[]
@@ -95,7 +102,7 @@ export interface FakeApi {
   }[]
 }
 
-export const TEST_USER: User = { id: 7, email: 'owner@example.com', name: 'Owner' }
+export const TEST_USER: User = { id: 7, email: 'owner@example.com', name: 'Owner', role: 'admin' }
 
 /** What the server stores. `smtpPasswordSet` is derived on the way out, never held. */
 export type StoredEmailSettings = Omit<EmailSettings, 'smtpPasswordSet'> & { smtpPassword: string }
@@ -816,7 +823,14 @@ export function emitChange(
   data: ChangeEvent['data'] = {},
 ): void {
   nextChangeId += 1
-  const event: ChangeEvent = { id: `change-${nextChangeId}`, type, occurredAt: new Date().toISOString(), funnelId, data }
+  const event: ChangeEvent = {
+    id: `change-${nextChangeId}`,
+    type,
+    occurredAt: new Date().toISOString(),
+    actor: 'api_key:1',
+    funnelId,
+    data,
+  }
   for (const stream of api.changeStreams) {
     if (stream.funnelId === undefined || stream.funnelId === funnelId || data.from?.funnelId === stream.funnelId) {
       stream.send(event)
@@ -853,7 +867,7 @@ function tokenAnswer(api: FakeApi, nonce?: string): Response {
     token_type: 'Bearer',
     expires_in: 3600,
     scope: 'openid operator',
-    ...(nonce === undefined ? {} : { id_token: idToken(nonce) }),
+    ...(nonce === undefined ? {} : { id_token: (api.idToken = idToken(nonce)) }),
   })
 }
 
@@ -896,6 +910,7 @@ function handleIdp(api: FakeApi, method: string, path: string, body: unknown): R
       authorization_endpoint: `${TEST_ISSUER}/oauth/authorize`,
       token_endpoint: `${TEST_ISSUER}/oauth/token`,
       revocation_endpoint: `${TEST_ISSUER}/oauth/revoke`,
+      ...(api.endSessionEndpoint === undefined ? {} : { end_session_endpoint: api.endSessionEndpoint }),
     })
   }
   const params = body instanceof URLSearchParams ? body : new URLSearchParams()
@@ -1123,6 +1138,8 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     refreshToken: undefined,
     authorizations: new Map(),
     revoked: [],
+    endSessionEndpoint: undefined,
+    idToken: undefined,
     stages: TEST_STAGES,
     leads: [],
     funnels: TEST_FUNNELS,

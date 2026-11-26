@@ -12,7 +12,7 @@ import { LeadList } from './LeadList.tsx'
 import { NewLead } from './NewLead.tsx'
 import { isInAppNotificationsOn, onInAppNotificationsChange, runInAppNotifications } from './push.ts'
 import { Link, usePath } from './router.tsx'
-import { SETTINGS_SECTIONS, Settings, type SettingsSection } from './Settings.tsx'
+import { AdminOnly, SETTINGS_SECTIONS, Settings, type SettingsSection } from './Settings.tsx'
 
 export interface AppShellProps {
   user: User
@@ -45,6 +45,7 @@ function tabFor(path: string): string | undefined {
 
 function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   const { user, onSessionExpired } = props
+  const isAdmin = user.role === 'admin'
 
   if (path === '/') {
     return <LeadList key="leads" isSpam={false} onSessionExpired={onSessionExpired} />
@@ -55,14 +56,26 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
     return <LeadList key="spam" isSpam onSessionExpired={onSessionExpired} />
   }
   if (path === '/board') {
-    return <FunnelBoard onSessionExpired={onSessionExpired} />
+    return <FunnelBoard canConfigure={isAdmin} onSessionExpired={onSessionExpired} />
   }
-  const settingsSection = sectionOf<SettingsSection>(SETTINGS_PATH.exec(path), SETTINGS_SECTIONS, 'email')
+  const settingsSection = sectionOf<SettingsSection>(
+    SETTINGS_PATH.exec(path),
+    SETTINGS_SECTIONS,
+    isAdmin ? 'email' : 'notifications',
+  )
   if (settingsSection !== undefined) {
-    return <Settings section={settingsSection} onSessionExpired={onSessionExpired} />
+    return <Settings section={settingsSection} isAdmin={isAdmin} onSessionExpired={onSessionExpired} />
   }
   const funnelSection = sectionOf<FunnelSection>(FUNNEL_PATH.exec(path), FUNNEL_SECTIONS, 'general')
   if (funnelSection !== undefined) {
+    if (!isAdmin) {
+      return (
+        <section className="screen">
+          <h1>Funnel settings</h1>
+          <AdminOnly />
+        </section>
+      )
+    }
     return <FunnelSettings section={funnelSection} onSessionExpired={onSessionExpired} />
   }
   if (path === '/leads/new') {
@@ -150,7 +163,7 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
           </Link>
         </nav>
         <div className="topbar-actions">
-          <FunnelSwitcher />
+          <FunnelSwitcher isAdmin={user.role === 'admin'} />
           <Link to="/leads/new" className="button-link new-lead" aria-label="New lead">
             <PlusIcon />
             <span className="new-lead-text">New lead</span>
