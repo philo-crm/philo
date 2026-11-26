@@ -236,6 +236,31 @@ export async function revokeToken(options: {
   })
 }
 
+/**
+ * OIDC RP-Initiated Logout 1.0: where to send the browser so the provider ends
+ * its own session too, or undefined when discovery names no
+ * `end_session_endpoint` — the provider then has no session to end, or none it
+ * lets a client end. With no ID token to hint with, the provider usually asks
+ * the person to confirm.
+ */
+export function endSessionUrl(options: {
+  metadata: OidcMetadata
+  clientId: string
+  idToken: string | undefined
+  postLogoutRedirectUri: string
+  state: string
+}): string | undefined {
+  const endpoint = options.metadata.end_session_endpoint
+  if (endpoint === undefined) return undefined
+  const url = new URL(endpoint)
+  if (options.idToken !== undefined) url.searchParams.set('id_token_hint', options.idToken)
+  // Allowed beside the hint (§2), and some providers want it to accept the return address.
+  url.searchParams.set('client_id', options.clientId)
+  url.searchParams.set('post_logout_redirect_uri', options.postLogoutRedirectUri)
+  url.searchParams.set('state', options.state)
+  return url.toString()
+}
+
 /** Where a session keeps its refresh token between page loads. */
 export interface RefreshTokenStore {
   load(): string | undefined
@@ -296,6 +321,15 @@ export class TokenSession {
     this.#fetch = options.fetch ?? defaultFetch
     this.#now = options.now ?? Date.now
     this.#lock = options.lock
+  }
+
+  /**
+   * The newest ID token this session holds, kept through a refresh that sends
+   * none. Read it before `signOut()`, which forgets it — it is what an
+   * end-session request hints with (`endSessionUrl`).
+   */
+  get idToken(): string | undefined {
+    return this.#tokens?.idToken
   }
 
   /** True when there is anything to sign in with, without spending it. */
@@ -414,9 +448,13 @@ export class TokenSession {
         now: this.#now,
       })
       this.#presented = refreshToken
-      // An IdP that does not rotate answers without a new refresh token; the
-      // old one is still the one to keep.
-      this.set({ ...tokens, refreshToken: tokens.refreshToken ?? refreshToken })
+      // An IdP that does not rotate answers without a new refresh token, and
+      // most send no new ID token; the old ones are still the ones to keep.
+      this.set({
+        ...tokens,
+        refreshToken: tokens.refreshToken ?? refreshToken,
+        idToken: tokens.idToken ?? this.#tokens?.idToken,
+      })
       return this.#tokens
     } catch (error) {
       // A refusal means the grant is gone: drop it, so the caller sees a

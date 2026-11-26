@@ -2,14 +2,34 @@ import { pkceChallenge } from '@philo/sdk'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../src/App.tsx'
-import { REFRESH_TOKEN_KEY } from '../src/auth.ts'
-import { authorize, installFakeApi, makeLead, TEST_CLIENT_ID, TEST_ISSUER } from './support/fake-api.ts'
+import { REFRESH_TOKEN_KEY, SIGN_OUT_STATE_KEY } from '../src/auth.ts'
+import {
+  authorize,
+  installFakeApi,
+  makeLead,
+  TEST_CLIENT_ID,
+  TEST_ISSUER,
+  type FakeApi,
+} from './support/fake-api.ts'
 import { reloadAt, signInThroughIdp, startSignIn, watchRedirects } from './support/sign-in.tsx'
 
 beforeEach(() => {
   // Each test starts at the funnel; the router reads window.location directly.
   window.history.pushState(null, '', '/')
 })
+
+/** Signs out from the account menu and answers with the end-session URL, and what was revoked by then. */
+async function signOutToProvider(api: FakeApi) {
+  const assign = watchRedirects()
+  let revokedFirst: string[] = []
+  assign.mockImplementation(() => {
+    revokedFirst = [...api.revoked]
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Account' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+  await waitFor(() => expect(assign).toHaveBeenCalledOnce())
+  return { url: new URL(String(assign.mock.calls[0]?.[0])), revokedFirst }
+}
 
 describe('App', () => {
   it('sends a signed-out browser to the IdP with a PKCE authorization request', async () => {
@@ -228,6 +248,7 @@ describe('App', () => {
     render(<App />)
     await screen.findByRole('heading', { name: 'Leads' })
     const refreshToken = api.refreshToken
+    const assign = watchRedirects()
 
     fireEvent.click(screen.getByRole('button', { name: 'Account' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
@@ -235,6 +256,71 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeDefined()
     expect(api.revoked).toEqual([refreshToken])
     expect(window.localStorage.getItem(REFRESH_TOKEN_KEY)).toBeNull()
+    // The built-in IdP names no end-session endpoint: the browser stays here.
+    expect(assign).not.toHaveBeenCalled()
+  })
+
+  describe('with a provider that ends its own session', () => {
+    const END_SESSION = 'https://idp.example.com/logout'
+
+    it('revokes the grant, then ends the session there with the id token as a hint', async () => {
+      const api = installFakeApi({ signedIn: false, leads: [], endSessionEndpoint: END_SESSION })
+      await signInThroughIdp(api)
+      await screen.findByRole('heading', { name: 'Leads' })
+      const refreshToken = api.refreshToken
+
+      const { url, revokedFirst } = await signOutToProvider(api)
+
+      expect(revokedFirst).toEqual([refreshToken])
+      expect(`${url.origin}${url.pathname}`).toBe(END_SESSION)
+      expect(url.searchParams.get('id_token_hint')).toBe(api.idToken)
+      expect(url.searchParams.get('post_logout_redirect_uri')).toBe(`${window.location.origin}/`)
+      const state = url.searchParams.get('state')
+      expect(state).toMatch(/^[\w-]{43}$/)
+      expect(window.sessionStorage.getItem(SIGN_OUT_STATE_KEY)).toBe(state)
+      // Other tabs share this store, so they follow the sign-out rather than refresh back in.
+      expect(window.localStorage.getItem(REFRESH_TOKEN_KEY)).toBeNull()
+    })
+
+    it('names the client instead when this load never received an id token', async () => {
+      // Booted from the stored refresh token, whose refresh carries no id token.
+      const api = installFakeApi({ leads: [], endSessionEndpoint: END_SESSION })
+      render(<App />)
+      await screen.findByRole('heading', { name: 'Leads' })
+
+      const { url } = await signOutToProvider(api)
+
+      expect(url.searchParams.has('id_token_hint')).toBe(false)
+      expect(url.searchParams.get('client_id')).toBe(TEST_CLIENT_ID)
+      expect(url.searchParams.get('post_logout_redirect_uri')).toBe(`${window.location.origin}/`)
+    })
+
+    it('drops the state the provider brings back, landing signed out', async () => {
+      const api = installFakeApi({ leads: [], endSessionEndpoint: END_SESSION })
+      render(<App />)
+      await screen.findByRole('heading', { name: 'Leads' })
+      const { url } = await signOutToProvider(api)
+
+      reloadAt(`/?state=${url.searchParams.get('state') ?? ''}`)
+
+      expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeDefined()
+      expect(window.location.pathname).toBe('/')
+      expect(window.location.search).toBe('')
+      expect(window.sessionStorage.getItem(SIGN_OUT_STATE_KEY)).toBeNull()
+    })
+
+    it('ignores a state it did not send', async () => {
+      const api = installFakeApi({ leads: [], endSessionEndpoint: END_SESSION })
+      render(<App />)
+      await screen.findByRole('heading', { name: 'Leads' })
+      const { url } = await signOutToProvider(api)
+
+      reloadAt('/?state=forged')
+
+      expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeDefined()
+      expect(window.location.search).toBe('?state=forged')
+      expect(window.sessionStorage.getItem(SIGN_OUT_STATE_KEY)).toBe(url.searchParams.get('state'))
+    })
   })
 
   it('shows a not-found screen for an unknown path', async () => {

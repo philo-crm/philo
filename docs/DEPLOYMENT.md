@@ -129,7 +129,11 @@ discovery documents answer 404.
 
 1. At the provider, register a **public** client for the PWA (authorization
    code with PKCE, no secret) with redirect URI `<PHILO_APP_URL>/auth/callback`,
-   and allow the `openid email profile` scopes.
+   and allow the `openid email profile` scopes. If the provider's discovery
+   names an `end_session_endpoint`, also register `<PHILO_APP_URL>/` as the
+   client's post-logout redirect URI: "Sign out" then ends the provider's
+   session as well (OIDC RP-Initiated Logout), so the next "Sign in" asks
+   again rather than signing straight back in.
 2. Set `PHILO_OIDC_ISSUER` to the provider's issuer exactly as its tokens state
    it, `PHILO_OIDC_CLIENT_ID` to that client's id, and `PHILO_OIDC_AUDIENCE` to
    the audience its access tokens carry. The provider must issue JWT access

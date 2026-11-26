@@ -1,8 +1,10 @@
 import {
   createAuthorizationRequest,
   discover,
+  endSessionUrl,
   exchangeCode,
   OidcError,
+  randomToken,
   TokenSession,
   type AuthConfig,
   type OidcMetadata,
@@ -27,6 +29,8 @@ export const CALLBACK_PATH = '/auth/callback'
 
 export const REFRESH_TOKEN_KEY = 'philo.refresh-token'
 const PENDING_KEY = 'philo.pending-authorization'
+/** The `state` an end-session request carried, for the landing page to recognise on the way back. */
+export const SIGN_OUT_STATE_KEY = 'philo.pending-sign-out'
 
 /** Everything a signed-in or signing-in page needs, built once per load. */
 export interface Auth {
@@ -150,8 +154,51 @@ export async function completeSignIn(auth: Auth): Promise<string> {
   return pending.returnTo
 }
 
-export function signOut(auth: Auth): Promise<void> {
-  return auth.session.signOut()
+/**
+ * Revokes the grant and forgets it — which every other tab follows, since they
+ * share the store — then, when the provider names an end-session endpoint (OIDC
+ * RP-Initiated Logout), sends the browser there so its own session ends too and
+ * the next "Sign in" asks again. The built-in IdP names none and stays put.
+ */
+export async function signOut(auth: Auth): Promise<void> {
+  // Read first: the session forgets it on sign-out.
+  const idToken = auth.session.idToken
+  await auth.session.signOut()
+  const state = randomToken()
+  const url = endSessionUrl({
+    metadata: auth.metadata,
+    clientId: auth.config.clientId,
+    idToken,
+    postLogoutRedirectUri: `${window.location.origin}/`,
+    state,
+  })
+  if (url === undefined) return
+  try {
+    window.sessionStorage.setItem(SIGN_OUT_STATE_KEY, state)
+  } catch {
+    // The landing page then leaves the state in the address bar; nothing worse.
+  }
+  browser.assign(url)
+}
+
+/**
+ * The provider's redirect back from an end-session request lands on `/` with
+ * the `state` it was sent. A match is ours: drop it from storage and the
+ * address bar. Any other `state` is not ours to act on and is left alone.
+ */
+export function finishSignOut(): void {
+  const params = new URLSearchParams(window.location.search)
+  const state = params.get('state')
+  if (window.location.pathname !== '/' || state === null) return
+  try {
+    if (window.sessionStorage.getItem(SIGN_OUT_STATE_KEY) !== state) return
+    window.sessionStorage.removeItem(SIGN_OUT_STATE_KEY)
+  } catch {
+    return
+  }
+  params.delete('state')
+  const rest = params.toString()
+  window.history.replaceState(null, '', rest === '' ? '/' : `/?${rest}`)
 }
 
 /** Resolves to undefined when the session is gone, rather than throwing. */
