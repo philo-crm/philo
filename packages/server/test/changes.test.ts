@@ -4,6 +4,7 @@ import { leads } from '../src/db/schema.ts'
 import { ChangeFeed, type ChangeEvent } from '../src/events/feed.ts'
 import { HONEYPOT_FIELD } from '../src/intake/payload.ts'
 import {
+  agentAuth,
   cleanupTestApps,
   createTestApp,
   defaultFormKey,
@@ -156,6 +157,99 @@ describe('the change feed', () => {
   })
 })
 
+/** How the timeline names the credential behind `authorization` — the actor an event must carry. */
+async function actorFor(testApp: TestApp, authorization: string): Promise<string> {
+  const res = await testApp.app.request('/api/v1/auth/principal', { headers: { authorization } })
+  return ((await res.json()) as { actor: string }).actor
+}
+
+describe('who made the change', () => {
+  it('names the form for a submission', async () => {
+    const h = await harness()
+    await submit(h.testApp, { email: 'dana@example.com' })
+    expect(h.events.map((event) => event.actor)).toEqual([`form:${defaultFormKey(h.testApp)}`])
+  })
+
+  it('names the person for every lead route, a promotion out of spam included', async () => {
+    const h = await harness()
+    const person = await actorFor(h.testApp, h.authorization)
+    expect(person).toMatch(/^user:\d+$/)
+    const spam = await submit(h.testApp, { email: 'bot@example.com', [HONEYPOT_FIELD]: 'x' })
+    const [, second] = await stagesOf(h)
+    h.events.length = 0
+
+    const created = await h.api('/leads', jsonPost({ name: 'By Hand', email: 'hand@example.com' }))
+    const { lead } = (await created.json()) as { lead: { id: number } }
+    await h.api(`/leads/${lead.id}`, { ...jsonPost({ name: 'Renamed' }), method: 'PATCH' })
+    await h.api(`/leads/${lead.id}/notes`, jsonPost({ note: 'Called.' }))
+    const upload = await h.api(`/leads/${lead.id}/attachments?filename=a.txt`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: 'hello',
+    })
+    const { lead: withFile } = (await upload.json()) as { lead: { attachments: { id: number }[] } }
+    await h.api(`/leads/${lead.id}/attachments/${withFile.attachments[0]!.id}`, { method: 'DELETE' })
+    await h.api(`/leads/${lead.id}/stage`, jsonPost({ stageId: second!.id }))
+    await h.api(`/leads/${spam}/not-spam`, { method: 'POST' })
+    await h.api(`/leads/${lead.id}`, { method: 'DELETE' })
+
+    expect(h.events.map((event) => event.type)).toEqual([
+      'lead.created',
+      'lead.updated',
+      'lead.updated',
+      'lead.updated',
+      'lead.updated',
+      'lead.stage_changed',
+      'lead.created',
+      'lead.deleted',
+    ])
+    expect(new Set(h.events.map((event) => event.actor))).toEqual(new Set([person]))
+  })
+
+  it('names the person for funnel and stage changes', async () => {
+    const h = await harness()
+    const person = await actorFor(h.testApp, h.authorization)
+    const [first] = await stagesOf(h)
+
+    await h.api('/stages', jsonPost({ name: 'Interview', isTerminal: false }))
+    await h.api(`/stages/${first!.id}`, { ...jsonPost({ name: 'Inbox' }), method: 'PATCH' })
+    const created = await h.api('/funnels', jsonPost({ name: 'Sales' }))
+    const { funnel } = (await created.json()) as { funnel: { id: number } }
+    await h.api(`/funnels/${funnel.id}`, { ...jsonPost({ name: 'Sales 2' }), method: 'PATCH' })
+    await h.api(`/funnels/${funnel.id}`, { method: 'DELETE' })
+
+    expect(h.events).toHaveLength(5)
+    expect(h.events.every((event) => event.type === 'funnel.changed' && event.actor === person)).toBe(true)
+  })
+
+  it('names the API key, apart from its user', async () => {
+    const h = await harness()
+    const res = await h.api('/api-keys', jsonPost({ name: 'Cron job' }))
+    const { key, secret } = (await res.json()) as { key: { id: number }; secret: string }
+    const asKey = `Bearer ${secret}`
+
+    const filed = await h.testApp.app.request(
+      '/api/v1/leads',
+      jsonPost({ name: 'From cron', email: 'cron@example.com' }, { authorization: asKey }),
+    )
+    expect(filed.status).toBe(201)
+
+    expect(h.events.map((event) => event.actor)).toEqual([`api_key:${key.id}`])
+  })
+
+  it('names the connector an agent signed in through — the path MCP takes', async () => {
+    const h = await harness()
+    const { authorization, clientId } = await agentAuth(h.testApp, 1)
+    const filed = await h.testApp.app.request(
+      '/api/v1/leads',
+      jsonPost({ name: 'From an agent', email: 'agent@example.com' }, { authorization }),
+    )
+    expect(filed.status).toBe(201)
+
+    expect(h.events.map((event) => event.actor)).toEqual([`oauth:${clientId}`])
+  })
+})
+
 /** Reads the stream until `predicate` holds over everything received so far. */
 async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, predicate: (text: string) => boolean) {
   const decoder = new TextDecoder()
@@ -190,7 +284,11 @@ describe('GET /api/v1/events', () => {
 
     const text = await readUntil(reader, (received) => received.includes('event: lead.created'))
     const data = text.split('\n').find((line) => line.startsWith('data: '))!
-    expect(JSON.parse(data.slice(6))).toMatchObject({ type: 'lead.created', data: { lead: { id } } })
+    expect(JSON.parse(data.slice(6))).toMatchObject({
+      type: 'lead.created',
+      actor: `form:${defaultFormKey(h.testApp)}`,
+      data: { lead: { id } },
+    })
     await reader.cancel()
     expect(h.feed.listenerCount).toBe(1)
   })

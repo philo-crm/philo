@@ -252,6 +252,13 @@ export interface ChangeEvent {
   id: string
   type: ChangeType
   occurredAt: string
+  /**
+   * Who made it, as the lead timeline names it: `user:<id>` (the person, from
+   * the PWA), `api_key:<id>`, `oauth:<client_id>` (an agent or connector), or
+   * `form:<form_key>` (an intake submission). A receiver that writes back can
+   * skip its own changes by this.
+   */
+  actor: string
   /** For a moved lead, the funnel it is in now; `data.from` says where it was. */
   funnelId: number
   data: {

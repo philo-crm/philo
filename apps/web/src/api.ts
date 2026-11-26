@@ -395,6 +395,11 @@ export function previewEmailTemplate(
   return philo.emailTemplates.preview(trigger, draft, funnelId)
 }
 
+/** The server's page a preview is shown in — EmailTemplates.tsx PreviewFrame. */
+export function emailPreviewFrameUrl(): string {
+  return philo.emailTemplates.previewFrameUrl()
+}
+
 /** Goes to the signed-in operator's own address — the server decides, not the screen. */
 export function sendTemplateTestEmail(trigger: string, draft: EmailTemplateDraft, funnelId?: number): Promise<string> {
   return philo.emailTemplates.sendTest(trigger, draft, funnelId)

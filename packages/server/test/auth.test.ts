@@ -214,7 +214,9 @@ describe('external IdP', () => {
     const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'k1', alg: 'ES256' }
     idp = {
       issuer: ISSUER,
-      audience: 'philo-api',
+      // Two identifiers for one resource: the API's, and the MCP endpoint's,
+      // whose tokens the MCP app forwards here.
+      audience: ['philo-api', 'philo-mcp'],
       clientId: PWA_CLIENT,
       agentClientIds: ['some-connector'],
       keys: createLocalJWKSet({ keys: [jwk] }),
@@ -222,7 +224,7 @@ describe('external IdP', () => {
     }
   })
 
-  function token(claims: Record<string, unknown>, options: { issuer?: string; audience?: string; subject?: string } = {}) {
+  function token(claims: Record<string, unknown>, options: { issuer?: string; audience?: string | string[]; subject?: string } = {}) {
     return new SignJWT(claims)
       .setProtectedHeader({ alg: 'ES256', kid: 'k1' })
       .setIssuer(options.issuer ?? ISSUER)
@@ -295,6 +297,23 @@ describe('external IdP', () => {
     expect(created.status).toBe(201)
     const [event] = testApp.db.select().from(leadEvents).where(eq(leadEvents.type, 'created')).all()
     expect(event?.actor).toBe('oauth:some-connector')
+  })
+
+  it.each([
+    ['the first listed audience', 'philo-api'],
+    ['the second listed audience', 'philo-mcp'],
+    ['an aud array naming one listed audience', ['someone-else', 'philo-mcp']],
+  ])('accepts a token for %s', async (_label, audience) => {
+    const testApp = createTestApp({ externalIdp: idp })
+    const jwt = await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true }, { audience })
+    expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${jwt}`))).status).toBe(200)
+  })
+
+  it('checks a single audience as before', async () => {
+    const testApp = createTestApp({ externalIdp: { ...idp, audience: ['philo-api'] } })
+    const claims = { azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true }
+    expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(claims, { audience: 'philo-mcp' })}`))).status).toBe(401)
+    expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(claims)}`))).status).toBe(200)
   })
 
   it.each([

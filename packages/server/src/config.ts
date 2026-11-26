@@ -23,13 +23,24 @@ export interface Config {
   mcpUrl: string
   /** Set when an external IdP replaces the built-in one — ADR-0006. */
   externalIdp: ExternalIdpConfig | undefined
+  /**
+   * Extra origins the PWA may `fetch` from, added to its Content-Security-Policy
+   * `connect-src` — for a provider whose token or revocation endpoint is on
+   * another origin than its issuer. Bare origins, empty by default.
+   */
+  webConnectOrigins: string[]
 }
 
 export interface ExternalIdpConfig {
   /** The issuer, exactly as its tokens' `iss` claim states it. */
   issuer: string
-  /** Required `aud` on access tokens, when the IdP sets one. */
-  audience: string | undefined
+  /**
+   * The `aud` values access tokens may carry, when the IdP sets one: a token
+   * naming any of them is accepted. A list because one resource can have
+   * several identifiers (the API and the MCP endpoint, RFC 8707), and the MCP
+   * app forwards its token to the API.
+   */
+  audience: string[] | undefined
   /** The PWA's client id at that IdP: tokens it holds are the person themself. */
   clientId: string
   /**
@@ -91,7 +102,16 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
   // The issuer is compared to `iss` byte for byte, so it is kept as written
   // apart from the validation.
   parseUrl('PHILO_OIDC_ISSUER', issuer)
-  const audience = env['PHILO_OIDC_AUDIENCE']
+  // Unset or empty means no audience check. Set but naming nothing (`' '`,
+  // `','`) is a mistake, and treating it as unset would fail open.
+  const rawAudience = env['PHILO_OIDC_AUDIENCE'] ?? ''
+  const audience = rawAudience
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
+  if (rawAudience !== '' && audience.length === 0) {
+    throw new ConfigError('PHILO_OIDC_AUDIENCE lists no audience; leave it unset to skip the audience check')
+  }
   const agentClientIds = (env['PHILO_OIDC_AGENT_CLIENT_IDS'] ?? '')
     .split(',')
     .map((id) => id.trim())
@@ -99,9 +119,43 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
   return {
     issuer,
     clientId,
-    audience: audience === undefined || audience === '' ? undefined : audience,
+    audience: audience.length === 0 ? undefined : audience,
     agentClientIds,
   }
+}
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1'])
+
+/**
+ * Each entry lands verbatim in a CSP directive, so it is held to a bare origin:
+ * `https:` (plain `http:` only for local development), a plain host name or
+ * IPv4 address and an optional port. A path, a wildcard, a scheme-only source or
+ * a keyword (`'unsafe-inline'`, `*`, `data:`) would widen the policy past one
+ * origin, so it stops the process instead.
+ */
+function parseOriginList(name: string, raw: string | undefined): string[] {
+  const origins: string[] = []
+  for (const entry of (raw ?? '').split(',').map((e) => e.trim())) {
+    if (entry === '') continue
+    const refuse = (why: string) =>
+      new ConfigError(`${name} entries must be bare https origins (${why}), got ${JSON.stringify(entry)}`)
+    let url: URL
+    try {
+      url = new URL(entry)
+    } catch {
+      throw refuse('not an absolute URL')
+    }
+    if (!/^[a-z0-9.-]+$/.test(url.hostname)) throw refuse('not a plain host name')
+    if (url.protocol === 'http:') {
+      if (!LOCAL_HOSTS.has(url.hostname)) throw refuse('plain http only for localhost and 127.0.0.1')
+    } else if (url.protocol !== 'https:') {
+      throw refuse('https only')
+    }
+    if (url.username !== '' || url.password !== '' || /[?#@]/.test(entry)) throw refuse('no credentials, query or fragment')
+    if (url.pathname !== '/') throw refuse('no path')
+    if (!origins.includes(url.origin)) origins.push(url.origin)
+  }
+  return origins
 }
 
 /**
@@ -131,5 +185,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appUrl: parseOptionalUrl('PHILO_APP_URL', env['PHILO_APP_URL'], publicBaseUrl),
     mcpUrl: parseOptionalUrl('PHILO_MCP_URL', env['PHILO_MCP_URL'], `${publicBaseUrl}/mcp`),
     externalIdp: parseExternalIdp(env),
+    webConnectOrigins: parseOriginList('PHILO_WEB_CONNECT_ORIGINS', env['PHILO_WEB_CONNECT_ORIGINS']),
   }
 }
