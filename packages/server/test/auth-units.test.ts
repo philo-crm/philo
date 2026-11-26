@@ -202,7 +202,7 @@ function discovery(document: Record<string, unknown>) {
 
 describe('external IdP discovery', () => {
   const ISSUER = 'https://idp.example.com/realms/philo'
-  const config = { issuer: ISSUER, audience: undefined, clientId: 'web', agentClientIds: [] }
+  const config = { issuer: ISSUER, audience: undefined, clientId: 'web', agentClientIds: [], scope: 'openid', resource: [] }
 
   afterEach(() => {
     vi.restoreAllMocks()
