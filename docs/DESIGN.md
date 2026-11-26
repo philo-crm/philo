@@ -286,6 +286,9 @@ Full rationale: [ADR-0010](adr/0010-change-feed-and-webhooks.md).
   one event after the commit: `lead.created`, `lead.updated`,
   `lead.stage_changed` (with the stage it left), `lead.deleted` (the id
   only — see Erasure) and `funnel.changed`. Quarantined leads publish nothing.
+  An entrypoint that embeds the server can listen in process too:
+  `bootServer` returns the feed as `changes`, listen-only, and `ChangeEvent`
+  is exported from `@philo/server`.
   Every event names its `actor` in the timeline's words — `user:<id>`,
   `api_key:<id>`, `oauth:<client_id>`, or `form:<form_key>` for an intake
   submission; a lead promoted out of spam names whoever promoted it. A receiver
