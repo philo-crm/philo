@@ -1,10 +1,19 @@
+import { createHash, randomBytes } from 'node:crypto'
 import { eq } from 'drizzle-orm'
-import { afterEach, describe, expect, it } from 'vitest'
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT, type CryptoKey } from 'jose'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { API_PREFIX, PUBLIC_API_PATHS, USER_API_ROUTES } from '../src/app.ts'
 import { hasAccess, ROLES_ON_ACCOUNTS } from '../src/auth/access.ts'
 import { createApiKey } from '../src/auth/api-keys.ts'
-import { users } from '../src/db/schema.ts'
+import type { ExternalIdp } from '../src/auth/external-idp.ts'
+import { accessTokens, authorizationCodes, users } from '../src/db/schema.ts'
+import { FIRST_PARTY_CLIENT_ID } from '../src/oauth/first-party.ts'
+import { createAuthorizationCode, issueTokens } from '../src/oauth/tokens.ts'
 import {
+  ADMIN_EMAIL,
+  ADMIN_PASSWORD,
+  TEST_APP_URL,
+  TEST_PUBLIC_BASE_URL,
   agentAuth,
   cleanupTestApps,
   createPerson,
@@ -372,5 +381,163 @@ describe('has access — ADR-0012', () => {
       .map((file) => relative(root, file))
       .toSorted()
     expect(readers).toEqual(['auth/access.ts'])
+  })
+})
+
+/** The two ways an account loses access in ADR-0012, applied straight to the row. */
+const NO_ACCESS: [string, Partial<typeof users.$inferInsert>][] = [
+  ['a deactivated account', { disabledAt: new Date() }],
+  ['an account with no role', { role: null }],
+]
+
+function oauthForm(fields: Record<string, string>): RequestInit {
+  return {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', origin: TEST_PUBLIC_BASE_URL },
+    body: new URLSearchParams(fields).toString(),
+  }
+}
+
+function pkcePair() {
+  const verifier = randomBytes(32).toString('base64url')
+  return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') }
+}
+
+const PWA_REDIRECT = `${TEST_APP_URL}/auth/callback`
+
+/** The first account, with a real password the dialog can check. */
+async function accountWithPassword(testApp: TestApp): Promise<number> {
+  await setupAdmin(testApp)
+  return testApp.db.select({ id: users.id }).from(users).all()[0]!.id
+}
+
+describe.each(NO_ACCESS)('the built-in IdP refuses %s', (_label, change) => {
+  it('in the sign-in dialog, with the generic message and no code', async () => {
+    const testApp = createTestApp()
+    const userId = await accountWithPassword(testApp)
+    testApp.db.update(users).set(change).where(eq(users.id, userId)).run()
+
+    const res = await testApp.app.request(
+      '/oauth/authorize',
+      oauthForm({
+        response_type: 'code',
+        client_id: FIRST_PARTY_CLIENT_ID,
+        redirect_uri: PWA_REDIRECT,
+        code_challenge: pkcePair().challenge,
+        code_challenge_method: 'S256',
+        scope: 'openid operator',
+        state: 's',
+        email: ADMIN_EMAIL,
+        password: ADMIN_PASSWORD,
+        approve: '1',
+      }),
+    )
+    expect(res.status).toBe(401)
+    expect(res.headers.get('location')).toBeNull()
+    expect(await res.text()).toContain('That email or password is not right.')
+    expect(testApp.db.select().from(authorizationCodes).all()).toHaveLength(0)
+  })
+
+  it('at the token endpoint, for a code issued before access went', async () => {
+    const testApp = createTestApp()
+    const userId = await accountWithPassword(testApp)
+    const { verifier, challenge } = pkcePair()
+    const code = createAuthorizationCode(testApp.db, {
+      clientId: FIRST_PARTY_CLIENT_ID,
+      userId,
+      redirectUri: PWA_REDIRECT,
+      codeChallenge: challenge,
+      resource: null,
+      scope: 'openid operator',
+      nonce: null,
+    })
+    testApp.db.update(users).set(change).where(eq(users.id, userId)).run()
+    const before = testApp.db.select().from(accessTokens).all().length
+
+    const res = await testApp.app.request(
+      '/oauth/token',
+      oauthForm({
+        grant_type: 'authorization_code',
+        client_id: FIRST_PARTY_CLIENT_ID,
+        code,
+        code_verifier: verifier,
+        redirect_uri: PWA_REDIRECT,
+      }),
+    )
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.error).toBe('invalid_grant')
+    expect(body).not.toHaveProperty('id_token')
+    expect(testApp.db.select().from(accessTokens).all()).toHaveLength(before)
+  })
+
+  it('at the token endpoint, for a refresh token', async () => {
+    const testApp = createTestApp()
+    const userId = await accountWithPassword(testApp)
+    const { refreshToken } = issueTokens(testApp.db, {
+      clientId: FIRST_PARTY_CLIENT_ID,
+      userId,
+      resource: null,
+      scope: 'openid operator',
+    })
+    testApp.db.update(users).set(change).where(eq(users.id, userId)).run()
+    const before = testApp.db.select().from(accessTokens).all().length
+
+    const res = await testApp.app.request(
+      '/oauth/token',
+      oauthForm({ grant_type: 'refresh_token', client_id: FIRST_PARTY_CLIENT_ID, refresh_token: refreshToken }),
+    )
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.error).toBe('invalid_grant')
+    expect(body).not.toHaveProperty('id_token')
+    expect(testApp.db.select().from(accessTokens).all()).toHaveLength(before)
+  })
+
+  it('at /oauth/userinfo', async () => {
+    const testApp = createTestApp()
+    const userId = await accountWithPassword(testApp)
+    const authorization = operatorAuth(testApp, userId)
+    expect((await testApp.app.request('/oauth/userinfo', as(authorization))).status).toBe(200)
+
+    testApp.db.update(users).set(change).where(eq(users.id, userId)).run()
+    const res = await testApp.app.request('/oauth/userinfo', as(authorization))
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'invalid_token' })
+  })
+})
+
+describe('an external IdP token for a bound account without access', () => {
+  const ISSUER = 'https://idp.example.com/realms/philo'
+  const PWA_CLIENT = 'philo-web-external'
+  let privateKey: CryptoKey
+  let idp: ExternalIdp
+
+  beforeAll(async () => {
+    const pair = await generateKeyPair('ES256')
+    privateKey = pair.privateKey
+    const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'k1', alg: 'ES256' }
+    idp = { issuer: ISSUER, audience: 'philo-api', clientId: PWA_CLIENT, agentClientIds: [], keys: createLocalJWKSet({ keys: [jwk] }) }
+  })
+
+  const token = () =>
+    new SignJWT({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })
+      .setProtectedHeader({ alg: 'ES256', kid: 'k1' })
+      .setIssuer(ISSUER)
+      .setAudience('philo-api')
+      .setSubject('external-sub')
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(privateKey)
+
+  it.each(NO_ACCESS)('refuses %s with 401', async (_label, change) => {
+    const testApp = createTestApp({ externalIdp: idp })
+    const jwt = `Bearer ${await token()}`
+    expect((await testApp.app.request(`${API_PREFIX}/leads`, as(jwt))).status).toBe(200)
+    const [row] = testApp.db.select({ id: users.id, subject: users.externalSubject }).from(users).all()
+    expect(row?.subject).toBe(`${ISSUER} external-sub`)
+
+    testApp.db.update(users).set(change).where(eq(users.id, row!.id)).run()
+    expect((await testApp.app.request(`${API_PREFIX}/leads`, as(jwt))).status).toBe(401)
   })
 })

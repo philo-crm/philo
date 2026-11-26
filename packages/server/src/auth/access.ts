@@ -72,6 +72,17 @@ export function sessionUserOf(
   return { id: row.id, email: row.email, name: row.name, role: row.role }
 }
 
+/** The person behind an account id — a grant, a key, a code — or undefined when it has no access. */
+export function userWithAccess(
+  db: Db,
+  userId: number,
+  policy: AccessPolicy,
+  now: Date = new Date(),
+): SessionUser | undefined {
+  const [row] = db.select(ACCOUNT_COLUMNS).from(users).where(eq(users.id, userId)).all()
+  return sessionUserOf(row, policy, now)
+}
+
 /** Accounts with access as an admin, earliest first: "active admins" in ADR-0012. */
 export function activeAdmins(db: Db, policy: AccessPolicy, now: Date = new Date()): AccountRow[] {
   return db

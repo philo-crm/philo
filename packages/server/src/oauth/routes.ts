@@ -3,7 +3,6 @@ import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
-import { eq } from 'drizzle-orm'
 import { SignJWT } from 'jose'
 import {
   createFirstUser,
@@ -12,6 +11,7 @@ import {
   validatePassword,
   verifyCredentials,
 } from '../auth/credentials.ts'
+import { ROLES_ON_ACCOUNTS, userWithAccess } from '../auth/access.ts'
 import { bearerToken } from '../auth/middleware.ts'
 import { hashPassword } from '../auth/password.ts'
 import type { AuthGuards } from '../auth/routes.ts'
@@ -19,7 +19,6 @@ import { delay } from '../auth/rate-limit.ts'
 import type { SessionUser } from '../auth/session.ts'
 import { clientKey } from '../client-key.ts'
 import type { Db } from '../db/index.ts'
-import { users } from '../db/schema.ts'
 import { getClient, registerClient, clientSecretMatches, type RegisteredClient } from './clients.ts'
 import { renderAuthorizeError, renderConsentPage, type ConsentPage, type ConsentRequest } from './consent.ts'
 import { FIRST_PARTY_CLIENT_ID } from './first-party.ts'
@@ -467,7 +466,10 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
       return c.json({ error: 'invalid_token' }, 401)
     }
     const user = userClaims(deps.db, grant.userId)
-    if (user === undefined) return c.json({ error: 'invalid_token' }, 401)
+    if (user === undefined) {
+      c.header('WWW-Authenticate', 'Bearer realm="philo", error="invalid_token"')
+      return c.json({ error: 'invalid_token' }, 401)
+    }
     return c.json(user)
   })
 
@@ -476,8 +478,13 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
   return routes
 }
 
+/**
+ * Identity claims for an account, or undefined when it has no access —
+ * ADR-0012's one predicate, so a deactivated or role-less account is never
+ * vouched for. The built-in IdP only runs with roles on the account.
+ */
 function userClaims(db: Db, userId: number): { sub: string; email: string; name?: string } | undefined {
-  const [user] = db.select({ email: users.email, name: users.name }).from(users).where(eq(users.id, userId)).all()
+  const user = userWithAccess(db, userId, ROLES_ON_ACCOUNTS)
   if (user === undefined) return undefined
   return { sub: String(userId), email: user.email, ...(user.name === null ? {} : { name: user.name }) }
 }
@@ -528,6 +535,10 @@ async function exchangeCode(
   if (resource !== undefined && !resourceMatches(deps, resource)) {
     return oauthError(c, 400, 'invalid_target', 'That resource is not one this server issues tokens for.')
   }
+  // Access can go between consent and exchange — ADR-0012.
+  if (userWithAccess(deps.db, grant.userId, ROLES_ON_ACCOUNTS) === undefined) {
+    return oauthError(c, 400, 'invalid_grant', 'That authorization code is not valid.')
+  }
 
   const subject: GrantSubject = {
     clientId: grant.clientId,
@@ -551,7 +562,7 @@ function exchangeRefreshToken(
     return oauthError(c, 400, 'invalid_request', 'refresh_token is required.')
   }
 
-  // Every refusal comes before the redemption, so a rejected refresh leaves the
+  // Every request refusal comes before the redemption, so a rejected refresh leaves the
   // grant intact. `exchangeCode` is deliberately the opposite way round: there,
   // burning the code on failure is what stops the PKCE verifier being guessed,
   // and a refresh token has no second secret to guess. The mistake this avoids
@@ -567,6 +578,12 @@ function exchangeRefreshToken(
   // nothing — see `redeemRefreshToken`.
   const subject = redeemRefreshToken(deps.db, presented, client.clientId)
   if (subject === undefined) {
+    return oauthError(c, 400, 'invalid_grant', 'That refresh token is not valid.')
+  }
+  // After the redemption, unlike the refusals above, and on purpose: a grant
+  // whose account has lost access (ADR-0012) is dead, and spending it is the
+  // right outcome rather than a cost.
+  if (userWithAccess(deps.db, subject.userId, ROLES_ON_ACCOUNTS) === undefined) {
     return oauthError(c, 400, 'invalid_grant', 'That refresh token is not valid.')
   }
   return tokenResponse(c, issueTokens(deps.db, subject))

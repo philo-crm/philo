@@ -1,12 +1,10 @@
-import { eq } from 'drizzle-orm'
 import type { Context, MiddlewareHandler } from 'hono'
 import type { Db } from '../db/index.ts'
-import { users } from '../db/schema.ts'
 import { FIRST_PARTY_CLIENT_ID } from '../oauth/first-party.ts'
 import { resolveAccessToken } from '../oauth/tokens.ts'
 import { resolveApiKey } from './api-keys.ts'
 import { verifyExternalToken, type ExternalIdp } from './external-idp.ts'
-import { ACCOUNT_COLUMNS, ROLES_ON_ACCOUNTS, sessionUserOf, type AccessPolicy } from './access.ts'
+import { ROLES_ON_ACCOUNTS, userWithAccess, type AccessPolicy } from './access.ts'
 import type { Role, SessionUser } from './session.ts'
 
 export interface AuthDeps {
@@ -54,11 +52,6 @@ export function bearerToken(header: string | undefined): string | undefined {
   return match?.[1]
 }
 
-function userById(deps: AuthDeps, id: number): SessionUser | undefined {
-  const [row] = deps.db.select(ACCOUNT_COLUMNS).from(users).where(eq(users.id, id)).all()
-  return sessionUserOf(row, deps.access ?? ROLES_ON_ACCOUNTS)
-}
-
 /**
  * The principal behind a bearer token, or undefined.
  *
@@ -89,7 +82,7 @@ export async function resolvePrincipal(deps: AuthDeps, token: string): Promise<P
 }
 
 function withUser(deps: AuthDeps, userId: number, actor: Principal['actor']): Principal | undefined {
-  const user = userById(deps, userId)
+  const user = userWithAccess(deps.db, userId, deps.access ?? ROLES_ON_ACCOUNTS)
   return user === undefined ? undefined : { user, role: user.role, actor }
 }
 
