@@ -158,9 +158,9 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
   const routes = new Hono<AuthEnv>()
 
   /** Answers with the lead, and tells the feed it changed. */
-  function updated(c: Context, result: Result<LeadDetail, LeadError>) {
+  function updated(c: Context<AuthEnv>, result: Result<LeadDetail, LeadError>) {
     if (!result.ok) return fail(c, result.error)
-    deps.changes.publishLead(deps.db, 'lead.updated', result.value.id)
+    deps.changes.publishLead(deps.db, 'lead.updated', result.value.id, actorOf(c))
     return c.json({ lead: result.value })
   }
 
@@ -179,7 +179,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     if (body === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = createLead(deps.db, body, actorOf(c))
     if (!result.ok) return fail(c, result.error)
-    deps.changes.publishLead(deps.db, 'lead.created', result.value.id)
+    deps.changes.publishLead(deps.db, 'lead.created', result.value.id, actorOf(c))
     return c.json({ lead: result.value }, 201)
   })
 
@@ -207,7 +207,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     const lead = findLead(deps.db, id)
     if (lead === undefined || !deleteLead(deps.db, id, actorOf(c))) return fail(c, 'not_found')
     // The id alone — ADR-0010: an event naming the person would outlive the erasure.
-    if (!lead.isSpam) deps.changes.publish('lead.deleted', lead.funnelId, { leadId: id })
+    if (!lead.isSpam) deps.changes.publish('lead.deleted', lead.funnelId, actorOf(c), { leadId: id })
     return c.body(null, 204)
   })
 
@@ -220,7 +220,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     const result = moveLeadStage(deps.db, id, body['stageId'], actorOf(c))
     if (!result.ok) return fail(c, result.error)
     if (before !== undefined && before.stageId !== result.value.stageId) {
-      deps.changes.publishLead(deps.db, 'lead.stage_changed', id, {
+      deps.changes.publishLead(deps.db, 'lead.stage_changed', id, actorOf(c), {
         id: before.stageId,
         name: before.stageName,
         funnelId: before.funnelId,
@@ -252,7 +252,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     const { lead, promoted, formId } = result.value
     if (promoted) {
       notifyLeadCreated(deps.onLeadCreated, { id: lead.id, formId, isSpam: false })
-      deps.changes.publishLead(deps.db, 'lead.created', lead.id)
+      deps.changes.publishLead(deps.db, 'lead.created', lead.id, actorOf(c))
     }
     return c.json({ lead })
   })
@@ -280,7 +280,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
         actorOf(c),
       )
       if (!result.ok) return c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
-      deps.changes.publishLead(deps.db, 'lead.updated', id)
+      deps.changes.publishLead(deps.db, 'lead.updated', id, actorOf(c))
       return c.json({ lead: result.value }, 201)
     },
   )
@@ -310,7 +310,7 @@ export function createLeadRoutes(deps: LeadRoutesDeps): Hono<AuthEnv> {
     if (id === undefined || attachmentId === undefined) return c.json({ error: 'invalid_request' }, 400)
     const result = removeAttachment(deps.db, id, attachmentId, actorOf(c))
     if (!result.ok) return c.json({ error: result.error }, ATTACHMENT_STATUS[result.error])
-    deps.changes.publishLead(deps.db, 'lead.updated', id)
+    deps.changes.publishLead(deps.db, 'lead.updated', id, actorOf(c))
     return c.json({ lead: result.value })
   })
 

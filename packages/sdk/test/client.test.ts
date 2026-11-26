@@ -141,6 +141,13 @@ describe('PhiloClient', () => {
     expect(calls[0]?.url).toBe('/api/v1/settings/email/templates/a%2Fb')
   })
 
+  it('points the template preview frame at the server, wherever it is', () => {
+    expect(new PhiloClient().emailTemplates.previewFrameUrl()).toBe('/api/email-preview')
+    expect(new PhiloClient({ baseUrl: 'https://api.example.com/' }).emailTemplates.previewFrameUrl()).toBe(
+      'https://api.example.com/api/email-preview',
+    )
+  })
+
   it('scopes stages, templates and leads to a funnel when one is named', async () => {
     const { calls, fetch } = recorder(() => json({ stages: [], templates: [], template: {}, leads: [] }))
     const client = new PhiloClient({ fetch })
@@ -229,7 +236,7 @@ describe('push.live', () => {
 })
 
 describe('events.stream', () => {
-  const CHANGE = { id: 'e1', type: 'lead.deleted', occurredAt: '2026-10-25T00:00:00.000Z', funnelId: 2, data: { leadId: 4 } }
+  const CHANGE = { id: 'e1', type: 'lead.deleted', occurredAt: '2026-10-25T00:00:00.000Z', actor: 'user:1', funnelId: 2, data: { leadId: 4 } }
 
   it('hands over every change, scoped to a funnel when asked', async () => {
     const event = `event: lead.deleted\ndata: ${JSON.stringify(CHANGE)}\n\n`

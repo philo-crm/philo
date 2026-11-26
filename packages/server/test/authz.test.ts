@@ -51,6 +51,8 @@ async function twoPeople(testApp: TestApp): Promise<{ admin: string; user: strin
 const PUBLIC_ROUTES = new Set([
   'GET /version',
   'GET /llms.txt',
+  // A page that holds no data; the preview arrives by postMessage.
+  'GET /api/email-preview',
   'POST /api/intake/:formKey',
   'OPTIONS /api/intake/:formKey',
   'POST /oauth/register',
@@ -517,7 +519,14 @@ describe('an external IdP token for a bound account without access', () => {
     const pair = await generateKeyPair('ES256')
     privateKey = pair.privateKey
     const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'k1', alg: 'ES256' }
-    idp = { issuer: ISSUER, audience: 'philo-api', clientId: PWA_CLIENT, agentClientIds: [], keys: createLocalJWKSet({ keys: [jwk] }) }
+    idp = {
+      issuer: ISSUER,
+      audience: ['philo-api'],
+      clientId: PWA_CLIENT,
+      agentClientIds: [],
+      keys: createLocalJWKSet({ keys: [jwk] }),
+      userinfoEndpoint: async () => undefined,
+    }
   })
 
   const token = () =>

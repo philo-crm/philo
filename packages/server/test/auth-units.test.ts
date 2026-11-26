@@ -1,7 +1,8 @@
 import { readFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createExternalIdp } from '../src/auth/external-idp.ts'
 import {
   MAX_PASSWORD_LENGTH,
   MIN_PASSWORD_LENGTH,
@@ -191,5 +192,50 @@ describe('ConcurrencyGate', () => {
     gate.release()
     expect(gate.tryAcquire()).toBe(true)
     expect(gate.tryAcquire()).toBe(false)
+  })
+})
+
+/** A provider whose every answer is this discovery document. */
+function discovery(document: Record<string, unknown>) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json(document))
+}
+
+describe('external IdP discovery', () => {
+  const ISSUER = 'https://idp.example.com/realms/philo'
+  const config = { issuer: ISSUER, audience: undefined, clientId: 'web', agentClientIds: [] }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('reads the userinfo endpoint from the discovery document, once', async () => {
+    const fetchSpy = discovery({ jwks_uri: `${ISSUER}/certs`, userinfo_endpoint: `${ISSUER}/userinfo` })
+    const idp = createExternalIdp(config)
+
+    expect(await idp.userinfoEndpoint()).toBe(`${ISSUER}/userinfo`)
+    expect(await idp.userinfoEndpoint()).toBe(`${ISSUER}/userinfo`)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe(`${ISSUER}/.well-known/openid-configuration`)
+  })
+
+  it.each([
+    ['names none', {}],
+    ['names something that is not a URL', { userinfo_endpoint: 'not a url' }],
+    ['names something that is not a string', { userinfo_endpoint: 42 }],
+  ])('has no userinfo endpoint when discovery %s', async (_label, extra) => {
+    discovery({ jwks_uri: `${ISSUER}/certs`, ...extra })
+    expect(await createExternalIdp(config).userinfoEndpoint()).toBeUndefined()
+  })
+
+  it('retries a failed discovery on the next call', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ jwks_uri: `${ISSUER}/certs`, userinfo_endpoint: `${ISSUER}/userinfo` }))
+    const idp = createExternalIdp(config)
+
+    await expect(idp.userinfoEndpoint()).rejects.toThrow(/503/)
+    expect(await idp.userinfoEndpoint()).toBe(`${ISSUER}/userinfo`)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 })

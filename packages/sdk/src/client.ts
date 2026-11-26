@@ -296,6 +296,16 @@ export class PhiloClient {
       return body.preview
     },
 
+    /**
+     * The page a client frames to show a preview's `body`: it renders the HTML
+     * it is sent by `postMessage` with the inline styles and images an email
+     * uses, which a `srcdoc` frame under the PWA's CSP would strip. Public and
+     * holding no data, so it is a URL, not a request. The protocol: the page
+     * posts `{ type: 'philo:email-preview-ready' }` to its parent, which
+     * answers `{ type: 'philo:email-preview', html }`.
+     */
+    previewFrameUrl: (): string => `${this.#http.baseUrl}/api/email-preview`,
+
     /** Goes to the signed-in operator's own address; answers with it. */
     sendTest: async (trigger: string, draft: EmailTemplateDraft = {}, funnelId?: number): Promise<string> => {
       const body = await this.#http.request<{ ok: true; to: string }>(

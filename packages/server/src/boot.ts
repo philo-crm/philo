@@ -18,9 +18,16 @@ import { startWebhookDelivery } from './webhooks/deliver.ts'
 
 export { loadConfig, type Config } from './config.ts'
 export { VERSION } from './version.ts'
+export type { ChangeEvent, ChangeType } from './events/feed.ts'
 
 export interface BootedServer {
   app: ReturnType<typeof createApp>
+  /**
+   * Every committed change, as webhooks and `GET /api/v1/events` get it —
+   * ADR-0010 — for an entrypoint that wants to act on it in process. Listen
+   * only: what the routes publish is the record of what happened.
+   */
+  changes: Pick<ChangeFeed, 'listen'>
   /**
    * Call once the socket is listening: prints what the operator needs to know
    * and starts the work that must not hold up serving.
@@ -79,7 +86,11 @@ export function bootServer(config: Config): BootedServer {
     ),
   })
 
-  return { app, onListening: () => onListening(config, db, emailDeps) }
+  return {
+    app,
+    changes: { listen: (listener) => changeFeed.listen(listener) },
+    onListening: () => onListening(config, db, emailDeps),
+  }
 }
 
 function onListening(config: Config, db: Db, emailDeps: EmailDeps): void {

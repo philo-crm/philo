@@ -144,7 +144,7 @@ export function currentUser(c: Context<AuthEnv>): SessionUser {
  * access) — so a lead moved by an agent is distinguishable from one moved by a
  * person afterwards.
  */
-export function actorOf(c: Context<AuthEnv>): string {
+export function actorOf(c: Context<AuthEnv>): Principal['actor'] {
   const principal = c.get('principal')
   if (principal === undefined) throw new Error('actorOf() requires requireAuth() on the route')
   return principal.actor

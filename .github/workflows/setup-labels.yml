@@ -54,6 +54,9 @@ jobs:
           create "review:approved"           "0E8A16" "Reviewer approved — ready to merge"
           create "review:changes-requested"  "D4C5F9" "Changes required before merge"
 
+          # Bugbot: reviews a fork PR from an author outside the repo (see bugbot.yml)
+          create "bugbot" "6E40C9" "Have Bugbot review this fork PR, on this and every later push"
+
           # circuit breaker
           create "pause:agents" "B60205" "Circuit breaker — all agent automation skips while present"
 
