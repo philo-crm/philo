@@ -14,6 +14,24 @@ import { CALLBACK_PATH, type Auth } from './auth.ts'
  * `exchangeCode`, so state, RFC 9207 `iss` and nonce are checked exactly as
  * for the sign-in itself.
  *
+ * The token is for the person signed in to the PWA, or it is not handed out.
+ * A silent request answers for whoever holds the IdP session *now*, which on a
+ * shared machine may be someone else since the PWA signed in; state, nonce and
+ * `iss` bind the answer to the request, not to the person. So the request asks
+ * for `openid` as well, carries the sign-in's id_token as `id_token_hint` when
+ * one is held (a hint the IdP may ignore, so it is not the guarantee), and the
+ * answer is compared before anything is cached: the subject of its id_token,
+ * or of its access token when that is a JWT, must equal the session's, taken
+ * from the sign-in's id_token or else from the session's access token when
+ * that is a JWT. Claims are read without verifying signatures, as the SDK does
+ * for the nonce: both tokens come straight from the token endpoint over TLS.
+ * A mismatch, or no subject on either side, answers `null` and counts as a
+ * refusal until the next sign-in. With an IdP that issues opaque access tokens
+ * and the id_token gone after a reload, that means `null` until the person
+ * signs in again; the alternative would be a token for someone unknown.
+ * `prompt` is still only what the caller asked for: `id_token_hint` makes
+ * `prompt=none` safer, but does not imply it.
+ *
  * Tokens live in memory only. A refresh token the IdP returns is dropped: the
  * one in `localStorage` is the sign-in's, and a second would widen what a
  * script reading storage could take.
@@ -106,17 +124,54 @@ export function getExtraToken(request: ExtraTokenRequest): Promise<string | null
   return pending
 }
 
+/**
+ * The `sub` claim of a JWT, read without verifying it (see the module note),
+ * or undefined for anything that is not a JWT with a string `sub`.
+ */
+export function jwtSubject(token: string | undefined): string | undefined {
+  const parts = token?.split('.')
+  if (parts?.length !== 3 || parts[1] === undefined) return undefined
+  try {
+    const claims: unknown = JSON.parse(atob(parts[1].replaceAll('-', '+').replaceAll('_', '/')))
+    const sub = typeof claims === 'object' && claims !== null ? (claims as { sub?: unknown }).sub : undefined
+    return typeof sub === 'string' && sub !== '' ? sub : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The caller's scope with `openid` added if missing, so the answer carries an id_token naming its subject. */
+function withOpenid(scope: string): string {
+  const values = scope.split(' ').filter((value) => value !== '')
+  return values.includes('openid') ? scope : ['openid', ...values].join(' ')
+}
+
 async function ask(current: State, key: string, request: ExtraTokenRequest): Promise<string | null> {
   const { auth } = current
+  const idTokenHint = auth.session.idToken
+  let subject: string | undefined
+  try {
+    subject = jwtSubject(idTokenHint) ?? jwtSubject(await auth.session.accessToken())
+  } catch {
+    return null // A network failure refreshing the session; ask again later.
+  }
+  if (current.ended.signal.aborted) return null
+  if (subject === undefined) {
+    // Nothing to compare an answer with, so no answer could be handed out.
+    current.refused.add(key)
+    return null
+  }
+
   let authorization: PendingAuthorization
   try {
     authorization = await createAuthorizationRequest({
       metadata: auth.metadata,
       clientId: auth.config.clientId,
       redirectUri: `${window.location.origin}${CALLBACK_PATH}`,
-      scope: request.scope,
+      scope: withOpenid(request.scope),
       resource: [request.resource],
       prompt: request.prompt,
+      idTokenHint,
     })
   } catch {
     return null
@@ -137,6 +192,11 @@ async function ask(current: State, key: string, request: ExtraTokenRequest): Pro
       callbackUrl,
     })
     if (current.ended.signal.aborted) return null
+    // Before the cache: a token for someone else, or someone unknown, is a refusal.
+    if ((jwtSubject(tokens.idToken) ?? jwtSubject(tokens.accessToken)) !== subject) {
+      current.refused.add(key)
+      return null
+    }
     // tokens.refreshToken is deliberately not kept anywhere.
     current.cache.set(key, { accessToken: tokens.accessToken, expiresAt: tokens.expiresAt })
     return tokens.accessToken

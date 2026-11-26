@@ -23,6 +23,26 @@ interface TokenCall {
   body: URLSearchParams
 }
 
+/** An unsigned JWT: the client reads claims without verifying, as it may for tokens straight from the token endpoint. */
+function jwt(claims: Record<string, unknown>): string {
+  return `${jwtPart({ alg: 'none' })}.${jwtPart(claims)}.`
+}
+
+function jwtPart(value: unknown): string {
+  return btoa(JSON.stringify(value)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+}
+
+/** The person signed in to the PWA. */
+const ALICE = 'alice-subject'
+
+/** The n-th access token the default endpoint issues: a JWT for ALICE. */
+function extra(n: number): string {
+  return jwt({ sub: ALICE, jti: `extra-${n}` })
+}
+
+/** The nonce of the request the last answered frame carried, for an endpoint that mints an id_token. */
+let lastNonce: string | undefined
+
 /** A token endpoint that hands out numbered access tokens, and a refresh token that must never be kept. */
 function installTokenEndpoint(answer?: (call: TokenCall) => Response | Promise<Response>) {
   const calls: TokenCall[] = []
@@ -36,7 +56,7 @@ function installTokenEndpoint(answer?: (call: TokenCall) => Response | Promise<R
       if (answer !== undefined) return answer(call)
       issued += 1
       return Response.json({
-        access_token: `extra-${issued}`,
+        access_token: extra(issued),
         refresh_token: `extra-refresh-${issued}`,
         token_type: 'Bearer',
         expires_in: 300,
@@ -46,7 +66,9 @@ function installTokenEndpoint(answer?: (call: TokenCall) => Response | Promise<R
   return calls
 }
 
-function makeAuth(overrides: { issuer?: string; signedIn?: boolean } = {}): Auth {
+function makeAuth(
+  overrides: { issuer?: string; signedIn?: boolean; accessToken?: string; idToken?: string } = {},
+): Auth {
   const issuer = overrides.issuer ?? ISSUER
   const md = { ...metadata, issuer }
   const saved: (string | undefined)[] = []
@@ -57,9 +79,9 @@ function makeAuth(overrides: { issuer?: string; signedIn?: boolean } = {}): Auth
   })
   if (overrides.signedIn !== false) {
     session.set({
-      accessToken: 'main-access',
+      accessToken: overrides.accessToken ?? jwt({ sub: ALICE }),
       refreshToken: undefined,
-      idToken: undefined,
+      idToken: overrides.idToken,
       scope: undefined,
       expiresAt: Date.now() + 3_600_000,
     })
@@ -89,6 +111,7 @@ async function nextFrame(): Promise<HTMLIFrameElement> {
 /** What the IdP would redirect the frame to, posted the way the framed callback posts it. */
 function callbackFor(frame: HTMLIFrameElement, params: Record<string, string>): string {
   const request = new URL(frame.src)
+  lastNonce = request.searchParams.get('nonce') ?? undefined
   const url = new URL(request.searchParams.get('redirect_uri')!)
   url.searchParams.set('state', request.searchParams.get('state')!)
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
@@ -131,12 +154,13 @@ describe('getExtraToken', () => {
     const token = getExtraToken({ resource: RESOURCE, scope: SCOPE })
     const frame = await answerNext()
 
-    expect(await token).toBe('extra-1')
+    expect(await token).toBe(extra(1))
     const request = new URL(frame.src)
     expect(`${request.origin}${request.pathname}`).toBe(metadata.authorization_endpoint)
     expect(request.searchParams.get('client_id')).toBe('philo-pwa')
     expect(request.searchParams.get('redirect_uri')).toBe(`${window.location.origin}/auth/callback`)
-    expect(request.searchParams.get('scope')).toBe(SCOPE)
+    // openid on top, so the IdP says whose token it is.
+    expect(request.searchParams.get('scope')).toBe(`openid ${SCOPE}`)
     expect(request.searchParams.getAll('resource')).toEqual([RESOURCE])
     expect(request.searchParams.has('prompt')).toBe(false)
     expect(frame.hidden).toBe(true)
@@ -153,7 +177,7 @@ describe('getExtraToken', () => {
     installTokenEndpoint()
     const token = getExtraToken({ resource: RESOURCE, scope: SCOPE, prompt: 'none' })
     const frame = await answerNext()
-    expect(await token).toBe('extra-1')
+    expect(await token).toBe(extra(1))
     expect(new URL(frame.src).searchParams.get('prompt')).toBe('none')
   })
 
@@ -193,7 +217,7 @@ describe('getExtraToken', () => {
 
     // The real answer still lands.
     post(frame, url)
-    expect(await token).toBe('extra-1')
+    expect(await token).toBe(extra(1))
   })
 
   it('gives up with null when the IdP never answers, and removes the frame', async () => {
@@ -218,13 +242,13 @@ describe('getExtraToken', () => {
     // Another audience is a separate question.
     const other = getExtraToken({ resource: 'https://other.example.com', scope: SCOPE })
     await answerNext()
-    expect(await other).toBe('extra-1')
+    expect(await other).toBe(extra(1))
 
     // A new sign-in clears the refusal.
     configureExtraTokens(makeAuth())
     const again = getExtraToken({ resource: RESOURCE, scope: SCOPE })
     await answerNext()
-    expect(await again).toBe('extra-2')
+    expect(await again).toBe(extra(2))
   })
 
   it('reuses the token until 30 s before it expires', async () => {
@@ -232,27 +256,27 @@ describe('getExtraToken', () => {
     installTokenEndpoint()
     const first = getExtraToken({ resource: RESOURCE, scope: SCOPE })
     await answerNext()
-    expect(await first).toBe('extra-1')
+    expect(await first).toBe(extra(1))
 
     // expires_in is 300 s: still good at 269 s.
     vi.setSystemTime(Date.now() + 269_000)
-    expect(await getExtraToken({ resource: RESOURCE, scope: SCOPE })).toBe('extra-1')
+    expect(await getExtraToken({ resource: RESOURCE, scope: SCOPE })).toBe(extra(1))
     expect(frames()).toHaveLength(0)
 
     vi.setSystemTime(Date.now() + 2_000)
     const renewed = getExtraToken({ resource: RESOURCE, scope: SCOPE })
     await answerNext()
-    expect(await renewed).toBe('extra-2')
+    expect(await renewed).toBe(extra(2))
   })
 
   it('caches per resource and scope', async () => {
     installTokenEndpoint()
     const first = getExtraToken({ resource: RESOURCE, scope: SCOPE })
     await answerNext()
-    expect(await first).toBe('extra-1')
+    expect(await first).toBe(extra(1))
     const wider = getExtraToken({ resource: RESOURCE, scope: `${SCOPE} feed:write` })
     await answerNext()
-    expect(await wider).toBe('extra-2')
+    expect(await wider).toBe(extra(2))
   })
 
   it('shares one request between concurrent callers', async () => {
@@ -262,8 +286,8 @@ describe('getExtraToken', () => {
     await nextFrame()
     expect(frames()).toHaveLength(1)
     await answerNext()
-    expect(await a).toBe('extra-1')
-    expect(await b).toBe('extra-1')
+    expect(await a).toBe(extra(1))
+    expect(await b).toBe(extra(1))
     expect(calls).toHaveLength(1)
   })
 
@@ -275,7 +299,7 @@ describe('getExtraToken', () => {
     window.sessionStorage.clear()
     const token = getExtraToken({ resource: RESOURCE, scope: SCOPE })
     await answerNext()
-    expect(await token).toBe('extra-1')
+    expect(await token).toBe(extra(1))
 
     expect(auth.saved).toEqual([])
     const stored = [
@@ -283,7 +307,7 @@ describe('getExtraToken', () => {
       ...Object.values({ ...window.sessionStorage }),
     ].join('\n')
     expect(stored).not.toContain('extra-refresh')
-    expect(stored).not.toContain('extra-1')
+    expect(stored).not.toContain(extra(1))
   })
 
   it('answers null when the token endpoint cannot be reached, without throwing', async () => {
@@ -313,7 +337,7 @@ describe('getExtraToken', () => {
     installTokenEndpoint()
     const first = getExtraToken({ resource: RESOURCE, scope: SCOPE })
     await answerNext()
-    expect(await first).toBe('extra-1')
+    expect(await first).toBe(extra(1))
 
     const inFlight = getExtraToken({ resource: RESOURCE, scope: SCOPE + ' x' })
     const frame = await nextFrame()
@@ -325,7 +349,87 @@ describe('getExtraToken', () => {
     configureExtraTokens(makeAuth())
     const fresh = getExtraToken({ resource: RESOURCE, scope: SCOPE })
     await answerNext()
-    expect(await fresh).not.toBe('extra-1')
+    expect(await fresh).not.toBe(extra(1))
+  })
+})
+
+describe('getExtraToken binds the token to the signed-in person', () => {
+  /** An endpoint answering with an opaque access token and an id_token for `subject`. */
+  function installIdTokenEndpoint(subject: string) {
+    return installTokenEndpoint(() =>
+      Response.json({ access_token: 'opaque-extra', id_token: jwt({ sub: subject, nonce: lastNonce }), expires_in: 300 }),
+    )
+  }
+
+  it('hands the token over when the IdP answers for the same person, and hints who that is', async () => {
+    const idToken = jwt({ sub: ALICE, nonce: 'sign-in-nonce' })
+    configureExtraTokens(makeAuth({ accessToken: 'opaque-main', idToken }))
+    installIdTokenEndpoint(ALICE)
+    const token = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    const frame = await answerNext()
+    expect(await token).toBe('opaque-extra')
+    const request = new URL(frame.src)
+    expect(request.searchParams.get('id_token_hint')).toBe(idToken)
+    // The hint does not imply prompt=none; that stays the caller's choice.
+    expect(request.searchParams.has('prompt')).toBe(false)
+  })
+
+  it('does not add openid twice', async () => {
+    installTokenEndpoint()
+    const token = getExtraToken({ resource: RESOURCE, scope: `${SCOPE} openid` })
+    const frame = await answerNext()
+    expect(await token).toBe(extra(1))
+    expect(new URL(frame.src).searchParams.get('scope')).toBe(`${SCOPE} openid`)
+  })
+
+  it('answers null when the IdP answers for someone else, and neither caches nor asks again', async () => {
+    configureExtraTokens(makeAuth({ idToken: jwt({ sub: ALICE }) }))
+    const calls = installIdTokenEndpoint('bob-subject')
+    const first = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    await answerNext()
+    expect(await first).toBeNull()
+
+    // Had the token been cached before the check, this would hand it out.
+    expect(await getExtraToken({ resource: RESOURCE, scope: SCOPE })).toBeNull()
+    expect(frames()).toHaveLength(0)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('compares the access tokens’ subjects when there is no id_token', async () => {
+    const calls = installTokenEndpoint(() =>
+      Response.json({ access_token: jwt({ sub: 'bob-subject' }), expires_in: 300 }),
+    )
+    const first = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    await answerNext()
+    expect(await first).toBeNull()
+    expect(await getExtraToken({ resource: RESOURCE, scope: SCOPE })).toBeNull()
+    expect(calls).toHaveLength(1)
+  })
+
+  it('answers null when the extra answer says nothing of whose it is', async () => {
+    const calls = installTokenEndpoint(() => Response.json({ access_token: 'opaque-extra', expires_in: 300 }))
+    const first = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    await answerNext()
+    expect(await first).toBeNull()
+    expect(await getExtraToken({ resource: RESOURCE, scope: SCOPE })).toBeNull()
+    expect(calls).toHaveLength(1)
+  })
+
+  it('does not ask at all when the session’s own person is unknown', async () => {
+    configureExtraTokens(makeAuth({ accessToken: 'opaque-main' }))
+    const calls = installTokenEndpoint()
+    expect(await getExtraToken({ resource: RESOURCE, scope: SCOPE })).toBeNull()
+    expect(frames()).toHaveLength(0)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('prefers the sign-in id_token’s subject over the session access token’s', async () => {
+    // A JWT access token that names someone else does not outvote the id_token.
+    configureExtraTokens(makeAuth({ accessToken: jwt({ sub: 'client-or-other' }), idToken: jwt({ sub: ALICE }) }))
+    installIdTokenEndpoint(ALICE)
+    const token = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    await answerNext()
+    expect(await token).toBe('opaque-extra')
   })
 })
 

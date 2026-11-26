@@ -176,6 +176,18 @@ describe('TokenSession', () => {
     expect(store.value).toBe('rt')
   })
 
+  it('holds the sign-in id_token, and keeps it through a refresh that brings none', async () => {
+    const fetch = vi.fn(async () => json({ access_token: 'at2', refresh_token: 'rt2', expires_in: 3600 }))
+    const session = new TokenSession({ metadata, clientId: 'c', store: memoryStore(), fetch, now: () => 0 })
+    expect(session.idToken).toBeUndefined()
+    session.set({ accessToken: 'at', refreshToken: 'rt', idToken: 'the-id-token', scope: undefined, expiresAt: 1 })
+    expect(session.idToken).toBe('the-id-token')
+    expect(await session.accessToken()).toBe('at2')
+    expect(session.idToken).toBe('the-id-token')
+    session.clear()
+    expect(session.idToken).toBeUndefined()
+  })
+
   it('revokes the refresh token on sign-out', async () => {
     const store = memoryStore('rt')
     const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }))
@@ -205,6 +217,19 @@ describe('resource indicators and prompt (RFC 8707)', () => {
     expect(url.searchParams.get('scope')).toBe('openid offline_access')
     expect(pending.resource).toEqual(resource)
     expect(pending.issuer).toBe(metadata.issuer)
+  })
+
+  it('sends id_token_hint when given one, and not otherwise', async () => {
+    const hinted = await createAuthorizationRequest({
+      metadata,
+      clientId: 'c',
+      redirectUri: 'https://a/cb',
+      scope: 'openid',
+      idTokenHint: 'the-id-token',
+    })
+    expect(new URL(hinted.url).searchParams.get('id_token_hint')).toBe('the-id-token')
+    const plain = await createAuthorizationRequest({ metadata, clientId: 'c', redirectUri: 'https://a/cb', scope: 'openid' })
+    expect(new URL(plain.url).searchParams.has('id_token_hint')).toBe(false)
   })
 
   it('sends neither when none is asked for', async () => {
