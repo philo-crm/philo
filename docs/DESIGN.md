@@ -55,8 +55,10 @@ A headless server, an SDK that tracks it, and two clients of the SDK —
 ```
 
 - **The server is headless.** It serves the API, form intake, and the IdP —
-  whose sign-in, consent and first-boot setup pages are the only HTML it
-  renders. It serves no UI files.
+  whose sign-in, consent and first-boot setup pages are, with the static email
+  template preview frame (`/api/email-preview`, which holds no data and needs
+  its own Content-Security-Policy), the only HTML it renders. It serves no UI
+  files.
 - **The SDK is the only way a client reaches the API.** A response shape and
   the SDK type that mirrors it change in the same PR.
 - **The PWA and MCP are clients on equal footing** with any third-party

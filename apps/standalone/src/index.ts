@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server'
 import { createMcpApp } from '@philo/mcp'
 import { bootServer, loadConfig, VERSION } from '@philo/server'
 import { createStandaloneApp } from './app.ts'
+import { pwaContentSecurityPolicy } from './csp.ts'
 
 const config = loadConfig()
 const server = bootServer(config)
@@ -14,7 +15,11 @@ const mcp = createMcpApp({
   fetch: (input, init) => server.app.request(input, init),
 })
 
-const app = createStandaloneApp({ server: server.app, mcp })
+const app = createStandaloneApp({
+  server: server.app,
+  mcp,
+  contentSecurityPolicy: pwaContentSecurityPolicy({ issuer: config.externalIdp?.issuer }),
+})
 
 serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`philo ${VERSION} (standalone: API, MCP and app) listening on port ${config.port}`)

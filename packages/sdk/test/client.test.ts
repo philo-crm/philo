@@ -123,6 +123,13 @@ describe('PhiloClient', () => {
     expect(calls[0]?.url).toBe('/api/v1/settings/email/templates/a%2Fb')
   })
 
+  it('points the template preview frame at the server, wherever it is', () => {
+    expect(new PhiloClient().emailTemplates.previewFrameUrl()).toBe('/api/email-preview')
+    expect(new PhiloClient({ baseUrl: 'https://api.example.com/' }).emailTemplates.previewFrameUrl()).toBe(
+      'https://api.example.com/api/email-preview',
+    )
+  })
+
   it('scopes stages, templates and leads to a funnel when one is named', async () => {
     const { calls, fetch } = recorder(() => json({ stages: [], templates: [], template: {}, leads: [] }))
     const client = new PhiloClient({ fetch })

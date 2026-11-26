@@ -5,11 +5,15 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   cleanupTestApps,
+  createIntakeForm,
   createTestApp,
+  defaultFormKey,
   setupAdmin,
   TEST_PUBLIC_BASE_URL,
 } from '../../../packages/server/test/support/app.ts'
+import { leads } from '../../../packages/server/src/db/schema.ts'
 import { createStandaloneApp } from '../src/app.ts'
+import { pwaContentSecurityPolicy } from '../src/csp.ts'
 
 const webDirs: string[] = []
 
@@ -178,5 +182,164 @@ describe('caching', () => {
   it.each(['/sw.js', '/manifest.webmanifest'])('makes %s revalidate', async (path) => {
     const res = await standalone().app.request(path)
     expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+})
+
+/** Every header, in a stable order, to show a response passed through untouched. */
+function headersOf(res: Response): [string, string][] {
+  return [...res.headers.entries()].toSorted(([a], [b]) => a.localeCompare(b))
+}
+
+describe('security headers', () => {
+  const PWA_HEADERS = ['content-security-policy', 'x-content-type-options', 'referrer-policy'] as const
+
+  it('builds the default policy for the built-in IdP', () => {
+    expect(pwaContentSecurityPolicy()).toBe(
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; " +
+        "connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self'; object-src 'none'; " +
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+    )
+  })
+
+  it('lets the PWA reach an external issuer, by origin only', () => {
+    const policy = pwaContentSecurityPolicy({ issuer: 'https://id.example.com/realms/philo/' })
+    expect(policy).toContain("connect-src 'self' https://id.example.com;")
+    expect(policy).not.toContain('/realms')
+    // Only connect-src: the sign-in is a top-level navigation, which no directive here governs.
+    expect(policy.match(/id\.example\.com/g)).toHaveLength(1)
+  })
+
+  it.each(['/', '/leads/42', '/auth/callback', '/sw.js', '/manifest.webmanifest', '/app.js', '/assets/index-abc123.js'])(
+    'sets the PWA headers on %s',
+    async (path) => {
+      const res = await standalone().app.request(path)
+      expect(res.status, path).toBe(200)
+      expect(res.headers.get('content-security-policy')).toBe(pwaContentSecurityPolicy())
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(res.headers.get('referrer-policy')).toBe('strict-origin-when-cross-origin')
+    },
+  )
+
+  it('sets them on a PWA 404 too', async () => {
+    const res = await standalone().app.request('/assets/not-built-yet-abc123.js')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('content-security-policy')).toBe(pwaContentSecurityPolicy())
+  })
+
+  it('serves the policy it was given', async () => {
+    const server = createTestApp()
+    const mcp = createMcpApp({
+      apiBaseUrl: TEST_PUBLIC_BASE_URL,
+      publicUrl: `${TEST_PUBLIC_BASE_URL}/mcp`,
+      fetch: (input, init) => server.app.request(input, init),
+    })
+    const policy = pwaContentSecurityPolicy({ issuer: 'https://id.example.com' })
+    const app = createStandaloneApp({ server: server.app, mcp, webDir: createWebDir(), contentSecurityPolicy: policy })
+    expect((await app.request('/')).headers.get('content-security-policy')).toBe(policy)
+  })
+
+  it.each([
+    ['/api/v1/stages', 'GET'],
+    ['/api/v1/nope', 'GET'],
+    ['/oauth/nope', 'GET'],
+    ['/.well-known/openid-configuration', 'GET'],
+    ['/.well-known/oauth-protected-resource/mcp', 'GET'],
+    ['/version', 'GET'],
+    ['/llms.txt', 'GET'],
+    ['/mcp', 'POST'],
+  ])('leaves %s to the server’s own headers', async (path, method) => {
+    const res = await standalone().app.request(path, { method })
+    for (const header of PWA_HEADERS) expect(res.headers.get(header), `${path} ${header}`).toBeNull()
+  })
+
+  it('leaves the IdP dialog’s headers alone', async () => {
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: 'philo-web',
+      redirect_uri: `${TEST_PUBLIC_BASE_URL}/auth/callback`,
+      code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+      code_challenge_method: 'S256',
+    })
+    const { server, app } = standalone()
+    const direct = await server.app.request(`/oauth/authorize?${params}`)
+    const res = await app.request(`/oauth/authorize?${params}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-security-policy')).toBe(direct.headers.get('content-security-policy'))
+  })
+
+  it('keeps the email preview frame’s own policy, which lets a template’s styles render', async () => {
+    const { server, app } = standalone()
+    const direct = await server.app.request('/api/email-preview')
+    const res = await app.request('/api/email-preview')
+    expect(res.status).toBe(200)
+    const policy = res.headers.get('content-security-policy')
+    expect(policy).toBe(direct.headers.get('content-security-policy'))
+    expect(policy).toContain("style-src 'unsafe-inline'")
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+  })
+
+  it('keeps the attachment download’s own sandbox policy', async () => {
+    const { server, app } = standalone()
+    const authorization = await setupAdmin(server)
+    const intake = await app.request(`/api/intake/${defaultFormKey(server)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Dana Rivers', email: 'dana@example.com' }),
+    })
+    expect(intake.status).toBe(201)
+    const [lead] = server.db.select({ id: leads.id }).from(leads).all()
+    const uploaded = await app.request(`/api/v1/leads/${lead!.id}/attachments?filename=cv.html`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/html', authorization },
+      body: '<script>alert(1)</script>',
+    })
+    const { lead: withFile } = (await uploaded.json()) as { lead: { attachments: { id: number }[] } }
+
+    const res = await app.request(`/api/v1/leads/${lead!.id}/attachments/${withFile.attachments[0]!.id}`, {
+      headers: { authorization },
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'")
+    expect(res.headers.get('referrer-policy')).toBeNull()
+  })
+
+  describe('intake, posted to cross-origin from public websites', () => {
+    const SITE_ORIGIN = 'https://www.example.com'
+
+    it('answers a preflight exactly as the server does', async () => {
+      const { server, app } = standalone()
+      const formKey = createIntakeForm(server, 'careers-key', [SITE_ORIGIN])
+      const init = {
+        method: 'OPTIONS',
+        headers: {
+          origin: SITE_ORIGIN,
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'content-type',
+        },
+      }
+      const direct = await server.app.request(`/api/intake/${formKey}`, init)
+      const res = await app.request(`/api/intake/${formKey}`, init)
+      expect(res.status).toBe(direct.status)
+      expect(res.headers.get('access-control-allow-origin')).toBe(SITE_ORIGIN)
+      expect(headersOf(res)).toEqual(headersOf(direct))
+      for (const header of PWA_HEADERS) expect(res.headers.get(header)).toBeNull()
+    })
+
+    it('answers a submission exactly as the server does', async () => {
+      const { server, app } = standalone()
+      const formKey = createIntakeForm(server, 'careers-key', [SITE_ORIGIN])
+      const post = (body: unknown) => ({
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: SITE_ORIGIN },
+        body: JSON.stringify(body),
+      })
+      const direct = await server.app.request(`/api/intake/${formKey}`, post({ name: 'A', email: 'a@example.com' }))
+      const res = await app.request(`/api/intake/${formKey}`, post({ name: 'B', email: 'b@example.com' }))
+      expect(res.status).toBe(201)
+      expect(res.status).toBe(direct.status)
+      expect(res.headers.get('access-control-allow-origin')).toBe(SITE_ORIGIN)
+      expect(headersOf(res)).toEqual(headersOf(direct))
+      for (const header of PWA_HEADERS) expect(res.headers.get(header)).toBeNull()
+    })
   })
 })
