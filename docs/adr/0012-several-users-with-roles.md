@@ -102,8 +102,9 @@ Deleting a lead is a user's call because it is part of working leads: spam,
 duplicates and erasure requests (DESIGN.md, Erasure) arrive at whoever is on
 the funnel, and making them wait for an admin would delay an erasure without
 protecting anything — any user can already edit away everything a lead holds.
-Everything under `/api/v1/settings`, `/api/v1/webhooks` and `/api/v1/users`
-writes, and every write to `/api/v1/funnels` and `/api/v1/stages`, is admin.
+Everything under `/api/v1/settings` and `/api/v1/webhooks` is admin, reads
+included; the PWA gets the business name from `/api/v1/auth/session`. Every
+write under `/api/v1/users`, `/api/v1/funnels` and `/api/v1/stages` is admin.
 The full route-by-route matrix lives in the implementation PR's tests, not
 here; the rule above is the decision.
 
@@ -127,15 +128,30 @@ lacks the admin scope can ask for it.
   an instance whose IdP can name nobody an admin cannot be configured.
   Scopes are read from `scp` (an array) or `scope` (a space-separated
   string). Revoking a scope at the IdP therefore takes effect when the
-  person's current access token expires. The role last derived is also
-  stored in `users.role`, with `users.role_confirmed_at`, for display, for
-  notification recipients and for API keys (below) — it is a cache of the
-  IdP's answer, refreshed when a token shows a different one, never an
-  authority over a token.
+  person's current access token expires.
+
+  The role is also stored in `users.role`, with `users.role_confirmed_at`, for
+  display, notification recipients, API keys and the last-admin guard — a
+  cache of the IdP's answer, never an authority over a token. **Only a token
+  issued to `PHILO_OIDC_CLIENT_ID` writes it**: the PWA requests both scopes,
+  so its token is the IdP's whole answer for the person. An agent's token
+  names only what that agent asked for — an admin's agent that asked for the
+  user scope does not make the admin a user — so it is checked on its own
+  scopes and changes nothing stored.
 
   An admin cannot change an externally-managed role in Philo (`409
   role_managed_by_idp`); they change it at the IdP. They can deactivate the
   account (below), which Philo enforces whatever the IdP says.
+
+### Who has access
+
+One predicate, **has access**, decides for every consumer that does not hold
+a fresh token: API keys, web-push delivery, the admin fallback for new-lead
+email, the VAPID contact and the last-admin guard. An account has access when
+it is active, its `users.role` is not null, and — for an externally-managed
+account — `role_confirmed_at` is within the last 30 days. "Active admin"
+anywhere in this ADR means an account that has access with the admin role.
+No consumer reads `users.role` without it.
 
 ### External IdP: admission and provisioning
 
@@ -155,7 +171,7 @@ An admitted token then resolves to its account by `iss`+`sub`:
 - **Bound subject:** that account.
 - **Unbound, and an account that was never bound has the token's verified
   email** (from the token, or the provider's userinfo when the token carries
-  none): that account is bound to the subject, once — today's rule, unchanged.
+  none): that account is bound to the subject, once.
 - **Otherwise:** a new account is provisioned for this subject, with the
   verified email and the token's `name`. One account per `iss`+`sub`. A
   verified email already held by an account bound to another subject is
@@ -169,11 +185,15 @@ in, and every person able to sign in to any application at that IdP through
 Philo's client would become a user.
 
 **A person who loses the scope** is refused at their next token, with the 403
-above. Their account stays, with everything it did on the timeline. When a
-bound subject's token is refused for want of the scope, Philo records the
-account as having no access (`users.role` null) — so its API keys stop
-working, its push subscriptions are deleted, and it receives no notification
-email. If the scope comes back, the next token restores the role.
+above. A refusal refuses that token only and never changes account state,
+because a client that simply did not request the scope looks the same. A PWA
+token that carries the user scope but not the admin scope is a confirmed
+demotion and rewrites the cached role to `user`. Someone removed at the IdP
+stops being confirmed, and 30 days after the last confirmation the account no
+longer has access (above): its API keys stop, it gets no push and no
+fallback email, and its push subscriptions are deleted. Their account stays,
+with everything it did on the timeline; the next PWA token with a scope
+confirms the role again.
 
 **The PWA's client and agents.** A token from `PHILO_OIDC_CLIENT_ID` is the
 person (`user:<id>` on the timeline); a token from any other admitted client
@@ -209,9 +229,12 @@ should ask for: the user scope (plus `offline_access`), or a configured value.
   deactivation every OAuth grant (access, refresh tokens and codes) and API key
   the account holds is revoked and its push subscriptions deleted; sign-in is
   refused; nothing it did on any lead changes. Reactivating restores sign-in,
-  not the revoked credentials. Deactivation works the same with an external IdP,
-  where it also refuses the subject whatever scopes its tokens carry.
-- **The last admin** cannot be demoted or deactivated (`409 last_admin`), and
+  not the revoked credentials. Pending invite and reset links are voided too.
+  Open live streams (`/api/v1/events`, `/api/v1/push/live`) are not cut; they
+  end at their 15-minute limit. Deactivation works the same with an external
+  IdP, where it also refuses the subject whatever scopes its tokens carry.
+- **The last admin** — the last account with access as an admin — cannot be
+  demoted or deactivated (`409 last_admin`), and
   nobody can deactivate or demote themself, so an instance always has an
   active admin who knows it.
 - **Password reset:** an admin issues a one-time reset link for another
@@ -230,10 +253,10 @@ ADR-0007 stands with one word changed: every credential acts as its user
 
 - **API keys** act with their user's current role, read on every request.
   With an external IdP, that is the stored role — the IdP never sees an API
-  key — so a key works only while the role was confirmed by one of the
-  person's tokens in the last 30 days. Someone whose scope is revoked at the
-  IdP and who never signs in again loses their keys within that window, or at
-  once when an admin deactivates them.
+  key — so a key works only while its account has access (above), that is,
+  while a PWA token confirmed the role in the last 30 days. Someone whose
+  scope is revoked at the IdP and who never signs in again loses their keys
+  within that window, or at once when an admin deactivates them.
 - **Built-in OAuth tokens** (the PWA, connectors) act with their user's
   current role. The `operator` and `mcp` scopes still only say which kind of
   client holds the grant.
@@ -248,9 +271,12 @@ ADR-0007 stands with one word changed: every credential acts as its user
   decides, as today: who works a funnel's leads is configuration, and an
   admin sets it. With an empty list it goes to every active admin, where
   today it goes to the only account. There is no per-person toggle.
-- **Web push** already goes to every subscription; subscriptions are per
-  device, so turning push on is each person's own choice. A deactivated or
-  no-access account's subscriptions are deleted.
+  [ADR-0004](0004-push-best-effort-email-guaranteed.md) stands; its "the
+  email always goes out" now covers the funnel's list, not everyone.
+- **Web push** goes to every subscription of an account that has access;
+  subscriptions are per device, so turning push on is each person's own
+  choice. They are deleted only when the account is deactivated or its
+  30-day confirmation lapses.
 - **The VAPID contact**, used for a non-https base URL only, becomes the
   earliest active admin's email rather than the earliest account's.
 - **"First user" lookups:** first-boot setup still keys on "no account
@@ -275,7 +301,7 @@ Every existing account becomes an **admin** — on any instance today there is
 at most one, and it could already do everything. No account, key, token,
 lead or setting changes otherwise. An external-IdP instance keeps its
 single-account behaviour until the operator sets the two scopes; its account's
-role is then whatever its next token says.
+role is then whatever its next PWA token says.
 
 ### What this replaces
 
@@ -319,6 +345,9 @@ role is then whatever its next token says.
   That is no more than an admin's agent can already do by adding a webhook
   that copies every lead out; a narrower per-credential scope remains the
   upgrade if it ever matters.
+- An admin can issue a reset link for any other account, another admin's
+  included, and then sign in as them; the timeline would name the other
+  account. That is the trust an admin already holds.
 - Deactivated accounts keep their email address, which an erasure request
   from a former colleague would have to deal with by hand. Revisit if that
   becomes real.
