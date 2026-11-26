@@ -209,6 +209,27 @@ describe('security headers', () => {
     expect(policy.match(/id\.example\.com/g)).toHaveLength(1)
   })
 
+  it('adds the configured extra origins to connect-src, and nowhere else', () => {
+    const policy = pwaContentSecurityPolicy({
+      issuer: 'https://id.example.com',
+      connectOrigins: ['https://token.example-apis.com', 'https://revoke.example.net'],
+    })
+    expect(policy).toContain(
+      "connect-src 'self' https://id.example.com https://token.example-apis.com https://revoke.example.net;",
+    )
+    expect(policy.match(/example-apis\.com/g)).toHaveLength(1)
+    expect(policy.match(/example\.net/g)).toHaveLength(1)
+  })
+
+  it('leaves the default policy unchanged with no extra origins', () => {
+    expect(pwaContentSecurityPolicy({ connectOrigins: [] })).toBe(pwaContentSecurityPolicy())
+  })
+
+  it('names an origin only once', () => {
+    const policy = pwaContentSecurityPolicy({ issuer: 'https://id.example.com/realms/x', connectOrigins: ['https://id.example.com'] })
+    expect(policy).toContain("connect-src 'self' https://id.example.com;")
+  })
+
   it.each(['/', '/leads/42', '/auth/callback', '/sw.js', '/manifest.webmanifest', '/app.js', '/assets/index-abc123.js'])(
     'sets the PWA headers on %s',
     async (path) => {

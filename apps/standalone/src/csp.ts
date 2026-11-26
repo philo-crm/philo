@@ -19,6 +19,12 @@ export interface PwaContentSecurityPolicyOptions {
    * directive here restricts.
    */
   issuer?: string | undefined
+  /**
+   * `PHILO_WEB_CONNECT_ORIGINS`: more origins for `connect-src`, for a provider
+   * whose token or revocation endpoint is not on its issuer's origin. Already
+   * validated as bare origins by `loadConfig`.
+   */
+  connectOrigins?: readonly string[] | undefined
 }
 
 /** Directive name → its sources, in the order they are served. */
@@ -26,7 +32,8 @@ export type CspDirectives = Record<string, string[]>
 
 export function pwaCspDirectives(options: PwaContentSecurityPolicyOptions = {}): CspDirectives {
   const connect = ["'self'"]
-  if (options.issuer !== undefined) connect.push(new URL(options.issuer).origin)
+  const extra = [...(options.issuer === undefined ? [] : [new URL(options.issuer).origin]), ...(options.connectOrigins ?? [])]
+  for (const origin of extra) if (!connect.includes(origin)) connect.push(origin)
   return {
     // Anything not named below: this origin only.
     'default-src': ["'self'"],
@@ -41,7 +48,8 @@ export function pwaCspDirectives(options: PwaContentSecurityPolicyOptions = {}):
     'img-src': ["'self'"],
     // No web fonts today; the system font stack needs no source.
     'font-src': ["'self'"],
-    // The API, the built-in IdP and the live feed are all this origin.
+    // The API, the built-in IdP and the live feed are all this origin; an
+    // external IdP adds its issuer and any `PHILO_WEB_CONNECT_ORIGINS`.
     'connect-src': connect,
     // `/sw.js`, the service worker (push and the offline shell).
     'worker-src': ["'self'"],

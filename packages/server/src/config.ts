@@ -23,6 +23,12 @@ export interface Config {
   mcpUrl: string
   /** Set when an external IdP replaces the built-in one — ADR-0006. */
   externalIdp: ExternalIdpConfig | undefined
+  /**
+   * Extra origins the PWA may `fetch` from, added to its Content-Security-Policy
+   * `connect-src` — for a provider whose token or revocation endpoint is on
+   * another origin than its issuer. Bare origins, empty by default.
+   */
+  webConnectOrigins: string[]
 }
 
 export interface ExternalIdpConfig {
@@ -104,6 +110,40 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
   }
 }
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1'])
+
+/**
+ * Each entry lands verbatim in a CSP directive, so it is held to a bare origin:
+ * `https:` (plain `http:` only for local development), a plain host name or
+ * IPv4 address and an optional port. A path, a wildcard, a scheme-only source or
+ * a keyword (`'unsafe-inline'`, `*`, `data:`) would widen the policy past one
+ * origin, so it stops the process instead.
+ */
+function parseOriginList(name: string, raw: string | undefined): string[] {
+  const origins: string[] = []
+  for (const entry of (raw ?? '').split(',').map((e) => e.trim())) {
+    if (entry === '') continue
+    const refuse = (why: string) =>
+      new ConfigError(`${name} entries must be bare https origins (${why}), got ${JSON.stringify(entry)}`)
+    let url: URL
+    try {
+      url = new URL(entry)
+    } catch {
+      throw refuse('not an absolute URL')
+    }
+    if (!/^[a-z0-9.-]+$/.test(url.hostname)) throw refuse('not a plain host name')
+    if (url.protocol === 'http:') {
+      if (!LOCAL_HOSTS.has(url.hostname)) throw refuse('plain http only for localhost and 127.0.0.1')
+    } else if (url.protocol !== 'https:') {
+      throw refuse('https only')
+    }
+    if (url.username !== '' || url.password !== '' || /[?#@]/.test(entry)) throw refuse('no credentials, query or fragment')
+    if (url.pathname !== '/') throw refuse('no path')
+    if (!origins.includes(url.origin)) origins.push(url.origin)
+  }
+  return origins
+}
+
 /**
  * Strict rather than truthy. `PHILO_TRUSTED_PROXY=flase` silently meaning "yes"
  * would decide a security question by typo, and this setting is only ever set on
@@ -131,5 +171,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appUrl: parseOptionalUrl('PHILO_APP_URL', env['PHILO_APP_URL'], publicBaseUrl),
     mcpUrl: parseOptionalUrl('PHILO_MCP_URL', env['PHILO_MCP_URL'], `${publicBaseUrl}/mcp`),
     externalIdp: parseExternalIdp(env),
+    webConnectOrigins: parseOriginList('PHILO_WEB_CONNECT_ORIGINS', env['PHILO_WEB_CONNECT_ORIGINS']),
   }
 }

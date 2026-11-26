@@ -87,6 +87,7 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens are recorded as the person rather than as an agent. |
 | `PHILO_OIDC_AUDIENCE` | unset | The `aud` the provider's access tokens must carry. Set it whenever the provider issues one. |
 | `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. |
+| `PHILO_WEB_CONNECT_ORIGINS` | empty | Comma-separated extra origins added to the PWA's `connect-src`, for a provider whose token or revocation endpoint is on another origin. Each must be a bare `https://` origin (`http://` only for `localhost` and `127.0.0.1`): a path, wildcard or CSP keyword is a startup error. See [Content-Security-Policy](#content-security-policy). |
 
 ### `PHILO_PUBLIC_BASE_URL` earns its keep
 
@@ -182,8 +183,11 @@ base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 (Served on one line; it is wrapped here to fit.) With `PHILO_OIDC_ISSUER` set,
 the issuer's origin is added to `connect-src`, because the PWA fetches the
 provider's discovery document and token endpoint. If the provider's discovery
-document puts its token endpoint on another origin, that origin has to be
-reachable as well.
+document puts its token or revocation endpoint on another origin, list that
+origin in `PHILO_WEB_CONNECT_ORIGINS` (for example
+`PHILO_WEB_CONNECT_ORIGINS=https://oauth2.example-apis.com`); without it the
+browser blocks the code exchange and sign-in fails with only a console
+message.
 
 The server's own responses never get this policy: the API, intake (which public
 websites post to from other origins), `/oauth`, `/.well-known`, `/mcp` and

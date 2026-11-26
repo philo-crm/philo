@@ -18,7 +18,10 @@ const mcp = createMcpApp({
 const app = createStandaloneApp({
   server: server.app,
   mcp,
-  contentSecurityPolicy: pwaContentSecurityPolicy({ issuer: config.externalIdp?.issuer }),
+  contentSecurityPolicy: pwaContentSecurityPolicy({
+    issuer: config.externalIdp?.issuer,
+    connectOrigins: config.webConnectOrigins,
+  }),
 })
 
 serve({ fetch: app.fetch, port: config.port }, () => {
