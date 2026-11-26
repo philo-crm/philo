@@ -136,10 +136,16 @@ jobs:
           persist-credentials: false
       # The PR head, from this repository even for a fork PR: GitHub keeps refs/pull/<n>/head here,
       # so the head SHA is fetchable without naming the fork. checkout fetches a SHA ref directly.
+      # checkout refuses a fork head under pull_request_target unless told otherwise, because
+      # running that code here would be a pwn request. Nothing in pr-head/ is ever run: the history
+      # step only reads it with git log/diff/blame (no hooks; drivers would need local git config),
+      # and Claude Code takes its settings and CLAUDE.md from the workspace root (main), reading
+      # pr-head/ only as files through --add-dir. Keep it that way, or drop this opt-in.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ github.event.pull_request.head.sha }}
+          allow-unsafe-pr-checkout: true
           path: pr-head
           # Full history for the step below.
           fetch-depth: 0
