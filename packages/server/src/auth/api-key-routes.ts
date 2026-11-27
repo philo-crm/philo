@@ -10,6 +10,7 @@ import {
   validateApiKeyName,
   type ApiKeyRecord,
 } from './api-keys.ts'
+import { ACCOUNT_COLUMNS } from './access.ts'
 import type { ExternalIdp } from './external-idp.ts'
 import { adminRequired, currentUser, principalRole, type AuthEnv } from './middleware.ts'
 
@@ -62,7 +63,7 @@ export function createApiKeyRoutes(deps: ApiKeyRoutesDeps): Hono<AuthEnv> {
     // an admin's agent with the user scope alone is refused, and is told which
     // scope to ask for.
     const userId = currentUser(c).id
-    const stored = deps.db.select({ role: users.role }).from(users).where(eq(users.id, userId)).all()[0]?.role
+    const stored = deps.db.select(ACCOUNT_COLUMNS).from(users).where(eq(users.id, userId)).all()[0]?.role
     if (stored === 'admin' && principalRole(c) !== 'admin') return adminRequired(c, deps.externalIdp)
 
     const created = createApiKey(deps.db, userId, name)
