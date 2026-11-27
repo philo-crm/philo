@@ -87,7 +87,10 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens are recorded as the person rather than as an agent. |
 | `PHILO_OIDC_AUDIENCE` | unset | Comma-separated `aud` values the provider's access tokens may carry; a token naming any one of them is accepted. Set it whenever the provider issues one. |
 | `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. |
-| `PHILO_OIDC_SCOPE` | `openid email profile` | The scope the PWA asks that provider for. Must include `openid`. Add `offline_access` if the provider issues refresh tokens only when asked. |
+| `PHILO_OIDC_SCOPE` | `openid email profile`, plus both role scopes when set | The scope the PWA asks that provider for. Must include `openid`, and with the role scopes set at least one of them (normally both). Add `offline_access` if the provider issues refresh tokens only when asked. |
+| `PHILO_OIDC_USER_SCOPE` | unset | With `PHILO_OIDC_ADMIN_SCOPE`: the scope that admits a person as a user. Setting both gives every person their own account, with the role their token's scopes name. See [Several people](#several-people-roles-from-scopes). |
+| `PHILO_OIDC_ADMIN_SCOPE` | unset | With `PHILO_OIDC_USER_SCOPE`: the scope that makes a person an admin. One without the other stops Philo at startup. |
+| `PHILO_OIDC_AGENT_SCOPE` | `<user scope> offline_access` with the role scopes, else unset | What the MCP endpoint's protected-resource metadata tells agents to ask the provider for. |
 | `PHILO_OIDC_RESOURCE` | empty | Comma-separated [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707) resource indicators (absolute URLs) the PWA sends with its sign-in and token requests, for a provider that picks the token's audience from them. |
 | `PHILO_WEB_CONNECT_ORIGINS` | empty | Comma-separated extra origins added to the PWA's `connect-src`, for a provider whose token or revocation endpoint is on another origin. Each must be a bare `https://` origin (`http://` only for `localhost` and `127.0.0.1`): a path, wildcard or CSP keyword is a startup error. See [Content-Security-Policy](#content-security-policy). |
 
@@ -167,18 +170,19 @@ discovery documents answer 404.
      with separate API and MCP identifiers as above, the PWA asks for the API
      one. The PWA sends the same values on sign-in, on the code exchange and on
      every refresh.
-   - `PHILO_OIDC_SCOPE` and `PHILO_OIDC_RESOURCE` apply only to an external
-     provider. Set without `PHILO_OIDC_ISSUER`, they stop Philo at startup.
+   - `PHILO_OIDC_SCOPE`, `PHILO_OIDC_RESOURCE` and the three role and agent
+     scope settings apply only to an external provider. Set without
+     `PHILO_OIDC_ISSUER`, they stop Philo at startup.
    - When the provider's redirect carries an `iss` parameter
      ([RFC 9207](https://www.rfc-editor.org/rfc/rfc9207)), the PWA refuses one
      that does not match the issuer it asked. A provider whose discovery
      document sets `authorization_response_iss_parameter_supported` must send it.
-3. The first operator token on an empty instance, with a verified email,
-   creates the account and binds it to that token's subject. From then on the
-   subject is the operator — changing the email at the provider changes
-   nothing, and another person with the same address gets nothing. An
-   existing account from the built-in IdP is bound the same way, once, by its
-   verified email.
+3. Without the role scopes (below), the instance has one account: the first
+   operator token on an empty instance, with a verified email, creates it and
+   binds it to that token's subject. From then on the subject is the operator
+   — changing the email at the provider changes nothing, and another person,
+   with the same address or any other, gets nothing. An existing account from
+   the built-in IdP is bound the same way, once, by its verified email.
 
 Providers that rotate refresh tokens and revoke the whole grant when one is
 used twice are fine: the PWA's tabs share one refresh token and take turns
@@ -192,6 +196,52 @@ API keys keep working. MCP connectors that want OAuth must be registered at the
 provider and listed in `PHILO_OIDC_AGENT_CLIENT_IDS`; everything else the
 provider issues is refused, because a valid signature only proves the token
 came from *some* application registered there.
+
+#### Several people: roles from scopes
+
+To let several people in, each with their own account, define two scopes at
+the provider — one that admits a person as a **user**, one that makes them an
+**admin** ([ADR-0012](adr/0012-several-users-with-roles.md)) — and set
+`PHILO_OIDC_USER_SCOPE` and `PHILO_OIDC_ADMIN_SCOPE` to them, for example
+`PHILO_OIDC_USER_SCOPE=crm:user` and `PHILO_OIDC_ADMIN_SCOPE=crm:admin`.
+
+- **At the provider,** grant the user scope to everyone who works leads and
+  the admin scope to whoever configures the instance — typically by group or
+  role membership, with the provider leaving a scope out of the token for
+  someone who does not hold it. Allow both on the PWA's client, which asks
+  for both by default (`PHILO_OIDC_SCOPE` is then
+  `openid email profile <user scope> <admin scope>`), and the user scope (plus
+  `offline_access`) on every agent client. A provider that refuses the whole
+  request for a scope the person lacks, rather than leaving it out, needs
+  `PHILO_OIDC_SCOPE` set with that in mind.
+- **Each request** takes its role from the token's `scope` or `scp` claim:
+  the admin scope makes an admin (alone too), the user scope a user. A token
+  holding neither is refused with `403 insufficient_scope` and a
+  `WWW-Authenticate` challenge naming the user scope, and it never binds or
+  creates an account. A user's token on an admin route gets
+  `403 admin_required`, naming the admin scope. An agent's token acts with
+  its own scopes, never more, even for an admin.
+- **Accounts:** every `iss`+`sub` gets one, created by its first admitted
+  token with a verified email and the profile's name. An account from before
+  (the built-in IdP's, or the single external one) is bound by its verified
+  email, once. An address already bound to another subject is refused.
+- **The stored role** is a cache, for API keys, push and the new-lead email:
+  any admitted token confirms it, the admin scope sets
+  admin, and only a token issued to `PHILO_OIDC_CLIENT_ID` sets it back to
+  user — an admin's agent that asked for the user scope demotes nobody.
+- **Revoking access** at the provider takes effect at the person's next
+  token: refused, with nothing about their account changed. Their API keys
+  and push devices last until 30 days after the PWA (or any admitted token)
+  last confirmed their role; then the keys stop, their devices are dropped,
+  and they no longer count as an admin for email. Their account and timeline
+  stay, and a later token with a scope brings them back. To cut someone off
+  at once, deactivate them in Philo, which no scope overrides
+  (`403 account_disabled`).
+- **Switching the scopes on** for an instance that already uses an external
+  provider: its account stays an admin, and its role counts as confirmed by
+  its last sign-in, so its API keys keep working for up to 30 days from
+  then. Sign in once after setting the scopes; the account's role is then
+  whatever that token says.
 
 ### Running the pieces apart
 

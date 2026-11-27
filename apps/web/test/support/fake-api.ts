@@ -26,6 +26,8 @@ export interface FakeApi {
   /** What `GET /api/v1/auth/config` answers with; the issuer and client id stay the test ones. */
   signIn: { scope: string; resource: string[] }
   user: User | undefined
+  /** When set, `GET /api/v1/auth/session` refuses the token with this 403 code — ADR-0012. */
+  sessionRefusal?: 'insufficient_scope' | 'account_disabled' | undefined
   /** The one access token the API accepts right now; undefined when signed out. */
   accessToken: string | undefined
   /** The refresh token the IdP would honour, rotated on every use as the real one is. */
@@ -228,7 +230,7 @@ export function makeLead(overrides: Partial<LeadDetail> & { id: number }): LeadD
  */
 function jsonResponse(status: number, body: unknown): Response {
   const snapshot = structuredClone(body)
-  return { ok: status >= 200 && status < 300, status, json: async () => snapshot } as Response
+  return { ok: status >= 200 && status < 300, status, headers: new Headers(), json: async () => snapshot } as Response
 }
 
 function searchable(lead: LeadDetail): string {
@@ -972,6 +974,7 @@ function handle(
     return jsonResponse(401, { error: 'unauthorized' })
   }
   if (method === 'GET' && path === '/api/v1/auth/session') {
+    if (api.sessionRefusal !== undefined) return jsonResponse(403, { error: api.sessionRefusal })
     if (api.user === undefined) return jsonResponse(401, { error: 'unauthorized' })
     return jsonResponse(200, { user: api.user })
   }

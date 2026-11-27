@@ -82,11 +82,13 @@ export function createMcpApp(options: McpAppOptions): Hono<McpEnv> {
   // so it is asked of the API rather than configured twice.
   app.use(PROTECTED_RESOURCE_METADATA_PATH, cors())
   app.get(PROTECTED_RESOURCE_METADATA_PATH, async (c) => {
-    const { issuer } = await client().auth.config()
+    const { issuer, agentScope } = await client().auth.config()
     return c.json({
       resource: options.publicUrl,
       authorization_servers: [issuer],
-      scopes_supported: ['mcp'],
+      // What the API says agents ask for — ADR-0012's user scope with an
+      // external IdP — and the built-in IdP's `mcp` when it says nothing.
+      scopes_supported: agentScope === undefined ? ['mcp'] : agentScope.split(' '),
       bearer_methods_supported: ['header'],
       resource_name: 'Philo',
     })
@@ -119,8 +121,12 @@ export function createMcpApp(options: McpAppOptions): Hono<McpEnv> {
         return c.json({ error: 'unauthorized' }, 401)
       }
       // A token the API knows but will not serve at all — passed through as
-      // the API said it, so a client can see why.
+      // the API said it, so a client can see why. A challenge naming the
+      // scope it lacks keeps its header, with the hint to discovery added.
       if (error instanceof ApiError && error.status === 403) {
+        if (error.challenge !== undefined) {
+          c.header('WWW-Authenticate', `${error.challenge}, resource_metadata="${resourceMetadataUrl}"`)
+        }
         return c.json({ error: error.code === '' ? 'forbidden' : error.code }, 403)
       }
       throw error

@@ -113,6 +113,20 @@ describe('App', () => {
     await waitFor(() => expect(assign).toHaveBeenCalledOnce())
   })
 
+  it.each([
+    ['insufficient_scope', /not been given access to Philo/],
+    ['account_disabled', /deactivated/],
+  ] as const)('signs out and says why when the API refuses the person with %s', async (refusal, message) => {
+    const api = installFakeApi({ signedIn: false })
+    api.sessionRefusal = refusal
+    await signInThroughIdp(api)
+
+    expect(await screen.findByRole('heading', { name: 'Sign-in failed' })).toBeDefined()
+    expect(screen.getByRole('alert').textContent).toMatch(message)
+    expect(window.localStorage.getItem(REFRESH_TOKEN_KEY)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeDefined()
+  })
+
   it('says so when the person cancelled at the IdP', async () => {
     installFakeApi({ signedIn: false })
     const state = new URL(await startSignIn()).searchParams.get('state') ?? ''

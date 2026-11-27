@@ -230,6 +230,12 @@ export interface AuthConfig {
    * exchange. Empty unless the operator configured some for an external IdP.
    */
   resource: string[]
+  /**
+   * What an agent should ask the issuer for, space-separated — the MCP
+   * endpoint advertises it. Absent from older servers, and from an external
+   * IdP configured without the role scopes or an agent scope.
+   */
+  agentScope?: string
 }
 
 /** Whose a token is — `GET /api/v1/auth/principal`. */

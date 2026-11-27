@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ApiError, PhiloClient, isAdminRequired, isUnauthorized } from '../src/index.ts'
+import { ApiError, PhiloClient, isAccessDenied, isAdminRequired, isUnauthorized } from '../src/index.ts'
 
 interface Call {
   url: string
@@ -115,6 +115,24 @@ describe('PhiloClient', () => {
       .webhooks.list()
       .catch((e) => e)
     expect(isAdminRequired(other)).toBe(false)
+  })
+
+  it('keeps the challenge of a refusal, and tells a token that lets nobody in apart', async () => {
+    const challenge = 'Bearer realm="philo", error="insufficient_scope", scope="crm:user"'
+    const respond = (code: string) => () =>
+      new Response(JSON.stringify({ error: code }), {
+        status: 403,
+        headers: { 'content-type': 'application/json', 'www-authenticate': challenge },
+      })
+    const scope = await new PhiloClient({ fetch: recorder(respond('insufficient_scope')).fetch }).auth.session().catch((e) => e)
+    expect(scope).toMatchObject({ status: 403, code: 'insufficient_scope', challenge })
+    expect(isAccessDenied(scope)).toBe(true)
+    const disabled = await new PhiloClient({ fetch: recorder(respond('account_disabled')).fetch }).auth.session().catch((e) => e)
+    expect(isAccessDenied(disabled)).toBe(true)
+    const adminOnly = await new PhiloClient({ fetch: recorder(respond('admin_required')).fetch }).auth.session().catch((e) => e)
+    expect(isAccessDenied(adminOnly)).toBe(false)
+    const plain = await new PhiloClient({ fetch: recorder(() => json({ error: 'not_found' }, 404)).fetch }).auth.session().catch((e) => e)
+    expect(plain.challenge).toBeUndefined()
   })
 
   it('returns the role with the principal', async () => {

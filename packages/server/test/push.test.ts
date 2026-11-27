@@ -240,6 +240,40 @@ describe('sendNewLeadPush', () => {
     expect(push.sent.map((entry) => entry.endpoint)).toEqual(['https://push.example.com/subscription/worker'])
   })
 
+  it('deletes the devices of an externally-managed account whose confirmation lapsed — ADR-0012', async () => {
+    const { testApp, leadId } = await seeded()
+    const lapsed = createPerson(testApp, { email: 'lapsed@example.com', role: 'user' })
+    const day = 24 * 60 * 60 * 1000
+    testApp.db.update(users).set({ roleConfirmedAt: new Date() }).where(eq(users.id, 1)).run()
+    testApp.db.update(users).set({ roleConfirmedAt: new Date(Date.now() - 31 * day) }).where(eq(users.id, lapsed)).run()
+    const disabled = createPerson(testApp, { email: 'disabled@example.com', role: 'user' })
+    testApp.db.update(users).set({ roleConfirmedAt: new Date(), disabledAt: new Date() }).where(eq(users.id, disabled)).run()
+    storeSubscription(testApp, 1, ENDPOINT)
+    storeSubscription(testApp, lapsed, 'https://push.example.com/subscription/lapsed')
+    storeSubscription(testApp, disabled, 'https://push.example.com/subscription/disabled')
+    const push = recordingPush()
+
+    await sendNewLeadPush({ ...deps(testApp, push.send), access: { rolesFromIdp: true } }, leadId)
+
+    expect(push.sent.map((entry) => entry.endpoint)).toEqual([ENDPOINT])
+    // Only the lapse sweeps: deactivation deletes its own devices, at deactivation.
+    expect(listSubscriptions(testApp.db).map((row) => row.endpoint).toSorted()).toEqual(
+      [ENDPOINT, 'https://push.example.com/subscription/disabled'].toSorted(),
+    )
+  })
+
+  it('sweeps nothing when roles live on the account', async () => {
+    const { testApp, leadId } = await seeded()
+    testApp.db.update(users).set({ roleConfirmedAt: new Date(0) }).where(eq(users.id, 1)).run()
+    storeSubscription(testApp, 1, ENDPOINT)
+    const push = recordingPush()
+
+    await sendNewLeadPush(deps(testApp, push.send), leadId)
+
+    expect(push.sent.map((entry) => entry.endpoint)).toEqual([ENDPOINT])
+    expect(listSubscriptions(testApp.db)).toHaveLength(1)
+  })
+
   it('does nothing when nobody has subscribed', async () => {
     const { testApp, leadId } = await seeded()
     const push = recordingPush()

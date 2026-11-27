@@ -22,8 +22,11 @@ describe('loadConfig', () => {
       PHILO_OIDC_AUDIENCE: 'philo-api',
       PHILO_OIDC_CLIENT_ID: 'philo-web',
       PHILO_OIDC_AGENT_CLIENT_IDS: ' connector-a, ,connector-b,philo-web',
-      PHILO_OIDC_SCOPE: ' openid  email profile offline_access ',
+      PHILO_OIDC_SCOPE: ' openid  email profile offline_access crm:user crm:admin',
       PHILO_OIDC_RESOURCE: ' https://crm.example.com/api, ,https://agents.example.com/mcp',
+      PHILO_OIDC_USER_SCOPE: ' crm:user ',
+      PHILO_OIDC_ADMIN_SCOPE: 'crm:admin',
+      PHILO_OIDC_AGENT_SCOPE: ' crm:user  offline_access ',
       PHILO_WEB_CONNECT_ORIGINS: ' https://token.example-apis.com, ,https://revoke.example.net/',
     })
     expect(config).toEqual({
@@ -40,8 +43,10 @@ describe('loadConfig', () => {
         // Trimmed, blanks dropped, and the operator's own client never doubles as an agent.
         agentClientIds: ['connector-a', 'connector-b'],
         // Whitespace collapsed; resource indicators kept exactly as written, blanks dropped.
-        scope: 'openid email profile offline_access',
+        scope: 'openid email profile offline_access crm:user crm:admin',
         resource: ['https://crm.example.com/api', 'https://agents.example.com/mcp'],
+        roles: { userScope: 'crm:user', adminScope: 'crm:admin' },
+        agentScope: 'crm:user offline_access',
       },
       // Trimmed, blanks dropped, and normalized to the bare origin.
       webConnectOrigins: ['https://token.example-apis.com', 'https://revoke.example.net'],
@@ -62,6 +67,61 @@ describe('loadConfig', () => {
   it('asks an external IdP for the default scope and no resource unless told otherwise', () => {
     const config = loadConfig({ PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x' })
     expect(config.externalIdp).toMatchObject({ scope: 'openid email profile', resource: [] })
+    // Without the role scopes, nothing changes: one account, no agent scope to advertise.
+    expect(config.externalIdp?.roles).toBeUndefined()
+    expect(config.externalIdp?.agentScope).toBeUndefined()
+  })
+
+  describe('role scopes (ADR-0012)', () => {
+    const env = { PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'x' }
+    const roles = { PHILO_OIDC_USER_SCOPE: 'crm:user', PHILO_OIDC_ADMIN_SCOPE: 'crm:admin' }
+
+    it('asks for both role scopes at sign-in, and offers agents the user scope, by default', () => {
+      const config = loadConfig({ ...env, ...roles })
+      expect(config.externalIdp).toMatchObject({
+        roles: { userScope: 'crm:user', adminScope: 'crm:admin' },
+        scope: 'openid email profile crm:user crm:admin',
+        agentScope: 'crm:user offline_access',
+      })
+    })
+
+    it('keeps an explicit sign-in scope as written', () => {
+      const config = loadConfig({ ...env, ...roles, PHILO_OIDC_SCOPE: 'openid email crm:admin crm:user' })
+      expect(config.externalIdp?.scope).toBe('openid email crm:admin crm:user')
+    })
+
+    it('refuses a sign-in scope that asks for neither role scope', () => {
+      // The PWA's every token would then be refused.
+      expect(() => loadConfig({ ...env, ...roles, PHILO_OIDC_SCOPE: 'openid email' })).toThrow(/PHILO_OIDC_SCOPE.*crm:user/)
+    })
+
+    it.each([
+      ['the user scope alone', { PHILO_OIDC_USER_SCOPE: 'crm:user' }],
+      ['the admin scope alone', { PHILO_OIDC_ADMIN_SCOPE: 'crm:admin' }],
+    ])('refuses %s: an instance whose IdP can name nobody an admin cannot be configured', (_label, one) => {
+      expect(() => loadConfig({ ...env, ...one })).toThrow(/PHILO_OIDC_USER_SCOPE.*PHILO_OIDC_ADMIN_SCOPE/)
+    })
+
+    it.each([
+      ['two scopes in one', { ...roles, PHILO_OIDC_USER_SCOPE: 'crm:user crm:read' }],
+      ['the same scope twice', { ...roles, PHILO_OIDC_ADMIN_SCOPE: 'crm:user' }],
+      ['a scope with a quote', { ...roles, PHILO_OIDC_ADMIN_SCOPE: 'crm"admin' }],
+    ])('refuses %s', (_label, scopes) => {
+      expect(() => loadConfig({ ...env, ...scopes })).toThrow(/PHILO_OIDC_(USER|ADMIN)_SCOPE/)
+    })
+
+    it('reads an agent scope without the role scopes too', () => {
+      expect(loadConfig({ ...env, PHILO_OIDC_AGENT_SCOPE: 'crm offline_access' }).externalIdp?.agentScope).toBe(
+        'crm offline_access',
+      )
+    })
+
+    it.each(['PHILO_OIDC_USER_SCOPE', 'PHILO_OIDC_ADMIN_SCOPE', 'PHILO_OIDC_AGENT_SCOPE'])(
+      'refuses %s without an external issuer',
+      (name) => {
+        expect(() => loadConfig({ [name]: 'crm:user' })).toThrow(/PHILO_OIDC_ISSUER/)
+      },
+    )
   })
 
   it('refuses a sign-in scope without openid', () => {

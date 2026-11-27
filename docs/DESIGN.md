@@ -378,6 +378,16 @@ decides whether an account may act at all — active and holding a role — for
 every credential and for push and email recipients. The first-boot account is
 an admin.
 
+With an external IdP and `PHILO_OIDC_USER_SCOPE` / `PHILO_OIDC_ADMIN_SCOPE`
+set, accounts are externally managed: each token's scopes name its role on
+every request (admin implies user; neither is `403 insufficient_scope`, checked
+before any account is bound or created), every `iss`+`sub` gets its own
+account, and `users.role` is only a cache that admitted tokens confirm — the
+PWA's client's tokens alone demote it. *Has access* then also needs a
+confirmation within 30 days, which is what stops the API keys and push devices
+of someone removed at the IdP. Without the scopes an external IdP keeps its one
+account.
+
 1. **UI: OIDC sign-in.** The PWA is a public OIDC client of the built-in IdP:
    authorization code + PKCE, an operator-scoped access token in memory and a
    rotating 30-day refresh token. The IdP's dialog takes the local email and

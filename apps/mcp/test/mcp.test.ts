@@ -5,8 +5,10 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { createPhiloClient } from '@philo/sdk'
 import { asc, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, type CryptoKey } from 'jose'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createApiKey, revokeApiKey } from '../../../packages/server/src/auth/api-keys.ts'
+import type { ExternalIdp } from '../../../packages/server/src/auth/external-idp.ts'
 import { leadEvents, leads, stages, users } from '../../../packages/server/src/db/schema.ts'
 import { sweepUnsentEmails } from '../../../packages/server/src/email/service.ts'
 import { getEmailTemplate } from '../../../packages/server/src/email/templates.ts'
@@ -926,5 +928,72 @@ describe('roles — ADR-0012', () => {
     testApp.db.update(users).set({ role: null }).where(eq(users.email, 'worker@example.com')).run()
     const res = await testApp.app.request('/mcp', jsonRpcPost(INITIALIZE, { authorization: `Bearer ${key}` }))
     expect(res.status).toBe(401)
+  })
+})
+
+describe('external IdP with role scopes — ADR-0012', () => {
+  const ISSUER = 'https://idp.example.com/realms/philo'
+  const RESOURCE_METADATA = `resource_metadata="${TEST_PUBLIC_BASE_URL}/.well-known/oauth-protected-resource/mcp"`
+  let privateKey: CryptoKey
+  let idp: ExternalIdp
+
+  beforeAll(async () => {
+    const pair = await generateKeyPair('ES256')
+    privateKey = pair.privateKey
+    const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'k1', alg: 'ES256' }
+    idp = {
+      issuer: ISSUER,
+      audience: ['philo-mcp'],
+      clientId: 'philo-web',
+      agentClientIds: ['some-agent'],
+      scope: 'openid email profile crm:user crm:admin',
+      resource: [],
+      roles: { userScope: 'crm:user', adminScope: 'crm:admin' },
+      agentScope: 'crm:user offline_access',
+      keys: createLocalJWKSet({ keys: [jwk] }),
+      userinfoEndpoint: async () => undefined,
+    }
+  })
+
+  const token = (scope: string) =>
+    new SignJWT({ azp: 'some-agent', scope, email: 'owner@example.com', email_verified: true })
+      .setProtectedHeader({ alg: 'ES256', kid: 'k1' })
+      .setIssuer(ISSUER)
+      .setAudience('philo-mcp')
+      .setSubject('owner-sub')
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(privateKey)
+
+  it.each([
+    ['the configured agent scope', () => ({ externalIdp: idp }), ['crm:user', 'offline_access']],
+    ['mcp for the built-in IdP', () => ({}), ['mcp']],
+    ['mcp for an external IdP that configured none, as before', () => ({ externalIdp: { ...idp, roles: undefined, agentScope: undefined } }), ['mcp']],
+  ])('advertises %s in its protected-resource metadata', async (_label, options, scopes) => {
+    const testApp = createTestApp(options())
+    const res = await testApp.app.request('/.well-known/oauth-protected-resource/mcp')
+    expect(((await res.json()) as { scopes_supported: string[] }).scopes_supported).toEqual(scopes)
+  })
+
+  it("passes the API's insufficient_scope 403 through with its challenge", async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    const res = await testApp.app.request('/mcp', jsonRpcPost(INITIALIZE, { authorization: `Bearer ${await token('openid')}` }))
+
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'insufficient_scope' })
+    expect(res.headers.get('WWW-Authenticate')).toBe(
+      `Bearer realm="philo", error="insufficient_scope", scope="crm:user", ${RESOURCE_METADATA}`,
+    )
+  })
+
+  it("lists an admin's agent holding only the user scope the user's tools", async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    // The person is an admin; this agent asked for less.
+    await testApp.app.request('/api/v1/auth/session', { headers: { authorization: `Bearer ${await token('crm:admin')}` } })
+    const names = await withMcpClient(testApp, await token('crm:user'), async (_call, client) =>
+      (await client.listTools()).tools.map((tool) => tool.name).toSorted(),
+    )
+    expect(names).toEqual(TOOL_NAMES.filter((name) => !ADMIN_TOOLS.has(name)))
+    expect(testApp.db.select({ role: users.role }).from(users).all()).toEqual([{ role: 'admin' }])
   })
 })
