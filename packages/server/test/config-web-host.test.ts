@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config.ts'
 
 const EXTERNAL = { PHILO_OIDC_ISSUER: 'https://idp.example.com', PHILO_OIDC_CLIENT_ID: 'philo-web' }
+/** An external IdP with an audience: the only kind a host may get tokens beside. */
+const AUDIENCED = { ...EXTERNAL, PHILO_OIDC_AUDIENCE: 'https://crm.example.com/api' }
 
 /** ADR-0013: the operator host script, read from the environment only. */
 describe('loadConfig — the host script', () => {
@@ -40,6 +42,15 @@ describe('loadConfig — the host script', () => {
     ["https://chrome.example.com/a'b/host.js"],
     ['https://chrome.example.com/a/../host.js'],
     ['https://chrome.example.com/%2e%2e/host.js'],
+    // A path ending in `/` is a prefix to CSP, not the exact URL.
+    ['https://chrome.example.com/dir/'],
+    ['https://chrome.example.com/'],
+    ['/host/'],
+    ['/'],
+    // A server may decode these before routing.
+    ['https://chrome.example.com/a%2F..%2Fup/x.js'],
+    ['https://chrome.example.com/a%5Cx.js'],
+    ['/host/a%2fx.js'],
   ])('refuses %s as a host script URL', (raw) => {
     expect(() => loadConfig({ PHILO_WEB_HOST_SCRIPT_URL: raw })).toThrow(/PHILO_WEB_HOST_SCRIPT_URL/)
   })
@@ -63,7 +74,7 @@ describe('loadConfig — the host script', () => {
 
   it('takes token resources as written, trimmed, blanks dropped', () => {
     const config = loadConfig({
-      ...EXTERNAL,
+      ...AUDIENCED,
       PHILO_WEB_HOST_SCRIPT_URL: '/host.js',
       PHILO_WEB_HOST_TOKEN_RESOURCES: ' https://feed.example.com, ,https://idp.example.com/api',
     })
@@ -74,12 +85,17 @@ describe('loadConfig — the host script', () => {
     'refuses %s as a token resource',
     (raw) => {
       expect(() =>
-        loadConfig({ ...EXTERNAL, PHILO_WEB_HOST_SCRIPT_URL: '/host.js', PHILO_WEB_HOST_TOKEN_RESOURCES: raw }),
-      ).toThrow(/PHILO_WEB_HOST_TOKEN_RESOURCES/)
+        loadConfig({ ...AUDIENCED, PHILO_WEB_HOST_SCRIPT_URL: '/host.js', PHILO_WEB_HOST_TOKEN_RESOURCES: raw }),
+      ).toThrow(/PHILO_WEB_HOST_TOKEN_RESOURCES values/)
     },
   )
 
-  it.each([['https://crm.example.com/api'], ['https://crm.example.com/api/']])(
+  it.each([
+    ['https://crm.example.com/api'],
+    ['https://crm.example.com/api/'],
+    ['HTTPS://CRM.example.com/api'],
+    ['https://crm.example.com:443/api'],
+  ])(
     'refuses Philo’s own audience (%s) as a token resource',
     (raw) => {
       expect(() =>
@@ -97,11 +113,30 @@ describe('loadConfig — the host script', () => {
     expect(() =>
       loadConfig({
         ...EXTERNAL,
+        PHILO_OIDC_AUDIENCE: 'https://other.example.com/api',
         PHILO_OIDC_RESOURCE: 'https://crm.example.com/api',
         PHILO_WEB_HOST_SCRIPT_URL: '/host.js',
         PHILO_WEB_HOST_TOKEN_RESOURCES: 'https://crm.example.com/api',
       }),
     ).toThrow(/PHILO_WEB_HOST_TOKEN_RESOURCES.*own/)
+  })
+
+  // Without an audience Philo's API checks none, so any token the PWA's client
+  // gets from the issuer would act there: the allow-list could not keep a host
+  // from holding a Philo token.
+  it('refuses token resources with an external IdP and no audience', () => {
+    expect(() =>
+      loadConfig({
+        ...EXTERNAL,
+        PHILO_WEB_HOST_SCRIPT_URL: '/host.js',
+        PHILO_WEB_HOST_TOKEN_RESOURCES: 'https://feed.example.com',
+      }),
+    ).toThrow(/PHILO_WEB_HOST_TOKEN_RESOURCES needs PHILO_OIDC_AUDIENCE/)
+  })
+
+  it('takes a blank token resource list with an external IdP and no audience', () => {
+    const config = loadConfig({ ...EXTERNAL, PHILO_WEB_HOST_SCRIPT_URL: '/host.js', PHILO_WEB_HOST_TOKEN_RESOURCES: ' , ' })
+    expect(config.webHost.tokenResources).toEqual([])
   })
 
   it.each([['https://crm.example.com'], ['https://crm.example.com/'], ['https://crm.example.com/mcp']])(

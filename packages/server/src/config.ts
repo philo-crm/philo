@@ -240,9 +240,11 @@ function parseOriginList(name: string, raw: string | undefined): string[] {
  * The characters a host script URL's path may hold. It lands in `script-src`
  * as an exact URL, so nothing that ends a source (whitespace, `,`, `;`) or
  * reads as a keyword's quote may get there; `URL` percent-encodes whitespace
- * but leaves the rest alone.
+ * but leaves the rest alone. It must not end in `/`, which CSP reads as a
+ * prefix rather than that exact URL, and holds no `%`: a server may decode
+ * `%2F` or `%5C` before routing, as with the asset prefixes.
  */
-const SAFE_URL_PATH = /^\/[A-Za-z0-9._~%/-]*$/
+const SAFE_URL_PATH = /^\/[A-Za-z0-9._~/-]*[A-Za-z0-9._~-]$/
 
 /** A dot segment, plain or percent-encoded: refused rather than left to whoever resolves it. */
 const DOT_SEGMENT = /(^|\/)(\.|%2e){1,2}(\/|$)/i
@@ -306,9 +308,24 @@ function parseHostConfig(raw: string | undefined): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-/** Compared without a trailing slash: an IdP treats `…/api` and `…/api/` as one audience often enough. */
+/**
+ * Compared as parsed URLs, so the case of the scheme and host and a default
+ * port don't matter, and without a trailing slash: an IdP treats `…/api` and
+ * `…/api/` as one audience often enough. A value that doesn't parse is
+ * compared as written.
+ */
 function sameResource(a: string, b: string): boolean {
-  return a.replace(/\/+$/, '') === b.replace(/\/+$/, '')
+  return normalResource(a) === normalResource(b)
+}
+
+function normalResource(value: string): string {
+  let href = value
+  try {
+    href = new URL(value).href
+  } catch {
+    // As written.
+  }
+  return href.replace(/\/+$/, '')
 }
 
 /**
@@ -404,10 +421,18 @@ function parseWebHost(
     externalIdp === undefined
       ? [urls.publicBaseUrl, urls.mcpUrl]
       : [...(externalIdp.audience ?? []), ...externalIdp.resource]
+  const tokenResources = parseHostTokenResources(env['PHILO_WEB_HOST_TOKEN_RESOURCES'], own)
+  // With no audience, Philo's API checks none: any token the issuer gives the
+  // PWA's client would act there, whatever resource it was asked for.
+  if (tokenResources.length > 0 && externalIdp !== undefined && externalIdp.audience === undefined) {
+    throw new ConfigError(
+      "PHILO_WEB_HOST_TOKEN_RESOURCES needs PHILO_OIDC_AUDIENCE: without it, a token the host script gets could act at Philo's API",
+    )
+  }
   return {
     scriptUrl,
     config: parseHostConfig(env['PHILO_WEB_HOST_CONFIG']),
-    tokenResources: parseHostTokenResources(env['PHILO_WEB_HOST_TOKEN_RESOURCES'], own),
+    tokenResources,
   }
 }
 
