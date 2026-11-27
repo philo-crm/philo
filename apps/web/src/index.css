@@ -1753,7 +1753,8 @@ fieldset.field {
 /*
  * The operator host script's slot: part of the action group, so it takes its
  * gap and its narrow-screen layout. Empty — no host, or one that failed — it
- * takes no room.
+ * takes no room. `:empty` can't see a shadow root, so a slot with one says so
+ * in `data-shadow` (host.ts).
  */
 .host-slot {
   display: flex;
@@ -1761,6 +1762,6 @@ fieldset.field {
   gap: inherit;
 }
 
-.host-slot:empty {
+.host-slot:empty:not([data-shadow]) {
   display: none;
 }

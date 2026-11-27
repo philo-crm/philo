@@ -380,12 +380,42 @@ describe('sign-out stays reachable after the host takes over', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Account' })).toBeDefined())
   })
 
-  it('signs out at /sign-out, whatever the top bar shows', async () => {
+  it('keeps a host that drew only text into the slot', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    withHost()
+    hostAnswering((ctx) => {
+      ctx.slot.append('Host account')
+      return Promise.resolve({ replaces: ['account-menu'] })
+    })
+    await signedInShell()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Account' })).toBeNull())
+
+    await act(() => vi.advanceTimersByTimeAsync(HOST_TIMEOUT_MS))
+    expect(screen.queryByRole('button', { name: 'Account' })).toBeNull()
+  })
+
+  it('signs out at /sign-out, whatever the top bar shows, without loading the host there', async () => {
+    const api = withHost()
+    const { contexts } = drawingHost()
+    window.history.pushState(null, '', '/sign-out')
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Sign in' })
+    expect(api.revoked).toHaveLength(1)
+    expect(hostScripts()).toHaveLength(0)
+    expect(contexts).toHaveLength(0)
+  })
+
+  it('reloads after /sign-out when the host was loaded earlier on the page', async () => {
     const api = withHost()
     drawingHost()
     const assign = watchRedirects()
-    window.history.pushState(null, '', '/sign-out')
-    render(<App />)
+    await signedInShell()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Host account' })).toBeDefined())
+
+    act(() => {
+      window.history.pushState(null, '', '/sign-out')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
     await waitFor(() => expect(assign).toHaveBeenCalledWith('/'))
     expect(api.revoked).toHaveLength(1)
   })
@@ -397,6 +427,67 @@ describe('sign-out stays reachable after the host takes over', () => {
     await screen.findByRole('heading', { name: 'Sign in' })
     expect(api.revoked).toHaveLength(1)
     await waitFor(() => expect(window.location.pathname).toBe('/'))
+  })
+})
+
+/**
+ * A host may render into a shadow root on the slot, to use constructable
+ * stylesheets there. The slot then has no light-DOM children, and neither
+ * CSS's `:empty` nor a child count may take that for an empty slot.
+ */
+describe('a host that renders into a shadow root on the slot', () => {
+  /** The rule index.css hides an empty slot with; keep the two the same. */
+  const HIDDEN = '.host-slot:empty:not([data-shadow])'
+
+  function shadowHost(mode: ShadowRootMode, answer: PhiloHostMount = { replaces: ['account-menu'] }) {
+    const roots: ShadowRoot[] = []
+    const found = hostAnswering((ctx) => {
+      const root = ctx.slot.attachShadow({ mode })
+      roots.push(root)
+      const button = document.createElement('button')
+      button.textContent = 'Host account'
+      root.append(button)
+      return Promise.resolve(answer)
+    })
+    return { ...found, roots }
+  }
+
+  it.each(['open', 'closed'] as const)('is shown and kept with a %s root', async (mode) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    withHost()
+    shadowHost(mode)
+    await signedInShell()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Account' })).toBeNull())
+    expect(slot()?.matches(HIDDEN)).toBe(false)
+
+    await act(() => vi.advanceTimersByTimeAsync(HOST_TIMEOUT_MS))
+    expect(screen.queryByRole('button', { name: 'Account' })).toBeNull()
+  })
+
+  it('gives Philo’s menu back when the host empties its shadow root', async () => {
+    withHost()
+    const { roots } = shadowHost('closed')
+    await signedInShell()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Account' })).toBeNull())
+
+    act(() => roots[0]?.replaceChildren())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Account' })).toBeDefined())
+  })
+
+  it('is emptied and hidden again when the host fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    withHost()
+    const roots: ShadowRoot[] = []
+    hostAnswering((ctx) => {
+      const root = ctx.slot.attachShadow({ mode: 'closed' })
+      roots.push(root)
+      root.append(document.createElement('button'))
+      throw new Error('broken')
+    })
+    await signedInShell()
+    await waitFor(() => expect(console.error).toHaveBeenCalled())
+    expect(roots[0]?.childNodes).toHaveLength(0)
+    expect(slot()?.matches(HIDDEN)).toBe(true)
   })
 })
 

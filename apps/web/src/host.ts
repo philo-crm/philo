@@ -129,6 +129,25 @@ function injectScript(url: string): Promise<PhiloHost> {
   return page.script
 }
 
+/** What CSS's `:empty` counts: elements and text, not comments. */
+function hasContent(node: Node): boolean {
+  return [...node.childNodes].some((child) => child.nodeType === Node.ELEMENT_NODE || child.nodeType === Node.TEXT_NODE)
+}
+
+/**
+ * Lets the slot hold a shadow root the host attaches, open or closed. CSS
+ * can't see one, so the slot carries `data-shadow` (index.css shows it), and
+ * Philo keeps the root to judge emptiness by and to empty on a failure.
+ */
+function watchShadowRoot(slot: HTMLElement, attached: (root: ShadowRoot) => void): void {
+  slot.attachShadow = (init: ShadowRootInit) => {
+    const root = HTMLElement.prototype.attachShadow.call(slot, init)
+    slot.dataset['shadow'] = ''
+    attached(root)
+    return root
+  }
+}
+
 /** One leading `/`, not `//` or `/\`, which a browser reads as another origin. */
 function isAppPath(path: unknown): path is string {
   return typeof path === 'string' && path.startsWith('/') && !path.startsWith('//') && !path.includes('\\')
@@ -178,6 +197,11 @@ export function useHost({ web, issuer, clientId, user, onSignOut }: UseHostOptio
     let fellBack = false
     let watchTimer: number | undefined
     let observer: MutationObserver | undefined
+    let shadowRoot: ShadowRoot | undefined
+    watchShadowRoot(slot, (root) => {
+      shadowRoot = root
+      observer?.observe(root, { childList: true })
+    })
 
     function stopWatching(): void {
       window.clearTimeout(watchTimer)
@@ -199,6 +223,8 @@ export function useHost({ web, issuer, clientId, user, onSignOut }: UseHostOptio
       console.error('Philo: the host script failed, so Philo keeps its own account menu.', reason)
       controller.abort()
       slot.replaceChildren()
+      shadowRoot?.replaceChildren()
+      delete slot.dataset['shadow']
       setReplacesAccountMenu(false)
     }
 
@@ -242,7 +268,7 @@ export function useHost({ web, issuer, clientId, user, onSignOut }: UseHostOptio
       setReplacesAccountMenu(true)
       // A resolved mount does not prove a working menu: one that never
       // draws, or later empties the slot, gives Philo's back.
-      const isEmpty = () => slot.children.length === 0
+      const isEmpty = () => !hasContent(slot) && (shadowRoot === undefined || !hasContent(shadowRoot))
       watchTimer = window.setTimeout(() => {
         if (isEmpty()) fallback()
       }, HOST_TIMEOUT_MS)
@@ -250,6 +276,7 @@ export function useHost({ web, issuer, clientId, user, onSignOut }: UseHostOptio
         if (isEmpty()) fallback()
       })
       observer.observe(slot, { childList: true })
+      if (shadowRoot !== undefined) observer.observe(shadowRoot, { childList: true })
     }
 
     injectScript(new URL(scriptUrl, window.location.origin).href)

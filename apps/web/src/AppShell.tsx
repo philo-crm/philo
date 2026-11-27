@@ -166,7 +166,15 @@ function useInAppNotifications(): void {
 export function AppShell({ user, web = NO_HOST, signIn = NO_SIGN_IN, onSignOut, onSessionExpired }: AppShellProps) {
   const path = usePath()
   useInAppNotifications()
-  const host = useHost({ web, issuer: signIn.issuer, clientId: signIn.clientId, user, onSignOut })
+  // Not at /sign-out: the page is about to go, and a host loaded there would
+  // only be torn down again.
+  const host = useHost({
+    web: path === SIGN_OUT_PATH ? NO_HOST : web,
+    issuer: signIn.issuer,
+    clientId: signIn.clientId,
+    user,
+    onSignOut,
+  })
   // Read once per mount: neither the browser nor the dismissal changes under us,
   // and re-checking on every render would re-run the user-agent sniffing.
   const [offerInstall, setOfferInstall] = useState(

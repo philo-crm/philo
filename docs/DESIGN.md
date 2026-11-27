@@ -423,7 +423,7 @@ app switcher) with one script of their own, and no edit to Philo
 
   | Field | What it is |
   |---|---|
-  | `slot` | An empty element at the right end of the top bar's actions. The host's until `signal` aborts. |
+  | `slot` | An empty element at the right end of the top bar's actions. The host's until `signal` aborts. The host may append to it or attach a shadow root (open or closed) and render there. |
   | `issuer`, `clientId` | The IdP the PWA signs in with, as `GET /api/v1/auth/config` gives them. |
   | `user`, `role` | Who is signed in: `{ email, name }`, and `user` or `admin` (ADR-0012). |
   | `config` | `PHILO_WEB_HOST_CONFIG`, verbatim. |
@@ -444,8 +444,9 @@ app switcher) with one script of their own, and no edit to Philo
   injection is logged once; its `signal` is aborted, its slot emptied, and
   Philo keeps its own menu for the rest of the page. After a takeover, Philo's
   menu comes back if the slot is still empty 5 s later, empties while the
-  host is live, or the host calls `fallback()`. `/sign-out` signs out whatever
-  the top bar shows.
+  host is live, or the host calls `fallback()`. A slot counts as empty when
+  neither it nor a shadow root the host attached holds an element or text.
+  `/sign-out` signs out whatever the top bar shows, and never loads the host.
 - **Never on a signed-out screen**: not on loading, sign-in, a failed sign-in,
   the callback or the hidden extra-token frame. When a host script was loaded,
   sign-out reloads the page, so nothing it left resident survives into the
