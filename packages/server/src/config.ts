@@ -325,7 +325,11 @@ function normalResource(value: string): string {
   } catch {
     // As written.
   }
-  return href.replace(/\/+$/, '')
+  // A loop, not `/\/+$/`: that regex is quadratic on a long run of `/`
+  // followed by anything else.
+  let end = href.length
+  while (end > 0 && href[end - 1] === '/') end -= 1
+  return href.slice(0, end)
 }
 
 /**

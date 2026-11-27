@@ -109,6 +109,26 @@ describe('loadConfig — the host script', () => {
     },
   )
 
+  // CodeQL: the trailing-slash trim must stay linear on a long run of `/`.
+  it('refuses Philo’s own audience with a long run of trailing slashes, quickly', () => {
+    const started = performance.now()
+    expect(() =>
+      loadConfig({
+        ...AUDIENCED,
+        PHILO_WEB_HOST_SCRIPT_URL: '/host.js',
+        PHILO_WEB_HOST_TOKEN_RESOURCES: `https://crm.example.com/api${'/'.repeat(100_000)}`,
+      }),
+    ).toThrow(/PHILO_WEB_HOST_TOKEN_RESOURCES.*own/)
+    expect(() =>
+      loadConfig({
+        ...AUDIENCED,
+        PHILO_WEB_HOST_SCRIPT_URL: '/host.js',
+        PHILO_WEB_HOST_TOKEN_RESOURCES: `https://crm.example.com/api${'/'.repeat(100_000)}x`,
+      }),
+    ).not.toThrow()
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+
   it('refuses a resource Philo’s own sign-in asks for as a token resource', () => {
     expect(() =>
       loadConfig({
