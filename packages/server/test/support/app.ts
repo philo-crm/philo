@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../../src/app.ts'
+import type { WebHostConfig } from '../../src/config.ts'
 import { createFirstUser } from '../../src/auth/credentials.ts'
 import type { ExternalIdp } from '../../src/auth/external-idp.ts'
 import { hashPassword } from '../../src/auth/password.ts'
@@ -69,6 +70,7 @@ export function createTestApp(
     liveTuning?: LiveTuning | undefined
     changeFeed?: ChangeFeed | undefined
     webhookTuning?: DeliveryTuning | undefined
+    webHost?: WebHostConfig | undefined
   } = {},
 ): TestApp {
   const dataDir = mkdtempSync(join(tmpdir(), 'philo-app-'))
@@ -96,6 +98,7 @@ export function createTestApp(
     liveTuning: options.liveTuning,
     changeFeed: options.changeFeed,
     webhookTuning: options.webhookTuning,
+    webHost: options.webHost,
   })
   return { app, db, dataDir, vapidPublicKey, signingKey }
 }

@@ -401,6 +401,62 @@ an admin.
    token-lifetime and consent-page decisions. A connector's token carries agent
    authority, the same as an API key.
 
+## Host chrome
+
+An operator who runs Philo beside other web apps under one sign-in can put
+their shared top-bar chrome in it (an account menu, a notification bell, an
+app switcher) with one script of their own, and no edit to Philo
+([ADR-0013](adr/0013-operator-host-script.md)). It is off by default: with
+`PHILO_WEB_HOST_SCRIPT_URL` unset, nothing loads and the PWA's policy stays
+`'self'`.
+
+- **Configuration is environment only**, never a setting: a script URL is
+  code execution in every person's browser. `PHILO_WEB_HOST_SCRIPT_URL`, its
+  public `PHILO_WEB_HOST_CONFIG`, `PHILO_WEB_HOST_TOKEN_RESOURCES` and
+  `PHILO_WEB_ASSET_ORIGINS` are validated at startup. The PWA reads the first
+  three from the public `GET /api/v1/web/config` (`philo.web.config()`).
+- **The contract** (`apps/web/src/host.ts`). The script sets
+  `window.PhiloHost`; the signed-in shell calls its `mount(ctx)` once, and
+  again with a fresh context after a later sign-in on the same page. `mount`
+  may answer `{ replaces: ['account-menu'] }`. The context is versioned
+  (`version: 1`) and hands over capabilities, not data:
+
+  | Field | What it is |
+  |---|---|
+  | `slot` | An empty element at the right end of the top bar's actions. The host's until `signal` aborts. |
+  | `issuer`, `clientId` | The IdP the PWA signs in with, as `GET /api/v1/auth/config` gives them. |
+  | `user`, `role` | Who is signed in: `{ email, name }`, and `user` or `admin` (ADR-0012). |
+  | `config` | `PHILO_WEB_HOST_CONFIG`, verbatim. |
+  | `getToken({ resource, scope, prompt? })` | The extra-token helper, for a resource in `PHILO_WEB_HOST_TOKEN_RESOURCES` only; `null` for anything else, with the built-in IdP, or when the IdP refused. |
+  | `navigate(path)` | Philo's router. A same-app path only (one leading `/`); anything else is ignored. |
+  | `signOut()` | Philo's own sign-out, revocation included. |
+  | `fallback()` | The host cannot draw what it replaced: Philo shows its own account menu again. |
+  | `setTheme(theme)` | Philo's theme store: `light`, `dark` or `system`. |
+  | `accountItems` | Philo's own account-menu entries for this role, `{ label, path }`. |
+  | `signal` | Aborted when the signed-in shell unmounts. |
+
+  The host never sees the refresh token or Philo's own access token through
+  the context. A change that breaks it bumps `version` and is a breaking
+  change in the release notes.
+- **Philo's own controls stay until the host takes over.** The account menu
+  is hidden only once `mount` resolves with `replaces`. A script that fails to
+  load, sets no `PhiloHost`, throws, rejects or takes longer than 5 s from
+  injection is logged once; its `signal` is aborted, its slot emptied, and
+  Philo keeps its own menu for the rest of the page. After a takeover, Philo's
+  menu comes back if the slot is still empty 5 s later, empties while the
+  host is live, or the host calls `fallback()`. `/sign-out` signs out whatever
+  the top bar shows.
+- **Never on a signed-out screen**: not on loading, sign-in, a failed sign-in,
+  the callback or the hidden extra-token frame. When a host script was loaded,
+  sign-out reloads the page, so nothing it left resident survives into the
+  next person's session.
+- **Trust.** The script runs with the page's full authority: it can read the
+  refresh token and act as the person, and the CSP limits only what code can
+  load, not what can leave. An operator who sets it trusts it, and everyone
+  who can change it, exactly as much as Philo's own code. Same-origin is the
+  recommended shape. [DEPLOYMENT.md](DEPLOYMENT.md#host-script) gives the
+  policy it produces.
+
 ## MCP surface
 
 Streamable HTTP at `/mcp`, served by `apps/mcp` — a client of the API like the

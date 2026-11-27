@@ -279,6 +279,20 @@ describe('getExtraToken', () => {
     expect(await wider).toBe(extra(2))
   })
 
+  // ADR-0013: a host's `prompt=none` the IdP refuses must not mark the
+  // resource refused for a caller that asks without a prompt.
+  it('keeps a refusal to one prompt apart from a request with another, or none', async () => {
+    installTokenEndpoint()
+    const silent = getExtraToken({ resource: RESOURCE, scope: SCOPE, prompt: 'none' })
+    await answerNext({ error: 'login_required' })
+    expect(await silent).toBeNull()
+
+    const plain = getExtraToken({ resource: RESOURCE, scope: SCOPE })
+    await answerNext()
+    expect(await plain).toBe(extra(1))
+    expect(await getExtraToken({ resource: RESOURCE, scope: SCOPE, prompt: 'none' })).toBeNull()
+  })
+
   it('shares one request between concurrent callers', async () => {
     const calls = installTokenEndpoint()
     const a = getExtraToken({ resource: RESOURCE, scope: SCOPE })

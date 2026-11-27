@@ -75,6 +75,7 @@ export function bootServer(config: Config): BootedServer {
     liveFeed,
     changeFeed,
     trustProxy: config.trustProxy,
+    webHost: config.webHost,
     createEmailSender: createSender,
     // Email is the guaranteed notification channel and push is the fast one —
     // ADR-0004 — with the live stream standing in for push in a browser that

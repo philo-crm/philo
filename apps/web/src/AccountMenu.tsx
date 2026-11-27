@@ -2,6 +2,7 @@ import type { ComponentType } from 'react'
 import type { User } from './auth.ts'
 import { MonitorIcon, MoonIcon, SunIcon } from './icons.tsx'
 import { Menu } from './Menu.tsx'
+import { accountItemsFor } from './host.ts'
 import { Link } from './router.tsx'
 import { setTheme, THEMES, useTheme, type Theme } from './theme.ts'
 
@@ -56,18 +57,12 @@ export function AccountMenu({ user, onSignOut }: AccountMenuProps) {
             })}
           </div>
           <hr className="menu-rule" />
-          {user.role === 'admin' ? (
-            <Link to="/settings" className="menu-item" onClick={close}>
-              <span className="menu-item-text">Server settings</span>
+          {/* The same entries a host script gets as `accountItems` (ADR-0013). */}
+          {accountItemsFor(user.role).map((item) => (
+            <Link key={item.path} to={item.path} className="menu-item" onClick={close}>
+              <span className="menu-item-text">{item.label}</span>
             </Link>
-          ) : (
-            <Link to="/settings/notifications" className="menu-item" onClick={close}>
-              <span className="menu-item-text">Settings</span>
-            </Link>
-          )}
-          <Link to="/install" className="menu-item" onClick={close}>
-            <span className="menu-item-text">Install the app</span>
-          </Link>
+          ))}
           <hr className="menu-rule" />
           <button
             type="button"

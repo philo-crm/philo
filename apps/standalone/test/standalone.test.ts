@@ -251,6 +251,17 @@ describe('security headers', () => {
     expect(pwaContentSecurityPolicy({ connectOrigins: [] })).toBe(pwaContentSecurityPolicy())
   })
 
+  // ADR-0013: an absolute host script is allowed as that exact URL, never its whole origin.
+  it('allows an absolute host script as its exact URL, without its query', () => {
+    const policy = pwaContentSecurityPolicy({ hostScriptUrl: 'https://chrome.example.com/v1/host.js?v=3' })
+    expect(policy).toContain("script-src 'self' https://chrome.example.com/v1/host.js;")
+    expect(policy.match(/chrome\.example\.com/g)).toHaveLength(1)
+  })
+
+  it('needs nothing more for a host script on the PWA’s own origin', () => {
+    expect(pwaContentSecurityPolicy({ hostScriptUrl: '/host/chrome.js' })).toBe(pwaContentSecurityPolicy())
+  })
+
   it('names an origin only once', () => {
     const policy = pwaContentSecurityPolicy({ issuer: 'https://id.example.com/realms/x', connectOrigins: ['https://id.example.com'] })
     expect(policy).toContain("connect-src 'self' https://id.example.com;")

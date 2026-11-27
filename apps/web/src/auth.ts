@@ -161,8 +161,9 @@ export async function completeSignIn(auth: Auth): Promise<string> {
  * share the store — then, when the provider names an end-session endpoint (OIDC
  * RP-Initiated Logout), sends the browser there so its own session ends too and
  * the next "Sign in" asks again. The built-in IdP names none and stays put.
+ * Answers whether it sent the browser away.
  */
-export async function signOut(auth: Auth): Promise<void> {
+export async function signOut(auth: Auth): Promise<boolean> {
   // Read first: the session forgets it on sign-out.
   const idToken = auth.session.idToken
   await auth.session.signOut()
@@ -174,13 +175,14 @@ export async function signOut(auth: Auth): Promise<void> {
     postLogoutRedirectUri: `${window.location.origin}/`,
     state,
   })
-  if (url === undefined) return
+  if (url === undefined) return false
   try {
     window.sessionStorage.setItem(SIGN_OUT_STATE_KEY, state)
   } catch {
     // The landing page then leaves the state in the address bar; nothing worse.
   }
   browser.assign(url)
+  return true
 }
 
 /**

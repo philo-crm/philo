@@ -29,6 +29,25 @@ export interface Config {
    * another origin than its issuer. Bare origins, empty by default.
    */
   webConnectOrigins: string[]
+  /** The operator host script the PWA loads after sign-in — ADR-0013. Off by default. */
+  webHost: WebHostConfig
+}
+
+/** ADR-0013. Environment only: a script URL is code execution in every person's browser. */
+export interface WebHostConfig {
+  /**
+   * `PHILO_WEB_HOST_SCRIPT_URL`: an absolute `https:` URL (plain `http:` only
+   * for localhost and 127.0.0.1), or a path on the PWA's own origin. Unset
+   * means no script, and the PWA's policy stays `'self'`.
+   */
+  scriptUrl: string | undefined
+  /** `PHILO_WEB_HOST_CONFIG`: handed to the script verbatim. Public, so no secrets. */
+  config: Record<string, unknown>
+  /**
+   * `PHILO_WEB_HOST_TOKEN_RESOURCES`: the RFC 8707 resources the script may
+   * ask the IdP for a token for. Never Philo's own audience.
+   */
+  tokenResources: string[]
 }
 
 export interface ExternalIdpConfig {
@@ -211,6 +230,135 @@ function parseOriginList(name: string, raw: string | undefined): string[] {
 }
 
 /**
+ * The characters a host script URL's path may hold. It lands in `script-src`
+ * as an exact URL, so nothing that ends a source (whitespace, `,`, `;`) or
+ * reads as a keyword's quote may get there; `URL` percent-encodes whitespace
+ * but leaves the rest alone.
+ */
+const SAFE_URL_PATH = /^\/[A-Za-z0-9._~%/-]*$/
+
+/** A dot segment, plain or percent-encoded: refused rather than left to whoever resolves it. */
+const DOT_SEGMENT = /(^|\/)(\.|%2e){1,2}(\/|$)/i
+
+function parseHostScriptUrl(raw: string | undefined): string | undefined {
+  const value = (raw ?? '').trim()
+  if (value === '') return undefined
+  const refuse = (why: string) =>
+    new ConfigError(
+      `PHILO_WEB_HOST_SCRIPT_URL must be an absolute https URL or a path on the app's origin (${why}), got ${JSON.stringify(value)}`,
+    )
+  if (value.includes('#')) throw refuse('no fragment')
+  const [path = '', query] = splitQuery(value)
+  if (value.startsWith('/')) {
+    // `//host` and `/\host` are other origins to a browser.
+    if (!SAFE_URL_PATH.test(path) || path.startsWith('//')) throw refuse('a plain path')
+    if (DOT_SEGMENT.test(path)) throw refuse('no dot segments')
+    if (query !== undefined && /\s/.test(query)) throw refuse('no whitespace')
+    return value
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw refuse('not an absolute URL')
+  }
+  if (!/^[a-z0-9.-]+$/.test(url.hostname)) throw refuse('not a plain host name')
+  if (url.protocol === 'http:') {
+    if (!LOCAL_HOSTS.has(url.hostname)) throw refuse('plain http only for localhost and 127.0.0.1')
+  } else if (url.protocol !== 'https:') {
+    throw refuse('https only')
+  }
+  if (url.username !== '' || url.password !== '' || value.slice(0, value.indexOf(url.host)).includes('@')) {
+    throw refuse('no credentials')
+  }
+  // As written, so the URL in the policy is the one the PWA loads.
+  const rawPath = path.slice(path.indexOf('//') + 2).replace(/^[^/]*/, '')
+  if (rawPath !== url.pathname || !SAFE_URL_PATH.test(url.pathname) || DOT_SEGMENT.test(url.pathname)) {
+    throw refuse('a plain path')
+  }
+  if (query !== undefined && /\s/.test(query)) throw refuse('no whitespace')
+  return url.href
+}
+
+function splitQuery(value: string): [string, string | undefined] {
+  const at = value.indexOf('?')
+  return at === -1 ? [value, undefined] : [value.slice(0, at), value.slice(at + 1)]
+}
+
+function parseHostConfig(raw: string | undefined): Record<string, unknown> {
+  if (raw === undefined || raw.trim() === '') return {}
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    throw new ConfigError(`PHILO_WEB_HOST_CONFIG must be a JSON object, got ${JSON.stringify(raw)}`)
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ConfigError(`PHILO_WEB_HOST_CONFIG must be a JSON object, got ${JSON.stringify(raw)}`)
+  }
+  return value as Record<string, unknown>
+}
+
+/** Compared without a trailing slash: an IdP treats `…/api` and `…/api/` as one audience often enough. */
+function sameResource(a: string, b: string): boolean {
+  return a.replace(/\/+$/, '') === b.replace(/\/+$/, '')
+}
+
+/**
+ * RFC 8707 resources, as `PHILO_OIDC_RESOURCE`. `own` is everything a token
+ * for Philo itself is for: a host script must never be able to mint one.
+ */
+function parseHostTokenResources(raw: string | undefined, own: readonly string[]): string[] {
+  const values = (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
+  for (const value of values) {
+    let url: URL | undefined
+    try {
+      url = new URL(value)
+    } catch {
+      url = undefined
+    }
+    if (url === undefined || value.includes('#') || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+      throw new ConfigError(
+        `PHILO_WEB_HOST_TOKEN_RESOURCES values must be http or https URLs without a fragment, got ${JSON.stringify(value)}`,
+      )
+    }
+    if (own.some((mine) => sameResource(mine, value))) {
+      throw new ConfigError(
+        `PHILO_WEB_HOST_TOKEN_RESOURCES must not name Philo's own audience, got ${JSON.stringify(value)}`,
+      )
+    }
+  }
+  return values
+}
+
+/** Settings that only mean something beside a host script. */
+const HOST_SCRIPT_ONLY = ['PHILO_WEB_HOST_CONFIG', 'PHILO_WEB_HOST_TOKEN_RESOURCES'] as const
+
+function parseWebHost(
+  env: NodeJS.ProcessEnv,
+  urls: { publicBaseUrl: string; mcpUrl: string },
+  externalIdp: ExternalIdpConfig | undefined,
+): WebHostConfig {
+  const scriptUrl = parseHostScriptUrl(env['PHILO_WEB_HOST_SCRIPT_URL'])
+  if (scriptUrl === undefined) {
+    const stray = HOST_SCRIPT_ONLY.find((name) => (env[name] ?? '').trim() !== '')
+    if (stray !== undefined) throw new ConfigError(`${stray} needs PHILO_WEB_HOST_SCRIPT_URL: it applies only to a host script`)
+  }
+  const own =
+    externalIdp === undefined
+      ? [urls.publicBaseUrl, urls.mcpUrl]
+      : [...(externalIdp.audience ?? []), ...externalIdp.resource]
+  return {
+    scriptUrl,
+    config: parseHostConfig(env['PHILO_WEB_HOST_CONFIG']),
+    tokenResources: parseHostTokenResources(env['PHILO_WEB_HOST_TOKEN_RESOURCES'], own),
+  }
+}
+
+/**
  * Strict rather than truthy. `PHILO_TRUSTED_PROXY=flase` silently meaning "yes"
  * would decide a security question by typo, and this setting is only ever set on
  * purpose, so there is nothing to be lenient for.
@@ -229,14 +377,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // compose variable must not silently park state in the working directory.
   const dataDir = env['PHILO_DATA_DIR'] || DEFAULT_DATA_DIR
   const publicBaseUrl = parsePublicBaseUrl(env['PHILO_PUBLIC_BASE_URL'], port)
+  const mcpUrl = parseOptionalUrl('PHILO_MCP_URL', env['PHILO_MCP_URL'], `${publicBaseUrl}/mcp`)
+  const externalIdp = parseExternalIdp(env)
   return {
     port,
     dataDir: resolve(dataDir),
     publicBaseUrl,
     trustProxy: parseTrustProxy(env['PHILO_TRUSTED_PROXY']),
     appUrl: parseOptionalUrl('PHILO_APP_URL', env['PHILO_APP_URL'], publicBaseUrl),
-    mcpUrl: parseOptionalUrl('PHILO_MCP_URL', env['PHILO_MCP_URL'], `${publicBaseUrl}/mcp`),
-    externalIdp: parseExternalIdp(env),
+    mcpUrl,
+    externalIdp,
     webConnectOrigins: parseOriginList('PHILO_WEB_CONNECT_ORIGINS', env['PHILO_WEB_CONNECT_ORIGINS']),
+    webHost: parseWebHost(env, { publicBaseUrl, mcpUrl }, externalIdp),
   }
 }

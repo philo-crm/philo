@@ -6,6 +6,7 @@ import type { AccessPolicy } from './auth/access.ts'
 import type { ExternalIdp } from './auth/external-idp.ts'
 import { bearerMiddleware, requireAdmin, requireAuth, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
 import { createAuthGuards, createAuthRoutes, type AuthTuning } from './auth/routes.ts'
+import type { WebHostConfig } from './config.ts'
 import type { Db } from './db/index.ts'
 import type { EmailSenderFactory } from './email/transport.ts'
 import { ChangeFeed } from './events/feed.ts'
@@ -47,10 +48,16 @@ const MAX_BODY_BYTES = 64 * 1024
 const ATTACHMENT_UPLOAD_PATH = new RegExp(`^${API_PREFIX}/leads/\\d+/attachments$`)
 
 /**
+ * What the PWA loads besides sign-in — ADR-0013. Public: it is read before
+ * there is a token, and says nothing the page would not load anyway.
+ */
+const WEB_CONFIG_PATH = `${API_PREFIX}/web/config`
+
+/**
  * Reachable without a token. Everything else under `API_PREFIX` is guarded, so
  * a route added later is private until it is listed here on purpose.
  */
-export const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([`${API_PREFIX}/auth/config`])
+export const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([`${API_PREFIX}/auth/config`, WEB_CONFIG_PATH])
 
 /** A route as Hono registers it: a method and a path with `:param` segments. */
 export type RouteKey = readonly [method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string]
@@ -155,6 +162,8 @@ export interface AppOptions {
    * real one, built from the stored settings; tests substitute their own.
    */
   createEmailSender?: EmailSenderFactory | undefined
+  /** The operator host script — ADR-0013. Unset: none. */
+  webHost?: WebHostConfig | undefined
 }
 
 /**
@@ -213,9 +222,11 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   )
 
   // Responses here carry account data, so they must not sit in a shared cache.
+  // The web config carries none, and a deploy that changes it must land on
+  // the next load, so it revalidates instead.
   app.use(`${API_PREFIX}/*`, async (c, next) => {
     await next()
-    c.res.headers.set('Cache-Control', 'no-store')
+    c.res.headers.set('Cache-Control', c.req.path === WEB_CONFIG_PATH ? 'no-cache' : 'no-store')
   })
 
   app.use(`${API_PREFIX}/*`, bearerMiddleware(deps))
@@ -231,6 +242,12 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   })
 
   app.route(`${API_PREFIX}/auth`, createAuthRoutes({ signIn: signInConfig(options) }))
+  const webConfig = {
+    hostScriptUrl: options.webHost?.scriptUrl ?? null,
+    hostConfig: options.webHost?.config ?? {},
+    hostTokenResources: options.webHost?.tokenResources ?? [],
+  }
+  app.get(WEB_CONFIG_PATH, (c) => c.json(webConfig))
   app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db }))
   app.route(
     `${API_PREFIX}/leads`,

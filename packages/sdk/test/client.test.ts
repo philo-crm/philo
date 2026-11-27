@@ -40,6 +40,14 @@ describe('PhiloClient', () => {
     expect(calls[0]?.url).toBe('/api/v1/stages')
   })
 
+  it('reads the web config without a token', async () => {
+    const config = { hostScriptUrl: '/host.js', hostConfig: { a: 1 }, hostTokenResources: ['https://feed.example.com'] }
+    const { calls, fetch } = recorder(() => json(config))
+    expect(await new PhiloClient({ fetch }).web.config()).toEqual(config)
+    expect(calls[0]?.url).toBe('/api/v1/web/config')
+    expect(calls[0]?.init?.method).toBe('GET')
+  })
+
   it('sends JSON on every state change', async () => {
     const { calls, fetch } = recorder(() => json({ lead: { id: 3 } }))
     const lead = await new PhiloClient({ fetch }).leads.moveStage(3, 7)

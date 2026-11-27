@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AccountMenu } from './AccountMenu.tsx'
+import type { WebConfig } from '@philo/sdk'
 import type { User } from './auth.ts'
 import { FunnelBoard } from './FunnelBoard.tsx'
 import { FUNNEL_SECTIONS, FunnelSettings, type FunnelSection } from './FunnelSettings.tsx'
 import { FunnelSwitcher } from './FunnelSwitcher.tsx'
+import { NO_HOST, useHost } from './host.ts'
 import { PlusIcon } from './icons.tsx'
 import { dismissInstallPrompt, isInstallPromptDismissed, shouldOfferInstall } from './install.ts'
 import { InstallHelper } from './InstallHelper.tsx'
@@ -16,6 +18,10 @@ import { AdminOnly, SETTINGS_SECTIONS, Settings, type SettingsSection } from './
 
 export interface AppShellProps {
   user: User
+  /** The operator's host script, if any — ADR-0013. */
+  web?: WebConfig | undefined
+  /** The IdP the PWA signed in with, for the host's context. */
+  signIn?: { issuer: string; clientId: string } | undefined
   onSignOut: () => void
   /** A 401 from any screen: the session ended, so hand back to the sign-in screen. */
   onSessionExpired: () => void
@@ -24,6 +30,11 @@ export interface AppShellProps {
 const LEAD_PATH = /^\/leads\/(\d+)$/
 const SETTINGS_PATH = /^\/settings(?:\/([\w-]+))?$/
 const FUNNEL_PATH = /^\/funnel(?:\/([\w-]+))?$/
+
+/** Signs out from a bookmark or the address bar — ADR-0013. */
+export const SIGN_OUT_PATH = '/sign-out'
+
+const NO_SIGN_IN = { issuer: '', clientId: '' }
 
 /** A path's section, or undefined for one the area does not have. */
 function sectionOf<T extends string>(match: RegExpExecArray | null, sections: Record<T, unknown>, fallback: T): T | undefined {
@@ -43,7 +54,27 @@ function tabFor(path: string): string | undefined {
   return undefined
 }
 
-function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
+type ScreenProps = Pick<AppShellProps, 'user' | 'onSignOut' | 'onSessionExpired'>
+
+/**
+ * Signs out as soon as it shows, whatever the top bar does: the way out no
+ * host script can take away (ADR-0013). Once per visit, StrictMode included.
+ */
+function SignOutRoute({ onSignOut }: { onSignOut: () => void }) {
+  const done = useRef(false)
+  useEffect(() => {
+    if (done.current) return
+    done.current = true
+    onSignOut()
+  }, [onSignOut])
+  return (
+    <section className="screen">
+      <p className="muted">Signing out…</p>
+    </section>
+  )
+}
+
+function screenFor(path: string, props: ScreenProps) {
   const { user, onSessionExpired } = props
   const isAdmin = user.role === 'admin'
 
@@ -83,6 +114,9 @@ function screenFor(path: string, props: Omit<AppShellProps, 'onSignOut'>) {
   }
   if (path === '/install') {
     return <InstallHelper />
+  }
+  if (path === SIGN_OUT_PATH) {
+    return <SignOutRoute onSignOut={props.onSignOut} />
   }
 
   const match = LEAD_PATH.exec(path)
@@ -129,9 +163,10 @@ function useInAppNotifications(): void {
   }, [on])
 }
 
-export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
+export function AppShell({ user, web = NO_HOST, signIn = NO_SIGN_IN, onSignOut, onSessionExpired }: AppShellProps) {
   const path = usePath()
   useInAppNotifications()
+  const host = useHost({ web, issuer: signIn.issuer, clientId: signIn.clientId, user, onSignOut })
   // Read once per mount: neither the browser nor the dismissal changes under us,
   // and re-checking on every render would re-run the user-agent sniffing.
   const [offerInstall, setOfferInstall] = useState(
@@ -168,7 +203,8 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
             <PlusIcon />
             <span className="new-lead-text">New lead</span>
           </Link>
-          <AccountMenu user={user} onSignOut={onSignOut} />
+          {!host.replacesAccountMenu && <AccountMenu user={user} onSignOut={onSignOut} />}
+          {host.slotRef !== null && <div ref={host.slotRef} className="host-slot" />}
         </div>
       </header>
       <main>
@@ -181,7 +217,7 @@ export function AppShell({ user, onSignOut, onSessionExpired }: AppShellProps) {
             </button>
           </p>
         )}
-        {screenFor(path, { user, onSessionExpired })}
+        {screenFor(path, { user, onSignOut, onSessionExpired })}
       </main>
     </div>
   )

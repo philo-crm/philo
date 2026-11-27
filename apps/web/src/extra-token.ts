@@ -147,7 +147,9 @@ async function lookup(current: State, request: ExtraTokenRequest): Promise<strin
   // With no person to compare an answer with, no answer could be handed out.
   const person = await signedInPerson(current.auth)
   if (person === undefined || current.ended.signal.aborted) return null
-  const key = JSON.stringify([person.subject, request.resource, request.scope])
+  // `prompt` too: an IdP that refuses one prompt may answer another, and a
+  // host's refusal must not stand for Philo's own callers (ADR-0013).
+  const key = JSON.stringify([person.subject, request.resource, request.scope, request.prompt ?? null])
   const cached = current.cache.get(key)
   if (cached !== undefined && cached.expiresAt - EXPIRY_MARGIN_MS > Date.now()) {
     return Promise.resolve(cached.accessToken)

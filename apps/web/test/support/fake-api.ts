@@ -1,4 +1,4 @@
-import { pkceChallenge } from '@philo/sdk'
+import { pkceChallenge, type WebConfig } from '@philo/sdk'
 import { vi } from 'vitest'
 import type {
   ApiKeyRecord,
@@ -25,6 +25,8 @@ import { setAccessTokenSource } from '../../src/client.ts'
 export interface FakeApi {
   /** What `GET /api/v1/auth/config` answers with; the issuer and client id stay the test ones. */
   signIn: { scope: string; resource: string[] }
+  /** What `GET /api/v1/web/config` answers with: no host script unless a test sets one. */
+  web: WebConfig
   user: User | undefined
   /** The one access token the API accepts right now; undefined when signed out. */
   accessToken: string | undefined
@@ -899,11 +901,12 @@ async function handleToken(api: FakeApi, params: URLSearchParams): Promise<Respo
   return tokenAnswer(api, issued.nonce)
 }
 
-/** The public surface: auth config, discovery, and the IdP's token and revocation endpoints. */
+/** The public surface: auth and web config, discovery, and the IdP's token and revocation endpoints. */
 function handleIdp(api: FakeApi, method: string, path: string, body: unknown): Response | Promise<Response> | undefined {
   if (method === 'GET' && path === '/api/v1/auth/config') {
     return jsonResponse(200, { issuer: TEST_ISSUER, clientId: TEST_CLIENT_ID, ...api.signIn })
   }
+  if (method === 'GET' && path === '/api/v1/web/config') return jsonResponse(200, api.web)
   if (method === 'GET' && path === '/.well-known/openid-configuration') {
     return jsonResponse(200, {
       issuer: TEST_ISSUER,
@@ -1133,6 +1136,7 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
   const { signedIn = true, ...rest } = overrides
   const api: FakeApi = {
     signIn: { scope: 'openid operator', resource: [] },
+    web: { hostScriptUrl: null, hostConfig: {}, hostTokenResources: [] },
     user: TEST_USER,
     accessToken: undefined,
     refreshToken: undefined,

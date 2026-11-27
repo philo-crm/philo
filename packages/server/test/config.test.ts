@@ -45,6 +45,7 @@ describe('loadConfig', () => {
       },
       // Trimmed, blanks dropped, and normalized to the bare origin.
       webConnectOrigins: ['https://token.example-apis.com', 'https://revoke.example.net'],
+      webHost: { scriptUrl: undefined, config: {}, tokenResources: [] },
     })
   })
 

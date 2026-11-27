@@ -39,6 +39,12 @@ export interface PwaContentSecurityPolicyOptions {
    * they are for fetches, and nothing here frames a token endpoint.
    */
   connectOrigins?: readonly string[] | undefined
+  /**
+   * `PHILO_WEB_HOST_SCRIPT_URL` (ADR-0013), already validated by `loadConfig`.
+   * An absolute URL joins `script-src` as that exact URL without its query,
+   * not its origin; a path on this origin is already covered by `'self'`.
+   */
+  hostScriptUrl?: string | undefined
 }
 
 /** Directive name → its sources, in the order they are served. */
@@ -56,12 +62,18 @@ export function pwaCspDirectives(options: PwaContentSecurityPolicyOptions = {}):
   const issuer = options.issuer === undefined ? [] : [new URL(options.issuer).origin]
   const connect = ["'self'"]
   for (const origin of [...issuer, ...(options.connectOrigins ?? [])]) if (!connect.includes(origin)) connect.push(origin)
+  const script = ["'self'"]
+  if (options.hostScriptUrl !== undefined && !options.hostScriptUrl.startsWith('/')) {
+    const url = new URL(options.hostScriptUrl)
+    script.push(`${url.origin}${url.pathname}`)
+  }
   return {
     // Anything not named below: this origin only.
     'default-src': ["'self'"],
     // The hashed module bundle. No inline script, no eval: index.html is
-    // checked for inline script by apps/web/test/csp-build.test.ts.
-    'script-src': ["'self'"],
+    // checked for inline script by apps/web/test/csp-build.test.ts. With an
+    // operator host script on another origin, that one URL (ADR-0013).
+    'script-src': script,
     // The hashed stylesheet. React's `style` prop would go through the CSSOM,
     // which this does not restrict; the app has no `style` attributes or
     // `<style>` elements, and the build test holds index.html to that.

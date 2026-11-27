@@ -24,6 +24,7 @@ import type {
   StageRecord,
   User,
   VersionInfo,
+  WebConfig,
   WebhookDelivery,
   WebhookPatch,
   WebhookRecord,
@@ -96,6 +97,12 @@ export class PhiloClient {
       const body = await this.#http.request<{ user: User }>('GET', `${API}/auth/session`, undefined, signal)
       return body.user
     },
+  }
+
+  readonly web = {
+    /** Public: the operator's host script, if any — ADR-0013. Called before there is any token. */
+    config: (signal?: AbortSignal): Promise<WebConfig> =>
+      this.#http.request('GET', `${API}/web/config`, undefined, signal),
   }
 
   readonly leads = {

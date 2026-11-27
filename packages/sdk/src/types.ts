@@ -232,6 +232,19 @@ export interface AuthConfig {
   resource: string[]
 }
 
+/**
+ * What the PWA loads besides sign-in — `GET /api/v1/web/config`, public.
+ * ADR-0013: the operator's host script, off unless the operator set one.
+ */
+export interface WebConfig {
+  /** `PHILO_WEB_HOST_SCRIPT_URL`: an absolute URL or a path on the PWA's origin; null when there is none. */
+  hostScriptUrl: string | null
+  /** `PHILO_WEB_HOST_CONFIG`, verbatim: the host script's `ctx.config`. Public, so it holds no secrets. */
+  hostConfig: Record<string, unknown>
+  /** `PHILO_WEB_HOST_TOKEN_RESOURCES`: the only resources the host's `ctx.getToken` may ask for. */
+  hostTokenResources: string[]
+}
+
 /** Whose a token is — `GET /api/v1/auth/principal`. */
 export interface Principal {
   /** The user the credential acts for, with exactly their authority. */
