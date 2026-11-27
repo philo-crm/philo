@@ -327,7 +327,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
         request.redirectUri,
         request.state,
         'access_denied',
-        'The operator declined the request.',
+        'The request was declined.',
       )
     }
 

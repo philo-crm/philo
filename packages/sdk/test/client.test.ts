@@ -320,3 +320,37 @@ describe('webhooks', () => {
     expect(calls[0]?.init?.method).toBe('POST')
   })
 })
+
+describe('people and account — ADR-0012', () => {
+  it('calls the people routes with the right method and body', async () => {
+    const person = { id: 2, name: null, email: 'sam@example.com', role: 'user', status: 'invited' }
+    const { calls, fetch } = recorder(() => json({ user: person, inviteUrl: 'u', expiresAt: 'e', resetUrl: 'r' }))
+    const client = new PhiloClient({ baseUrl: 'https://philo.example.com', fetch })
+
+    await client.users.invite({ email: 'sam@example.com', role: 'user' })
+    expect(await client.users.update(2, { disabled: true })).toEqual(person)
+    await client.users.reinvite(2)
+    await client.users.resetLink(2)
+    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
+      ['POST', 'https://philo.example.com/api/v1/users'],
+      ['PATCH', 'https://philo.example.com/api/v1/users/2'],
+      ['POST', 'https://philo.example.com/api/v1/users/2/invite'],
+      ['POST', 'https://philo.example.com/api/v1/users/2/reset-link'],
+    ])
+    expect(JSON.parse(calls[1]!.init!.body as string)).toEqual({ disabled: true })
+  })
+
+  it('reads and changes your own account', async () => {
+    const account = { id: 2, name: 'Sam', email: 'sam@example.com', role: 'user', managedByIdp: false }
+    const { calls, fetch } = recorder(() => json({ account }))
+    const client = new PhiloClient({ baseUrl: 'https://philo.example.com', fetch })
+    expect(await client.account.get()).toEqual(account)
+    expect(await client.account.update({ name: 'Sam' })).toEqual(account)
+
+    const changed = recorder(() => new Response(null, { status: 204 }))
+    await new PhiloClient({ baseUrl: 'https://philo.example.com', fetch: changed.fetch }).account.changePassword('old', 'new')
+    expect(changed.calls[0]?.url).toBe('https://philo.example.com/api/v1/account/password')
+    expect(JSON.parse(changed.calls[0]!.init!.body as string)).toEqual({ currentPassword: 'old', newPassword: 'new' })
+    expect(calls[1]?.init?.method).toBe('PATCH')
+  })
+})

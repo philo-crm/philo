@@ -133,7 +133,7 @@ const FAVICON = `data:image/svg+xml,${encodeURIComponent(
     '<path d="M4 10 H96 L58 54 V92 L42 84 V54 Z" transform="translate(22 21.44) scale(0.56)" fill="#fff"/></svg>',
 )}`
 
-function layout(title: Html | string, body: Html): Html {
+export function layout(title: Html | string, body: Html): Html {
   return html`<!doctype html>
 <html lang="en">
   <head>
@@ -220,7 +220,7 @@ export function renderConsentPage(page: ConsentPage): Html {
             ${page.clientUri === null ? '' : html`<p class="muted"><code>${page.clientUri}</code></p>`}
             <ul>
               <li>Read and write every lead, note, and stage</li>
-              <li>Read and edit the email templates the business sends</li>
+              <li>Everything else your account may do in Philo</li>
             </ul>
             <p class="hint">
               Approving sends it back to <code>${page.redirectUri}</code>. If you did not start this, close
@@ -290,5 +290,55 @@ export function renderAuthorizeError(message: string): Html {
     html`<h1>Connection request refused</h1>
       <p class="notice">${message}</p>
       <p class="muted">Nothing was approved. You can close this page.</p>`,
+  )
+}
+
+/**
+ * The page an invite or reset link opens — ADR-0012. An invite also asks for
+ * a name; both set the password the person signs in with from then on.
+ */
+export function renderLinkPage(page: { purpose: 'invite' | 'reset'; error?: string | undefined }): Html {
+  const invite = page.purpose === 'invite'
+  const heading = invite ? 'Join Philo' : 'Choose a new password'
+  return layout(
+    heading,
+    html`<div class="head">
+        <h1>${heading}</h1>
+        <p class="muted">${invite ? 'Set the name and password you will sign in with.' : 'You will sign in with it from now on.'}</p>
+      </div>
+      ${page.error === undefined ? '' : html`<p class="notice" role="alert">${page.error}</p>`}
+      <form method="post">
+        ${invite
+          ? html`<div class="field">
+              <label for="name">Your name (optional)</label>
+              <input id="name" name="name" type="text" autocomplete="name" autofocus />
+            </div>`
+          : ''}
+        <div class="field">
+          <label for="password">Password</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="new-password"
+            ${raw(`minlength="${MIN_PASSWORD_LENGTH}" aria-describedby="password-hint"`)}
+            required
+            ${invite ? '' : raw('autofocus')}
+          />
+          <p class="hint" id="password-hint">At least ${MIN_PASSWORD_LENGTH} characters.</p>
+        </div>
+        <div class="actions">
+          <button type="submit">${invite ? 'Create account' : 'Set password'}</button>
+        </div>
+      </form>`,
+  )
+}
+
+/** A link that is unknown, used, expired or voided: one answer for all, so it says nothing about which. */
+export function renderLinkGone(): Html {
+  return layout(
+    'Link no longer works',
+    html`<h1>This link no longer works</h1>
+      <p class="notice">It has expired or was already used. Ask an admin for a new one.</p>`,
   )
 }

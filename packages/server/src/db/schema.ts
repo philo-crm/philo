@@ -225,6 +225,30 @@ export const users = sqliteTable('users', {
   updatedAt: updatedAt(),
 })
 
+/**
+ * One-time links into the built-in IdP — ADR-0012. An `invite` lets a new
+ * person set their name and password; a `reset` sets a new password. Hashed
+ * at rest, like every other credential: the row is the secret until it is used.
+ */
+export const accountLinks = sqliteTable(
+  'account_links',
+  {
+    id: id(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    purpose: text('purpose', { enum: ['invite', 'reset'] }).notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    /** Voiding a link moves this to the moment it was voided, so an unused one still says an invite is pending. */
+    expiresAt: timestamp('expires_at').notNull(),
+    /** The admin who issued it. Null when the server's command printed it. */
+    createdBy: integer('created_by').references(() => users.id, { onDelete: 'set null' }),
+    usedAt: timestamp('used_at'),
+    createdAt: createdAt(),
+  },
+  (table) => [index('account_links_user_idx').on(table.userId)],
+)
+
 export const sessions = sqliteTable(
   'sessions',
   {

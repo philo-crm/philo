@@ -491,6 +491,27 @@ with `docker logs philo`. Then:
 5. **Rename the funnel stages** to your own, under Funnel. The seeded
    New → Contacted → Qualified → Closed is a placeholder.
 
+### People
+
+An admin adds people under `/api/v1/users` (the PWA's People screen):
+an invite returns a one-time link, valid 7 days, for the admin to pass on.
+The person opens it, sets their name and password, and signs in. An admin can
+change a role, deactivate an account (every key, token and push subscription
+it holds is revoked at once; its history stays) and reactivate it, and issue a
+24-hour password-reset link. With an external IdP, invites, reset links and
+passwords live at the IdP, and so do roles when the role scopes are set;
+deactivation still works and refuses the account whatever its tokens say.
+
+An admin who is the only one and has lost their password prints a reset link
+where the data directory is:
+
+```sh
+docker exec philo philo reset-link you@example.com
+```
+
+Outside the container, `node packages/server/dist/cli.js reset-link you@example.com`
+with the same `PHILO_DATA_DIR` and `PHILO_PUBLIC_BASE_URL` as the server.
+
 There is no forms UI in the MVP, so the boot log is the only place a form key is
 shown. It is an identifier and not a credential — the form that posts to it
 lives in a visitor's browser, so it is public by construction. If one leaks to a

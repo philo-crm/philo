@@ -28,6 +28,9 @@ import { createStageRoutes } from './stages/routes.ts'
 import { VERSION } from './version.ts'
 import type { DeliveryTuning } from './webhooks/deliver.ts'
 import { createWebhookRoutes } from './webhooks/routes.ts'
+import { createAccountLinkRoutes } from './oauth/account-links.ts'
+import { LINK_PATH } from './users/links.ts'
+import { createAccountRoutes, createUserRoutes } from './users/routes.ts'
 
 /** Mount point for the REST surface. */
 export const API_PREFIX = '/api/v1'
@@ -91,6 +94,10 @@ export const USER_API_ROUTES: readonly RouteKey[] = [
   ['GET', `${API_PREFIX}/funnels/:id`],
   ['GET', `${API_PREFIX}/stages`],
   ['GET', `${API_PREFIX}/events`],
+  ['GET', `${API_PREFIX}/users`],
+  ['GET', `${API_PREFIX}/account`],
+  ['PATCH', `${API_PREFIX}/account`],
+  ['POST', `${API_PREFIX}/account/password`],
   ['GET', `${API_PREFIX}/push/key`],
   ['GET', `${API_PREFIX}/push/live`],
   ['POST', `${API_PREFIX}/push/subscriptions`],
@@ -203,6 +210,15 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     externalIdp: options.externalIdp,
     access: options.access ?? accessPolicyOf(options.externalIdp),
   }
+  // One password budget for every check on this server — the sign-in dialog,
+  // invite and reset links, and a person changing their own password.
+  const authGuards = options.externalIdp === undefined ? createAuthGuards(options.authTuning ?? {}) : undefined
+  const people = {
+    db: options.db,
+    mode: { policy: deps.access ?? accessPolicyOf(options.externalIdp), builtIn: options.externalIdp === undefined },
+    publicBaseUrl: options.publicBaseUrl,
+    guards: authGuards,
+  }
   const requireAuth = createRequireAuth(options.externalIdp)
   const requireAdmin = createRequireAdmin(options.externalIdp)
   const app = new Hono<AuthEnv>()
@@ -273,6 +289,8 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     `${API_PREFIX}/webhooks`,
     createWebhookRoutes({ db: options.db, deliveryTuning: options.webhookTuning }),
   )
+  app.route(`${API_PREFIX}/users`, createUserRoutes(people))
+  app.route(`${API_PREFIX}/account`, createAccountRoutes(people))
   app.route(
     `${API_PREFIX}/push`,
     createPushRoutes({
@@ -293,9 +311,18 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
 
   // The built-in IdP, switched off entirely when an external one issues the
   // tokens: two sources of identity would be one too many.
-  if (options.externalIdp === undefined) {
+  if (authGuards !== undefined) {
     ensureFirstPartyClient(options.db, options.appUrl)
-    const authGuards = createAuthGuards(options.authTuning ?? {})
+    app.route(
+      LINK_PATH,
+      createAccountLinkRoutes({
+        db: options.db,
+        publicBaseUrl: options.publicBaseUrl,
+        appUrl: options.appUrl,
+        trustProxy: options.trustProxy,
+        guards: authGuards,
+      }),
+    )
     app.route(
       '/oauth',
       createOAuthRoutes({

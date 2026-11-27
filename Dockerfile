@@ -44,6 +44,10 @@ COPY --from=build /app/apps/standalone/dist ./apps/standalone/dist
 # Pre-created and owned by `node` so a fresh named volume inherits the
 # ownership and the unprivileged process can write to it.
 RUN mkdir -p /data && chown -R node:node /data
+# The server's command, for `docker exec <container> philo reset-link <email>` —
+# ADR-0012's way back in for an admin who has lost their password.
+RUN printf '#!/bin/sh\nexec node /app/packages/server/dist/cli.js "$@"\n' > /usr/local/bin/philo \
+    && chmod +x /usr/local/bin/philo
 VOLUME /data
 
 USER node

@@ -63,6 +63,9 @@ const PUBLIC_ROUTES = new Set([
   'GET /oauth/userinfo',
   'POST /oauth/userinfo',
   'GET /oauth/jwks',
+  // Invite and reset links: the token in the path is the credential.
+  'GET /oauth/link/:token',
+  'POST /oauth/link/:token',
   'GET /.well-known/openid-configuration',
   'GET /.well-known/oauth-authorization-server',
   'GET /.well-known/oauth-protected-resource',
