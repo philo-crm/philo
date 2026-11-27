@@ -20,7 +20,10 @@ describe('App and extra tokens', () => {
     installFakeApi({ leads: [] })
     render(<App />)
     await screen.findByRole('heading', { name: 'Leads' })
-    expect(configureExtraTokens).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.anything() }))
+    // A passive effect: the shell can be on screen a moment before it runs.
+    await waitFor(() =>
+      expect(configureExtraTokens).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.anything() })),
+    )
 
     fireEvent.click(screen.getByRole('button', { name: 'Account' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))

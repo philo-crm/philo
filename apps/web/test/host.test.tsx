@@ -225,7 +225,7 @@ describe('a host script', () => {
       window.dispatchEvent(new PopStateEvent('popstate'))
     })
     await screen.findByRole('heading', { name: 'Sign in' })
-    expect(contexts[0]?.signal.aborted).toBe(true)
+    await waitFor(() => expect(contexts[0]?.signal.aborted).toBe(true))
 
     // Signed in again on the same page.
     cleanup()
@@ -489,7 +489,8 @@ describe('the context reaches Philo’s own stores', () => {
       window.dispatchEvent(new PopStateEvent('popstate'))
     })
     await screen.findByRole('heading', { name: 'Sign in' })
-    expect(ctx.signal.aborted).toBe(true)
+    // The shell's cleanup is a passive effect: it can run a moment after the screen changes.
+    await waitFor(() => expect(ctx.signal.aborted).toBe(true))
     getExtraToken.mockClear()
     expect(await ctx.getToken({ resource: RESOURCE, scope: 'feed:read' })).toBeNull()
     expect(getExtraToken).not.toHaveBeenCalled()
