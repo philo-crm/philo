@@ -73,8 +73,13 @@ export interface ExternalIdpConfig {
    * Other clients at that IdP allowed in as agents. Empty by default: an IdP
    * issues tokens to every application registered with it, and only the ones
    * named here are this CRM's agents. Everything else is refused.
+   *
+   * `'*'` admits any client as an agent — ADR-0012 — for MCP clients that
+   * register themselves (RFC 7591) and so cannot be listed ahead of time.
+   * Only with the audience and both role scopes set, which then do the
+   * allow-list's job.
    */
-  agentClientIds: string[]
+  agentClientIds: string[] | '*'
   /** What the PWA asks the IdP for. Always holds `openid`. */
   scope: string
   /**
@@ -225,6 +230,40 @@ function parseOidcResource(raw: string | undefined): string[] {
   return values
 }
 
+/**
+ * A list of client ids, or `*` alone — ADR-0012. A valid signature says only
+ * that the IdP issued the token to one of its clients; the wildcard drops the
+ * check on which, so it needs the audience (the IdP minted the token for this
+ * instance) and the role scopes (the IdP's policy let this person in) to say
+ * what the allow-list said.
+ */
+function parseAgentClientIds(
+  raw: string | undefined,
+  clientId: string,
+  audience: string[],
+  roles: RoleScopes | undefined,
+): string[] | '*' {
+  const ids = (raw ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id !== '')
+  if (!ids.includes('*')) return ids.filter((id) => id !== clientId)
+  if (ids.length > 1) {
+    throw new ConfigError(`PHILO_OIDC_AGENT_CLIENT_IDS takes * alone or a list of client ids, got ${JSON.stringify(raw)}`)
+  }
+  if (audience.length === 0) {
+    throw new ConfigError(
+      'PHILO_OIDC_AGENT_CLIENT_IDS=* needs PHILO_OIDC_AUDIENCE: without it, a token any client at the IdP holds would be admitted',
+    )
+  }
+  if (roles === undefined) {
+    throw new ConfigError(
+      'PHILO_OIDC_AGENT_CLIENT_IDS=* needs PHILO_OIDC_USER_SCOPE and PHILO_OIDC_ADMIN_SCOPE: without them, any client at the IdP acts for its person unchecked',
+    )
+  }
+  return '*'
+}
+
 /** Settings that only mean something when an external issuer is set. */
 const EXTERNAL_ONLY = [
   'PHILO_OIDC_SCOPE',
@@ -265,11 +304,8 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
   if (rawAudience !== '' && audience.length === 0) {
     throw new ConfigError('PHILO_OIDC_AUDIENCE lists no audience; leave it unset to skip the audience check')
   }
-  const agentClientIds = (env['PHILO_OIDC_AGENT_CLIENT_IDS'] ?? '')
-    .split(',')
-    .map((id) => id.trim())
-    .filter((id) => id !== '' && id !== clientId)
   const roles = parseRoleScopes(env)
+  const agentClientIds = parseAgentClientIds(env['PHILO_OIDC_AGENT_CLIENT_IDS'], clientId, audience, roles)
   return {
     issuer,
     clientId,

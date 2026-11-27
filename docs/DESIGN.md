@@ -389,7 +389,9 @@ of someone removed at the IdP. Minting an API key needs a credential whose role
 is at least its account's stored role, because the key acts with the stored
 role: an admin's agent holding only the user scope gets `403 admin_required`,
 with the admin-scope challenge, rather than a key that would act as admin.
-Without the scopes an external IdP keeps its one account.
+Agents are the clients in `PHILO_OIDC_AGENT_CLIENT_IDS`; with the scopes and
+`PHILO_OIDC_AUDIENCE` set, `*` admits any client, for MCP clients that register
+themselves. Without the scopes an external IdP keeps its one account.
 
 1. **UI: OIDC sign-in.** The PWA is a public OIDC client of the built-in IdP:
    authorization code + PKCE, an operator-scoped access token in memory and a

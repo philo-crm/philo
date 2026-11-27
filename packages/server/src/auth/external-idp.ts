@@ -129,6 +129,19 @@ function clientOf(claims: JWTPayload): string | undefined {
 }
 
 /**
+ * The PWA, a listed agent, or — with `*` — any client, but only where the
+ * audience (checked against `aud`) and the role scopes (checked before any
+ * account is touched) do the allow-list's job: ADR-0012. Config refuses `*`
+ * without them; this refuses it again rather than fail open on an idp built
+ * some other way.
+ */
+function admitsClient(idp: ExternalIdp, clientId: string): boolean {
+  if (clientId === idp.clientId) return true
+  if (idp.agentClientIds !== '*') return idp.agentClientIds.includes(clientId)
+  return idp.audience !== undefined && idp.audience.length > 0 && idp.roles !== undefined
+}
+
+/**
  * The principal behind an external access token, or undefined for a token
  * that does not verify. Network failures reaching the IdP propagate — a 401
  * would tell a client to discard a token that may be perfectly good.
@@ -160,8 +173,7 @@ export async function verifyExternalToken(
   // issued this — so a token that names no client, or a client nobody listed,
   // is refused rather than let in to act for anyone.
   const clientId = clientOf(claims)
-  if (clientId === undefined) return undefined
-  if (clientId !== idp.clientId && !idp.agentClientIds.includes(clientId)) return undefined
+  if (clientId === undefined || !admitsClient(idp, clientId)) return undefined
 
   // The PWA and a listed agent alike act for the user the token names —
   // ADR-0007 — so both are resolved the same way, by the bound subject.

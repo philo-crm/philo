@@ -53,7 +53,9 @@ afterEach(() => {
 })
 
 interface TokenOptions {
-  client?: string
+  /** `null` sends a token that names no client. */
+  client?: string | null
+  audience?: string
   subject?: string
   email?: string | null
   /** As `scope`, a space-separated string. */
@@ -63,7 +65,7 @@ interface TokenOptions {
 }
 
 function token(options: TokenOptions = {}): Promise<string> {
-  const claims: Record<string, unknown> = { azp: options.client ?? PWA_CLIENT }
+  const claims: Record<string, unknown> = options.client === null ? {} : { azp: options.client ?? PWA_CLIENT }
   const email = options.email === undefined ? 'owner@example.com' : options.email
   if (email !== null) Object.assign(claims, { email, email_verified: true, name: 'Owner' })
   if (options.scope !== undefined) claims['scope'] = options.scope
@@ -71,7 +73,7 @@ function token(options: TokenOptions = {}): Promise<string> {
   return new SignJWT(claims)
     .setProtectedHeader({ alg: 'ES256', kid: 'k1' })
     .setIssuer(ISSUER)
-    .setAudience('philo-api')
+    .setAudience(options.audience ?? 'philo-api')
     .setSubject(options.subject ?? 'owner-sub')
     .setIssuedAt()
     .setExpirationTime('5m')
@@ -92,6 +94,15 @@ function rowOf(testApp: TestApp, id = 1) {
 function app(): TestApp {
   return createTestApp({ externalIdp: idp })
 }
+
+/** `PHILO_OIDC_AGENT_CLIENT_IDS=*`: any client is an agent, as a self-registered MCP client is. */
+function wildcardApp(): TestApp {
+  return createTestApp({ externalIdp: { ...idp, agentClientIds: '*' } })
+}
+
+/** A client nobody listed, as RFC 7591 dynamic registration mints them. */
+const REGISTERED_CLIENT = 'dcr-7f3a9c'
+
 
 /** An admin, provisioned by a PWA sign-in with both scopes. */
 async function signedInAdmin(testApp: TestApp): Promise<void> {
@@ -407,5 +418,104 @@ describe('a deactivated account never bound', () => {
     expect(await res.json()).toEqual({ error: 'account_disabled' })
     expect(rowOf(testApp)).toEqual(before)
     expect(rowOf(testApp)?.externalSubject).toBeNull()
+  })
+})
+
+describe('any agent client (PHILO_OIDC_AGENT_CLIENT_IDS=*)', () => {
+  it('refuses an unlisted client when agents are listed, as before', async () => {
+    const testApp = app()
+    const res = await testApp.app.request('/api/v1/leads', await bearer({ client: REGISTERED_CLIENT, scope: USER_SCOPE }))
+    expect(res.status).toBe(401)
+    expect(testApp.db.select().from(users).all()).toHaveLength(0)
+  })
+
+  it('admits a client nobody listed, holding the audience and the user scope, as an agent for its person', async () => {
+    const testApp = wildcardApp()
+    const res = await testApp.app.request('/api/v1/auth/principal', await bearer({ client: REGISTERED_CLIENT, scope: USER_SCOPE }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { role: string; actor: string; user: { id: number } }
+    expect(body).toMatchObject({ role: 'user', actor: `oauth:${REGISTERED_CLIENT}`, user: { id: 1 } })
+    const leads = await testApp.app.request('/api/v1/leads', await bearer({ client: REGISTERED_CLIENT, scope: USER_SCOPE }))
+    expect(leads.status).toBe(200)
+  })
+
+  it('still names the PWA the person, not an agent', async () => {
+    const testApp = wildcardApp()
+    const res = await testApp.app.request('/api/v1/auth/principal', await bearer({ scope: USER_SCOPE }))
+    expect(((await res.json()) as { actor: string }).actor).toBe('user:1')
+  })
+
+  it('refuses a token without a role scope with 403 insufficient_scope, before any account exists', async () => {
+    const testApp = wildcardApp()
+    const res = await testApp.app.request('/api/v1/leads', await bearer({ client: REGISTERED_CLIENT, scope: 'openid offline_access' }))
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'insufficient_scope' })
+    expect(res.headers.get('www-authenticate')).toBe(
+      `Bearer realm="philo", error="insufficient_scope", scope="${USER_SCOPE}"`,
+    )
+    expect(testApp.db.select().from(users).all()).toHaveLength(0)
+  })
+
+  it('refuses a token minted for another audience', async () => {
+    const testApp = wildcardApp()
+    const res = await testApp.app.request(
+      '/api/v1/leads',
+      await bearer({ client: REGISTERED_CLIENT, scope: USER_SCOPE, audience: 'another-app' }),
+    )
+    expect(res.status).toBe(401)
+    expect(testApp.db.select().from(users).all()).toHaveLength(0)
+  })
+
+  it('refuses a token that names no client', async () => {
+    const testApp = wildcardApp()
+    const res = await testApp.app.request('/api/v1/leads', await bearer({ client: null, scope: USER_SCOPE }))
+    expect(res.status).toBe(401)
+    expect(testApp.db.select().from(users).all()).toHaveLength(0)
+  })
+
+  it('caps an agent at its token: a user-scope token cannot reach admin routes for an admin', async () => {
+    const testApp = wildcardApp()
+    await signedInAdmin(testApp)
+    const res = await testApp.app.request('/api/v1/webhooks', await bearer({ client: REGISTERED_CLIENT, scope: USER_SCOPE }))
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'admin_required' })
+  })
+
+  it('never demotes: only the PWA client does', async () => {
+    const testApp = wildcardApp()
+    await signedInAdmin(testApp)
+    expect((await principal(testApp, { client: REGISTERED_CLIENT, scope: USER_SCOPE })).body.role).toBe('user')
+    expect(rowOf(testApp)?.role).toBe('admin')
+
+    expect((await principal(testApp, { scope: USER_SCOPE })).body.role).toBe('user')
+    expect(rowOf(testApp)?.role).toBe('user')
+  })
+
+  it("cannot mint an API key above its token's role", async () => {
+    const testApp = wildcardApp()
+    await signedInAdmin(testApp)
+    const res = await testApp.app.request(
+      '/api/v1/api-keys',
+      jsonPost({ name: 'cron' }, { authorization: `Bearer ${await token({ client: REGISTERED_CLIENT, scope: USER_SCOPE })}` }),
+    )
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'admin_required' })
+    expect(testApp.db.select().from(apiKeys).all()).toEqual([])
+
+    // Holding the admin scope, the same client may.
+    await mintKey(testApp, { client: REGISTERED_CLIENT, scope: ADMIN_SCOPE })
+    expect(testApp.db.select().from(apiKeys).all()).toHaveLength(1)
+  })
+})
+
+describe('any agent client, built without the settings it needs', () => {
+  it.each([
+    ['no audience', { audience: undefined }],
+    ['no role scopes', { roles: undefined }],
+  ])('refuses every unlisted client with %s', async (_label, missing) => {
+    const testApp = createTestApp({ externalIdp: { ...idp, agentClientIds: '*', ...missing } })
+    const res = await testApp.app.request('/api/v1/leads', await bearer({ client: REGISTERED_CLIENT, scope: USER_SCOPE }))
+    expect(res.status).toBe(401)
+    expect(testApp.db.select().from(users).all()).toHaveLength(0)
   })
 })

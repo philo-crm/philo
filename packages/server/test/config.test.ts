@@ -124,6 +124,40 @@ describe('loadConfig', () => {
       expect(() => loadConfig({ ...env, ...scopes })).toThrow(/PHILO_OIDC_(USER|ADMIN)_SCOPE/)
     })
 
+    describe('any agent client (PHILO_OIDC_AGENT_CLIENT_IDS=*)', () => {
+      const audience = { PHILO_OIDC_AUDIENCE: 'philo-api' }
+
+      it('admits any client as an agent with the audience and both role scopes set', () => {
+        const config = loadConfig({ ...env, ...roles, ...audience, PHILO_OIDC_AGENT_CLIENT_IDS: ' * ' })
+        expect(config.externalIdp?.agentClientIds).toBe('*')
+        // Agents are still offered the user scope, as with listed clients.
+        expect(config.externalIdp?.agentScope).toBe('crm:user offline_access')
+      })
+
+      it('refuses the wildcard without an audience: any client registered at the IdP would get in', () => {
+        expect(() => loadConfig({ ...env, ...roles, PHILO_OIDC_AGENT_CLIENT_IDS: '*' })).toThrow(
+          /PHILO_OIDC_AGENT_CLIENT_IDS=\*.*PHILO_OIDC_AUDIENCE/,
+        )
+      })
+
+      it('refuses the wildcard without the role scopes', () => {
+        expect(() => loadConfig({ ...env, ...audience, PHILO_OIDC_AGENT_CLIENT_IDS: '*' })).toThrow(
+          /PHILO_OIDC_AGENT_CLIENT_IDS=\*.*PHILO_OIDC_USER_SCOPE.*PHILO_OIDC_ADMIN_SCOPE/,
+        )
+      })
+
+      it.each(['*,connector-a', 'connector-a, *', '*,*'])('refuses the wildcard mixed with listed ids: %s', (ids) => {
+        expect(() => loadConfig({ ...env, ...roles, ...audience, PHILO_OIDC_AGENT_CLIENT_IDS: ids })).toThrow(
+          /PHILO_OIDC_AGENT_CLIENT_IDS.*\*.*alone/,
+        )
+      })
+
+      it('keeps listed ids as a list', () => {
+        const config = loadConfig({ ...env, ...roles, ...audience, PHILO_OIDC_AGENT_CLIENT_IDS: 'connector-a,connector-b' })
+        expect(config.externalIdp?.agentClientIds).toEqual(['connector-a', 'connector-b'])
+      })
+    })
+
     it('reads an agent scope without the role scopes too', () => {
       expect(loadConfig({ ...env, PHILO_OIDC_AGENT_SCOPE: 'crm offline_access' }).externalIdp?.agentScope).toBe(
         'crm offline_access',

@@ -967,6 +967,7 @@ describe('external IdP with role scopes — ADR-0012', () => {
 
   it.each([
     ['the configured agent scope', () => ({ externalIdp: idp }), ['crm:user', 'offline_access']],
+    ['the configured agent scope to any agent client', () => ({ externalIdp: { ...idp, agentClientIds: '*' as const } }), ['crm:user', 'offline_access']],
     ['mcp for the built-in IdP', () => ({}), ['mcp']],
     ['mcp for an external IdP that configured none, as before', () => ({ externalIdp: { ...idp, roles: undefined, agentScope: undefined } }), ['mcp']],
   ])('advertises %s in its protected-resource metadata', async (_label, options, scopes) => {

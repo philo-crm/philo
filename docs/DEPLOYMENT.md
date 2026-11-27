@@ -86,7 +86,7 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_OIDC_ISSUER` | unset | An external OIDC provider to use instead of the built-in IdP. See [External identity provider](#external-identity-provider). |
 | `PHILO_OIDC_CLIENT_ID` | — | Required with `PHILO_OIDC_ISSUER`: the PWA's client id at that provider. Its tokens are recorded as the person rather than as an agent. |
 | `PHILO_OIDC_AUDIENCE` | unset | Comma-separated `aud` values the provider's access tokens may carry; a token naming any one of them is accepted. Set it whenever the provider issues one. |
-| `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. |
+| `PHILO_OIDC_AGENT_CLIENT_IDS` | empty | Comma-separated client ids at that provider admitted as agents. Every other client is refused. `*` alone admits any client as an agent, for self-registering MCP clients; it needs `PHILO_OIDC_AUDIENCE` and both role scopes, and `*` mixed with ids is a startup error. See [Any agent client](#any-agent-client). |
 | `PHILO_OIDC_SCOPE` | `openid email profile`, plus both role scopes when set | The scope the PWA asks that provider for. Must include `openid`, and with the role scopes set at least one of them (normally both). Add `offline_access` if the provider issues refresh tokens only when asked. |
 | `PHILO_OIDC_USER_SCOPE` | unset | With `PHILO_OIDC_ADMIN_SCOPE`: the scope that admits a person as a user. Setting both gives every person their own account, with the role their token's scopes name. See [Several people](#several-people-roles-from-scopes). |
 | `PHILO_OIDC_ADMIN_SCOPE` | unset | With `PHILO_OIDC_USER_SCOPE`: the scope that makes a person an admin. One without the other stops Philo at startup. |
@@ -199,7 +199,9 @@ it gone at their next refresh and sign out too.
 API keys keep working. MCP connectors that want OAuth must be registered at the
 provider and listed in `PHILO_OIDC_AGENT_CLIENT_IDS`; everything else the
 provider issues is refused, because a valid signature only proves the token
-came from *some* application registered there.
+came from *some* application registered there. With the role scopes set, `*`
+drops the list for connectors that register themselves; see
+[Any agent client](#any-agent-client).
 
 #### Several people: roles from scopes
 
@@ -250,6 +252,39 @@ the provider — one that admits a person as a **user**, one that makes them an
   its last sign-in, so its API keys keep working for up to 30 days from
   then. Sign in once after setting the scopes; the account's role is then
   whatever that token says.
+
+#### Any agent client
+
+An MCP client that registers itself at the provider
+([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591) dynamic registration) gets
+its client id at that moment, so it cannot be listed ahead of time.
+`PHILO_OIDC_AGENT_CLIENT_IDS=*` admits a token from any client at the provider
+as an agent: it acts for the person its subject names (`oauth:<client id>` on
+the timeline) with the role its own scopes name, as a listed agent does.
+`PHILO_OIDC_CLIENT_ID` is still the person, and still the only client whose
+token demotes.
+
+The list was what kept the provider's other applications out. Without it, any
+client registered there is admitted, including one somebody registered
+themselves with a loopback redirect, so two other checks have to do its job,
+and Philo refuses to start with `*` unless both are set:
+
+- **`PHILO_OIDC_AUDIENCE`.** The token must have been minted for this
+  instance, not for another application at the same provider whose tokens
+  happen to carry the person's subject. Make the provider put the audience
+  only in tokens issued for Philo's resource (often through the
+  [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707) `resource` parameter the
+  MCP client sends).
+- **`PHILO_OIDC_USER_SCOPE` and `PHILO_OIDC_ADMIN_SCOPE`.** The token must
+  hold one of them, so the provider's policy, not the client, decides who
+  comes in and as what. A token with neither is refused with
+  `403 insufficient_scope` before any account is touched. Grant the scopes by
+  person (group or role membership), not to every client that asks.
+
+A token that names no client (`azp` or `client_id`) is still refused, and
+`*` mixed with listed ids is a startup error. The MCP endpoint's
+protected-resource metadata tells such clients to ask for
+`PHILO_OIDC_AGENT_SCOPE` (by default the user scope plus `offline_access`).
 
 ### Running the pieces apart
 
