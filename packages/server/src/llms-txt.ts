@@ -77,7 +77,10 @@ acts with its person's role. A user works leads: everything under /leads, readin
 else needs an admin — funnel and stage changes, all of /settings (email
 settings and templates, reads included) and all of /webhooks. A call that needs
 an admin answers 403 \`{"error":"admin_required"}\`; GET /auth/principal says
-which role your credential has. Over MCP, a user's token lists only the tools a
+which role your credential has. GET /users lists the people on the
+instance and GET/PATCH /account is your own; inviting, changing and
+deactivating people is admin-only, and the API only (there are no people tools
+over MCP). Over MCP, a user's token lists only the tools a
 user can call.
 
 ### OAuth, if you need it

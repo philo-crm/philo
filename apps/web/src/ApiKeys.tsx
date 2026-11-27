@@ -89,8 +89,8 @@ export function ApiKeys({ onSessionExpired }: ApiKeysProps) {
       description={
         <>
           For scripts, cron jobs and AI agents. Send one as{' '}
-          <code>Authorization: Bearer philo_…</code>. A key acts as you, with everything you can do
-          here — leads, the funnel, email templates, mail server settings, and other keys. Its actions
+          <code>Authorization: Bearer philo_…</code>. A key acts as you, with your role: whatever you can do here,
+          it can. Its actions
           are recorded under the key&rsquo;s name. Give one only to something you would trust with your
           account.
         </>

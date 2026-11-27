@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import { Account } from './Account.tsx'
 import { AccountMenu } from './AccountMenu.tsx'
 import type { WebConfig } from '@philo/sdk'
 import type { User } from './auth.ts'
 import { FunnelBoard } from './FunnelBoard.tsx'
 import { FUNNEL_SECTIONS, FunnelSettings, type FunnelSection } from './FunnelSettings.tsx'
 import { FunnelSwitcher } from './FunnelSwitcher.tsx'
-import { NO_HOST, useHost } from './host.ts'
+import { ACCOUNT_PATH, NO_HOST, useHost } from './host.ts'
 import { PlusIcon } from './icons.tsx'
 import { dismissInstallPrompt, isInstallPromptDismissed, shouldOfferInstall } from './install.ts'
 import { InstallHelper } from './InstallHelper.tsx'
@@ -25,6 +26,8 @@ export interface AppShellProps {
   onSignOut: () => void
   /** A 401 from any screen: the session ended, so hand back to the sign-in screen. */
   onSessionExpired: () => void
+  /** Your account screen saved a new name or email. */
+  onUserChanged?: ((user: User) => void) | undefined
 }
 
 const LEAD_PATH = /^\/leads\/(\d+)$/
@@ -54,7 +57,7 @@ function tabFor(path: string): string | undefined {
   return undefined
 }
 
-type ScreenProps = Pick<AppShellProps, 'user' | 'onSignOut' | 'onSessionExpired'>
+type ScreenProps = Pick<AppShellProps, 'user' | 'onSignOut' | 'onSessionExpired' | 'onUserChanged'>
 
 /**
  * Signs out as soon as it shows, whatever the top bar does: the way out no
@@ -95,7 +98,17 @@ function screenFor(path: string, props: ScreenProps) {
     isAdmin ? 'email' : 'notifications',
   )
   if (settingsSection !== undefined) {
-    return <Settings section={settingsSection} isAdmin={isAdmin} onSessionExpired={onSessionExpired} />
+    return (
+      <Settings section={settingsSection} isAdmin={isAdmin} currentUserId={user.id} onSessionExpired={onSessionExpired} />
+    )
+  }
+  if (path === ACCOUNT_PATH) {
+    return (
+      <Account
+        onAccountChanged={(account) => props.onUserChanged?.({ ...user, name: account.name, email: account.email })}
+        onSessionExpired={onSessionExpired}
+      />
+    )
   }
   const funnelSection = sectionOf<FunnelSection>(FUNNEL_PATH.exec(path), FUNNEL_SECTIONS, 'general')
   if (funnelSection !== undefined) {
@@ -163,7 +176,14 @@ function useInAppNotifications(): void {
   }, [on])
 }
 
-export function AppShell({ user, web = NO_HOST, signIn = NO_SIGN_IN, onSignOut, onSessionExpired }: AppShellProps) {
+export function AppShell({
+  user,
+  web = NO_HOST,
+  signIn = NO_SIGN_IN,
+  onSignOut,
+  onSessionExpired,
+  onUserChanged,
+}: AppShellProps) {
   const path = usePath()
   useInAppNotifications()
   // Not at /sign-out: the page is about to go, and a host loaded there would
@@ -225,7 +245,7 @@ export function AppShell({ user, web = NO_HOST, signIn = NO_SIGN_IN, onSignOut, 
             </button>
           </p>
         )}
-        {screenFor(path, { user, onSignOut, onSessionExpired })}
+        {screenFor(path, { user, onSignOut, onSessionExpired, onUserChanged })}
       </main>
     </div>
   )

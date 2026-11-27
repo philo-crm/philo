@@ -215,6 +215,57 @@ export interface User {
   role: Role
 }
 
+/** ADR-0012. `invited`: has not used their invite link yet; `no_access`: the IdP no longer grants a role. */
+export type PersonStatus = 'active' | 'invited' | 'disabled' | 'no_access'
+
+/** Someone on the instance — `GET /api/v1/users`. Every user may list them. */
+export interface Person {
+  id: number
+  name: string | null
+  email: string
+  /** Null when an external IdP stopped granting one. */
+  role: Role | null
+  status: PersonStatus
+}
+
+/** `GET /api/v1/users`: the people, and what this instance lets an admin do about them. */
+export interface PeopleList {
+  users: Person[]
+  /** True with the built-in IdP: admins invite people and issue reset links. */
+  invites: boolean
+  /** True when an external IdP's scopes decide roles, so Philo cannot change one. */
+  rolesManagedByIdp: boolean
+}
+
+/** A one-time link — shown once, single-use. */
+export interface InviteResult {
+  user: Person
+  inviteUrl: string
+  expiresAt: string
+}
+
+export interface ResetLink {
+  resetUrl: string
+  expiresAt: string
+}
+
+/** Your own account — `GET /api/v1/account`. */
+export interface Account {
+  id: number
+  name: string | null
+  email: string
+  role: Role
+  /** True with an external IdP: email and password live there. */
+  managedByIdp: boolean
+}
+
+/** Changing an email needs `currentPassword` with the built-in IdP. */
+export interface AccountPatch {
+  name?: string | null
+  email?: string
+  currentPassword?: string
+}
+
 /**
  * How a client should sign a person in — `GET /api/v1/auth/config`. The issuer
  * is Philo itself unless the operator pointed it at an external IdP.

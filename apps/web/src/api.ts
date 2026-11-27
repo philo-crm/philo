@@ -4,10 +4,14 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_FUNNEL_NAME_LENGTH,
   MAX_NOTIFY_RECIPIENTS,
+  MAX_PERSON_NAME_LENGTH,
   MAX_SETTINGS_NAME_LENGTH,
   MAX_STAGE_NAME_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
   MAX_TEMPLATE_SUBJECT_LENGTH,
+  MIN_PASSWORD_LENGTH,
+  type Account,
+  type AccountPatch,
   type ApiKeyRecord,
   type ChangeEvent,
   type EmailSettings,
@@ -24,6 +28,11 @@ import {
   type NewLead,
   type NewWebhook,
   type NewWebhookResult,
+  type PeopleList,
+  type Person,
+  type InviteResult,
+  type ResetLink,
+  type Role,
   type StageRecord,
   type WebhookDelivery,
   type WebhookRecord,
@@ -31,7 +40,15 @@ import {
 import { philo } from './client.ts'
 
 export type {
+  Account,
+  AccountPatch,
   ApiKeyRecord,
+  InviteResult,
+  PeopleList,
+  Person,
+  PersonStatus,
+  ResetLink,
+  Role,
   ChangeEvent,
   ChangeType,
   NewLead,
@@ -87,10 +104,12 @@ export {
   MAX_FUNNEL_NAME_LENGTH,
   MAX_NOTE_LENGTH,
   MAX_NOTIFY_RECIPIENTS,
+  MAX_PERSON_NAME_LENGTH,
   MAX_SETTINGS_NAME_LENGTH,
   MAX_STAGE_NAME_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
   MAX_TEMPLATE_SUBJECT_LENGTH,
+  MIN_PASSWORD_LENGTH,
 } from '@philo/sdk'
 
 
@@ -474,4 +493,65 @@ export function deleteWebhook(id: number): Promise<void> {
 
 export function testWebhook(id: number): Promise<WebhookDelivery> {
   return philo.webhooks.test(id)
+}
+
+/** The same codes, read as a person or your own account — ADR-0012. */
+const PEOPLE_MESSAGES: Record<string, string> = {
+  not_found: 'That person is no longer on this instance. Reload to see the current list.',
+  invalid_email: 'That is not a valid email address.',
+  invalid_role: 'Pick a role from the list.',
+  invalid_name: `A name has to fit within ${MAX_PERSON_NAME_LENGTH} characters.`,
+  email_taken: 'Someone with that email address already has an account.',
+  last_admin: 'This is the last admin. Make someone else an admin first, so the instance always has one.',
+  cannot_change_self: 'You cannot change your own role or deactivate yourself. Ask another admin.',
+  role_managed_by_idp: 'Roles are managed by your identity provider. Change it there.',
+  managed_by_idp: 'Your identity provider manages this. Change it there.',
+  not_invited: 'They have already accepted their invite. Issue a reset link instead.',
+  account_disabled: 'That account is deactivated. Reactivate it first.',
+  wrong_password: 'Your current password is not right.',
+  invalid_password: `A new password needs at least ${MIN_PASSWORD_LENGTH} characters.`,
+  busy: 'The server is busy. Wait a moment and try again.',
+  admin_required: 'Only an admin can change this.',
+}
+
+export function peopleErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    const message = PEOPLE_MESSAGES[error.code]
+    if (message !== undefined) return message
+  }
+  return apiErrorMessage(error)
+}
+
+/** Every user may list people, so the timeline can name a colleague. */
+export function fetchPeople(signal?: AbortSignal): Promise<PeopleList> {
+  return philo.users.list(signal)
+}
+
+/** The one call that ever sees an invite link. */
+export function invitePerson(person: { email: string; role: Role; name?: string | null }): Promise<InviteResult> {
+  return philo.users.invite(person)
+}
+
+export function updatePerson(id: number, patch: { role?: Role; disabled?: boolean }): Promise<Person> {
+  return philo.users.update(id, patch)
+}
+
+export function reinvitePerson(id: number): Promise<InviteResult> {
+  return philo.users.reinvite(id)
+}
+
+export function issueResetLink(id: number): Promise<ResetLink> {
+  return philo.users.resetLink(id)
+}
+
+export function fetchAccount(signal?: AbortSignal): Promise<Account> {
+  return philo.account.get(signal)
+}
+
+export function updateAccount(patch: AccountPatch): Promise<Account> {
+  return philo.account.update(patch)
+}
+
+export function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  return philo.account.changePassword(currentPassword, newPassword)
 }

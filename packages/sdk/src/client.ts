@@ -1,5 +1,12 @@
 import { Transport, type TransportOptions } from './http.ts'
 import type {
+  Account,
+  AccountPatch,
+  InviteResult,
+  PeopleList,
+  Person,
+  ResetLink,
+  Role,
   ApiKeyRecord,
   AuthConfig,
   ChangeEvent,
@@ -321,6 +328,45 @@ export class PhiloClient {
         draft,
       )
       return body.to
+    },
+  }
+
+  /** People — ADR-0012. Any user may list them; every change needs an admin. */
+  readonly users = {
+    list: (signal?: AbortSignal): Promise<PeopleList> => this.#http.request('GET', `${API}/users`, undefined, signal),
+
+    /** Built-in IdP only. The invite link is in this response alone. */
+    invite: (person: { email: string; role: Role; name?: string | null }): Promise<InviteResult> =>
+      this.#http.request('POST', `${API}/users`, person),
+
+    /** Change a role, or deactivate (`disabled: true`) and reactivate. */
+    update: async (id: number, patch: { role?: Role; disabled?: boolean }): Promise<Person> => {
+      const body = await this.#http.request<{ user: Person }>('PATCH', `${API}/users/${id}`, patch)
+      return body.user
+    },
+
+    /** A fresh invite link for someone still invited; the old one stops working. */
+    reinvite: (id: number): Promise<InviteResult> => this.#http.request('POST', `${API}/users/${id}/invite`, {}),
+
+    /** Built-in IdP only. Using the link sets a new password and signs the account out everywhere. */
+    resetLink: (id: number): Promise<ResetLink> => this.#http.request('POST', `${API}/users/${id}/reset-link`, {}),
+  }
+
+  /** Your own account. */
+  readonly account = {
+    get: async (signal?: AbortSignal): Promise<Account> => {
+      const body = await this.#http.request<{ account: Account }>('GET', `${API}/account`, undefined, signal)
+      return body.account
+    },
+
+    update: async (patch: AccountPatch): Promise<Account> => {
+      const body = await this.#http.request<{ account: Account }>('PATCH', `${API}/account`, patch)
+      return body.account
+    },
+
+    /** Built-in IdP only. Signs out your other sessions and voids any pending reset link. */
+    changePassword: async (currentPassword: string, newPassword: string): Promise<void> => {
+      await this.#http.request('POST', `${API}/account/password`, { currentPassword, newPassword })
     },
   }
 

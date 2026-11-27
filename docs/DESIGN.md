@@ -154,6 +154,12 @@ Full rationale for the generality decision:
 - **`users`** — `id`, `email`, `password_hash`, `name`, `external_subject`,
   `role` (`user` | `admin`; null is no access), `role_confirmed_at`,
   `disabled_at` ([ADR-0012](adr/0012-several-users-with-roles.md)).
+- **`account_links`** — one-time invite and password-reset links into the
+  built-in IdP: `id`, `user_id`, `purpose` (`invite` | `reset`), `token_hash`,
+  `expires_at`, `created_by`, `used_at`. Hashed, single-use; an invite lasts 7
+  days, a reset 24 hours. Using a link, or changing a password, voids the
+  account's other pending links by expiring them. An account is `invited`
+  while it has an invite and has used no link of either purpose.
 - **`push_subscriptions`**, **`api_keys`**, **`oauth_clients`**,
   **`authorization_codes`**, **`access_tokens`**, **`refresh_tokens`**,
   **`settings`** — supporting tables per the sections below. (`sessions` is a

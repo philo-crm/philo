@@ -1575,6 +1575,23 @@ main {
   box-sizing: border-box;
 }
 
+/* ---- people ------------------------------------------------------------- */
+
+.people-invite {
+  display: grid;
+  gap: 0.75rem;
+}
+
+/* Deactivated, invited, no access: a status worth reading, not one to act on at a glance. */
+.tag-muted {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.people-you {
+  margin-inline-start: 0.5rem;
+}
+
 /* ---- website form ------------------------------------------------------ */
 
 .intake-url {

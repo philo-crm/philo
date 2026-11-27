@@ -34,7 +34,7 @@ Business — and none of it is an environment variable.
 
 Each **funnel** (Funnel settings, from the funnel switcher in the top bar) can override three of these for its own
 mail: the From name, the Reply-to, and who gets the new-lead notification —
-everyone who can sign in unless the funnel lists its own addresses. Leave an
+every admin unless the funnel lists its own addresses. Leave an
 override blank to use the values above. The mail server, From address and
 business name are always the instance's.
 

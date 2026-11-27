@@ -1,4 +1,4 @@
-import { pkceChallenge, type WebConfig } from '@philo/sdk'
+import { pkceChallenge, type Account, type Person, type WebConfig } from '@philo/sdk'
 import { vi } from 'vitest'
 import type {
   ApiKeyRecord,
@@ -95,6 +95,16 @@ export interface FakeApi {
   webhookTestResult: WebhookDelivery
   /** Open `GET /api/v1/events` streams, each with the funnel it asked for. */
   changeStreams: { funnelId: number | undefined; send: (event: ChangeEvent) => void }[]
+  /** Rows in `users`, as `GET /api/v1/users` lists them — ADR-0012. The signed-in user is one of them. */
+  people: Person[]
+  /** False with an external IdP: no invites, no reset links, no password or email here. */
+  builtInIdp: boolean
+  /** True when an external IdP's scopes decide roles. */
+  rolesManagedByIdp: boolean
+  /** The signed-in user's password, which the account routes check. */
+  password: string
+  /** Every invite or reset link the fake handed out — the server keeps only their hashes. */
+  links: string[]
   /** Every request the app made, in order. */
   calls: {
     method: string
@@ -107,6 +117,16 @@ export interface FakeApi {
 }
 
 export const TEST_USER: User = { id: 7, email: 'owner@example.com', name: 'Owner', role: 'admin' }
+
+/** The signed-in admin and three colleagues, one in each other state. */
+export const TEST_PEOPLE: Person[] = [
+  { id: 7, name: 'Owner', email: 'owner@example.com', role: 'admin', status: 'active' },
+  { id: 8, name: 'Sam Rivera', email: 'sam@example.com', role: 'user', status: 'active' },
+  { id: 9, name: null, email: 'new@example.com', role: 'user', status: 'invited' },
+  { id: 10, name: 'Former Colleague', email: 'former@example.com', role: 'admin', status: 'disabled' },
+]
+
+export const TEST_PASSWORD = 'correct horse battery'
 
 /** What the server stores. `smtpPasswordSet` is derived on the way out, never held. */
 export type StoredEmailSettings = Omit<EmailSettings, 'smtpPasswordSet'> & { smtpPassword: string }
@@ -958,6 +978,114 @@ export function authorize(api: FakeApi, authorizeUrl: string): string {
   return callback.toString()
 }
 
+const LINK_LIFETIME_MS = { invite: 7 * 24 * 3600_000, reset: 24 * 3600_000 }
+
+function issueLink(api: FakeApi, purpose: 'invite' | 'reset') {
+  const url = `${TEST_ISSUER}/oauth/link/${purpose}-${api.links.length + 1}-not-a-real-token`
+  api.links.push(url)
+  return { url, expiresAt: new Date(Date.now() + LINK_LIFETIME_MS[purpose]).toISOString() }
+}
+
+function hasAccessAsAdmin(person: Person): boolean {
+  return person.role === 'admin' && person.status === 'active'
+}
+
+/** People and your own account, with the server's refusals — packages/server/src/users/routes.ts. */
+function handlePeople(api: FakeApi, method: string, path: string, body: unknown): Response | undefined {
+  const payload = (body ?? {}) as Record<string, unknown>
+  const me = api.user!
+  const isAdmin = me.role === 'admin'
+
+  if (path === '/api/v1/users' && method === 'GET') {
+    return jsonResponse(200, { users: api.people, invites: api.builtInIdp, rolesManagedByIdp: api.rolesManagedByIdp })
+  }
+  if (path.startsWith('/api/v1/users') && !isAdmin) return jsonResponse(403, { error: 'admin_required' })
+  if (path === '/api/v1/users' && method === 'POST') {
+    if (!api.builtInIdp) return jsonResponse(409, { error: 'managed_by_idp' })
+    const email = typeof payload['email'] === 'string' ? payload['email'].trim().toLowerCase() : ''
+    if (!ADDRESS.test(email)) return jsonResponse(400, { error: 'invalid_email' })
+    const role = payload['role']
+    if (role !== 'user' && role !== 'admin') return jsonResponse(400, { error: 'invalid_role' })
+    if (api.people.some((person) => person.email === email)) return jsonResponse(409, { error: 'email_taken' })
+    const name = typeof payload['name'] === 'string' && payload['name'].trim() !== '' ? payload['name'].trim() : null
+    const id = api.people.reduce((next, person) => Math.max(next, person.id + 1), 1)
+    const user: Person = { id, name, email, role, status: 'invited' }
+    api.people.push(user)
+    const link = issueLink(api, 'invite')
+    return jsonResponse(201, { user, inviteUrl: link.url, expiresAt: link.expiresAt })
+  }
+
+  const match = /^\/api\/v1\/users\/(\d+)(\/invite|\/reset-link)?$/.exec(path)
+  if (match !== null) {
+    const person = api.people.find((row) => row.id === Number(match[1]))
+    if (person === undefined) return jsonResponse(404, { error: 'not_found' })
+    if (method === 'PATCH' && match[2] === undefined) {
+      if (person.id === me.id) return jsonResponse(409, { error: 'cannot_change_self' })
+      const role = payload['role']
+      if (role !== undefined && api.rolesManagedByIdp) return jsonResponse(409, { error: 'role_managed_by_idp' })
+      const disabled = payload['disabled']
+      const losesAdmin = person.role === 'admin' && ((role !== undefined && role !== 'admin') || disabled === true)
+      if (losesAdmin && hasAccessAsAdmin(person) && api.people.filter(hasAccessAsAdmin).length <= 1) {
+        return jsonResponse(409, { error: 'last_admin' })
+      }
+      if (role === 'user' || role === 'admin') person.role = role
+      if (disabled === true) person.status = 'disabled'
+      if (disabled === false && person.status === 'disabled') person.status = 'active'
+      return jsonResponse(200, { user: person })
+    }
+    if (method === 'POST' && match[2] === '/invite') {
+      if (!api.builtInIdp) return jsonResponse(409, { error: 'managed_by_idp' })
+      if (person.status !== 'invited') return jsonResponse(409, { error: 'not_invited' })
+      const link = issueLink(api, 'invite')
+      return jsonResponse(200, { user: person, inviteUrl: link.url, expiresAt: link.expiresAt })
+    }
+    if (method === 'POST' && match[2] === '/reset-link') {
+      if (!api.builtInIdp) return jsonResponse(409, { error: 'managed_by_idp' })
+      if (person.id === me.id) return jsonResponse(409, { error: 'cannot_change_self' })
+      if (person.status === 'disabled') return jsonResponse(409, { error: 'account_disabled' })
+      const link = issueLink(api, 'reset')
+      return jsonResponse(200, { resetUrl: link.url, expiresAt: link.expiresAt })
+    }
+    return undefined
+  }
+
+  const account = (): { account: Account } => {
+    const user = api.user!
+    return { account: { id: user.id, name: user.name, email: user.email, role: user.role, managedByIdp: !api.builtInIdp } }
+  }
+  if (path === '/api/v1/account' && method === 'GET') return jsonResponse(200, account())
+  if (path === '/api/v1/account' && method === 'PATCH') {
+    const rawName = payload['name']
+    if (rawName !== undefined && rawName !== null && typeof rawName !== 'string') {
+      return jsonResponse(400, { error: 'invalid_name' })
+    }
+    let email: string | undefined
+    if (payload['email'] !== undefined) {
+      if (!api.builtInIdp) return jsonResponse(409, { error: 'managed_by_idp' })
+      email = typeof payload['email'] === 'string' ? payload['email'].trim().toLowerCase() : ''
+      if (!ADDRESS.test(email)) return jsonResponse(400, { error: 'invalid_email' })
+      if (payload['currentPassword'] !== api.password) return jsonResponse(400, { error: 'wrong_password' })
+      if (api.people.some((person) => person.email === email && person.id !== me.id)) {
+        return jsonResponse(409, { error: 'email_taken' })
+      }
+    }
+    const name = rawName === undefined ? me.name : typeof rawName === 'string' && rawName.trim() !== '' ? rawName.trim() : null
+    api.user = { ...me, name, email: email ?? me.email }
+    const row = api.people.find((person) => person.id === me.id)
+    if (row !== undefined) Object.assign(row, { name, email: email ?? me.email })
+    return jsonResponse(200, account())
+  }
+  if (path === '/api/v1/account/password' && method === 'POST') {
+    if (!api.builtInIdp) return jsonResponse(409, { error: 'managed_by_idp' })
+    if (payload['currentPassword'] !== api.password) return jsonResponse(400, { error: 'wrong_password' })
+    const next = payload['newPassword']
+    if (typeof next !== 'string' || next.length < 12) return jsonResponse(400, { error: 'invalid_password' })
+    api.password = next
+    return new Response(null, { status: 204 })
+  }
+  return undefined
+}
+
 function handle(
   api: FakeApi,
   method: string,
@@ -985,6 +1113,8 @@ function handle(
   if (method === 'GET' && path === '/api/v1/leads') return jsonResponse(200, listLeads(api, query))
   if (method === 'POST' && path === '/api/v1/leads') return createLead(api, body)
   if (method === 'GET' && path === '/api/v1/events') return changeResponse(api, query, signal)
+  const peopleAnswer = handlePeople(api, method, path, body)
+  if (peopleAnswer !== undefined) return peopleAnswer
   const webhookAnswer = handleWebhooks(api, method, path, body)
   if (webhookAnswer !== undefined) return webhookAnswer
   const pushAnswer = handlePush(api, method, path, body, signal)
@@ -1168,6 +1298,11 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
     changeStreams: [],
     webhooks: [],
     webhookTestResult: { at: '2026-07-01T12:00:00.000Z', status: 200, ok: true, error: null },
+    people: TEST_PEOPLE,
+    builtInIdp: true,
+    rolesManagedByIdp: false,
+    password: TEST_PASSWORD,
+    links: [],
     calls: [],
     ...rest,
   }
@@ -1179,6 +1314,7 @@ export function installFakeApi(overrides: Partial<FakeApi> & { signedIn?: boolea
   api.emailSettings = structuredClone(api.emailSettings)
   api.emailTemplates = structuredClone(api.emailTemplates)
   api.apiKeys = structuredClone(api.apiKeys)
+  api.people = structuredClone(api.people)
 
   const tokens = signedIn ? issueTokens(api) : undefined
   setAccessTokenSource(tokens === undefined ? undefined : () => api.accessToken)

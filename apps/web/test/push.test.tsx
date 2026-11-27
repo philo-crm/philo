@@ -376,7 +376,7 @@ describe('the Settings notifications panel', () => {
 
   function renderSettings(onSessionExpired = vi.fn()) {
     useBrowser()
-    render(<Settings isAdmin section="notifications" onSessionExpired={onSessionExpired} />)
+    render(<Settings currentUserId={7} isAdmin section="notifications" onSessionExpired={onSessionExpired} />)
     return onSessionExpired
   }
 
@@ -441,7 +441,7 @@ describe('the Settings notifications panel', () => {
     installFakeApi()
     installPushEnv({ hasRegistration: false })
     useBrowser(IPHONE_SAFARI)
-    render(<Settings isAdmin section="notifications" onSessionExpired={vi.fn()} />)
+    render(<Settings currentUserId={7} isAdmin section="notifications" onSessionExpired={vi.fn()} />)
 
     const checkbox = await toggle()
     expect(checkbox.disabled).toBe(true)
@@ -454,7 +454,7 @@ describe('the Settings notifications panel', () => {
     renderSettings()
 
     expect((await toggle()).disabled).toBe(true)
-    expect(screen.getByText(/still emailed to everyone who can sign in/i)).toBeDefined()
+    expect(screen.getByText(/still emailed to the funnel’s recipients/i)).toBeDefined()
   })
 
   // The switch must never claim something the browser did not do.

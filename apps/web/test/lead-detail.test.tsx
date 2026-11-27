@@ -235,6 +235,24 @@ describe('LeadDetail', () => {
     expect(screen.getByText('offer.pdf')).toBeDefined()
   })
 
+  it('names a colleague on the timeline, and you as You', async () => {
+    installFakeApi({
+      leads: [
+        makeLead({
+          id: 5,
+          events: [
+            { id: 1, type: 'note_added', payload: { note: 'Called back' }, actor: 'user:8', createdAt: '2026-07-01T12:00:00.000Z' },
+            { id: 2, type: 'note_added', payload: { note: 'Left a message' }, actor: `user:${TEST_USER.id}`, createdAt: '2026-07-01T12:00:00.000Z' },
+          ],
+        }),
+      ],
+    })
+    renderDetail()
+
+    expect(await screen.findByText('Sam Rivera')).toBeDefined()
+    expect(screen.getByText('You')).toBeDefined()
+  })
+
   it('deletes the lead only once "delete" is typed, then returns to the list', async () => {
     window.history.pushState(null, '', '/leads/5')
     const api = installFakeApi({ leads: [applicant()] })

@@ -4,7 +4,7 @@ import { Settings } from '../src/Settings.tsx'
 import { installFakeApi, TEST_EMAIL_SETTINGS, type StoredEmailSettings } from './support/fake-api.ts'
 
 function renderSettings(onSessionExpired = vi.fn()) {
-  return render(<Settings isAdmin onSessionExpired={onSessionExpired} />)
+  return render(<Settings currentUserId={7} isAdmin onSessionExpired={onSessionExpired} />)
 }
 
 /** Resolves once the loaded settings are on screen rather than the spinner. */
@@ -195,7 +195,7 @@ describe('Settings', () => {
 
   it('carries the API key manager, which is the only place a key can be made', async () => {
     installFakeApi()
-    render(<Settings isAdmin section="api-keys" onSessionExpired={vi.fn()} />)
+    render(<Settings currentUserId={7} isAdmin section="api-keys" onSessionExpired={vi.fn()} />)
 
     expect(await screen.findByRole('heading', { name: 'API keys' })).toBeDefined()
     expect(await screen.findByText('Nightly export')).toBeDefined()
@@ -203,12 +203,13 @@ describe('Settings', () => {
 
   it('lists its sections and marks the one showing', async () => {
     installFakeApi()
-    render(<Settings isAdmin section="webhooks" onSessionExpired={vi.fn()} />)
+    render(<Settings currentUserId={7} isAdmin section="webhooks" onSessionExpired={vi.fn()} />)
 
     const nav = screen.getByRole('navigation', { name: 'Server settings sections' })
     expect(within(nav).getAllByRole('link').map((link) => link.textContent)).toEqual([
       'Email & business',
       'Funnels',
+      'People',
       'Notifications',
       'API keys',
       'Webhooks',

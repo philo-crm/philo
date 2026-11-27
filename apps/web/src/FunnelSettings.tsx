@@ -304,7 +304,7 @@ function FunnelEditor({ funnel, deletable, lastFunnel, onChanged }: FunnelEditor
             />
           </label>
         </SettingsCard>
-        <SettingsCard title="Who is notified" description="One address per line. Leave empty to notify everyone who can sign in.">
+        <SettingsCard title="Who is notified" description="One address per line. Leave empty to notify every admin.">
           <label className="field">
             <span className="field-label">Notify about new leads</span>
             <textarea

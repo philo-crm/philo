@@ -145,6 +145,8 @@ describe('a host script', () => {
     expect(ctx.role).toBe('admin')
     expect(ctx.config).toEqual(HOST_CONFIG)
     expect(ctx.accountItems).toEqual([
+      { label: 'Your account', path: '/account' },
+      { label: 'People', path: '/settings/people' },
       { label: 'Server settings', path: '/settings' },
       { label: 'Install the app', path: '/install' },
     ])
@@ -161,6 +163,7 @@ describe('a host script', () => {
     await waitFor(() => expect(contexts).toHaveLength(1))
     expect(contexts[0]?.role).toBe('user')
     expect(contexts[0]?.accountItems).toEqual([
+      { label: 'Your account', path: '/account' },
       { label: 'Settings', path: '/settings/notifications' },
       { label: 'Install the app', path: '/install' },
     ])

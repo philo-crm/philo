@@ -38,6 +38,9 @@ export const MAX_API_KEY_NAME_LENGTH = 80
 /** packages/server/src/auth/credentials.ts */
 export const MIN_PASSWORD_LENGTH = 12
 
+/** packages/server/src/users/routes.ts */
+export const MAX_PERSON_NAME_LENGTH = 200
+
 /** packages/server/src/webhooks/service.ts */
 export const MAX_WEBHOOKS = 50
 export const MAX_WEBHOOK_URL_LENGTH = 2_000

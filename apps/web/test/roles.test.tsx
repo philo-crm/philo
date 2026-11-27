@@ -51,7 +51,7 @@ describe('a user-role session', () => {
 
   it('opens a user straight on notifications at /settings', () => {
     installFakeApi({ user: USER })
-    render(<Settings isAdmin={false} onSessionExpired={vi.fn()} />)
+    render(<Settings currentUserId={7} isAdmin={false} onSessionExpired={vi.fn()} />)
     expect(screen.getByRole('link', { name: 'Notifications' }).getAttribute('aria-current')).toBe('page')
   })
 })

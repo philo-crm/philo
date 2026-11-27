@@ -409,3 +409,61 @@ describe('a deactivated account never bound', () => {
     expect(rowOf(testApp)?.externalSubject).toBeNull()
   })
 })
+
+describe('people with roles from the IdP', () => {
+  const adminScope = `${USER_SCOPE} ${ADMIN_SCOPE}`
+  const asAdmin = async () => (await bearer({ scope: adminScope })).headers
+  const asSam = () => token({ subject: 'sam-sub', email: 'sam@example.com', scope: USER_SCOPE })
+
+  async function twoPeople(testApp: TestApp): Promise<number> {
+    await signedInAdmin(testApp)
+    const res = await testApp.app.request('/api/v1/auth/principal', { headers: { authorization: `Bearer ${await asSam()}` } })
+    return ((await res.json()) as { user: { id: number } }).user.id
+  }
+
+  it('lists people, and says roles and invites are not Philo’s', async () => {
+    const testApp = app()
+    await twoPeople(testApp)
+    const res = await testApp.app.request('/api/v1/users', { headers: { authorization: `Bearer ${await asSam()}` } })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { users: { email: string; status: string }[]; invites: boolean; rolesManagedByIdp: boolean }
+    expect(body.users.map((person) => [person.email, person.status])).toEqual([
+      ['owner@example.com', 'active'],
+      ['sam@example.com', 'active'],
+    ])
+    expect(body).toMatchObject({ invites: false, rolesManagedByIdp: true })
+  })
+
+  it('refuses invites, role changes, reset links and passwords, and has no link dialog', async () => {
+    const testApp = app()
+    const samId = await twoPeople(testApp)
+    const headers = await asAdmin()
+    const post = (path: string, body: unknown) => testApp.app.request(path, jsonPost(body, headers))
+    expect(await (await post('/api/v1/users', { email: 'x@example.com', role: 'user' })).json()).toEqual({ error: 'managed_by_idp' })
+    expect(await (await post(`/api/v1/users/${samId}/reset-link`, {})).json()).toEqual({ error: 'managed_by_idp' })
+    const patched = await testApp.app.request(`/api/v1/users/${samId}`, { ...jsonPost({ role: 'admin' }, headers), method: 'PATCH' })
+    expect(patched.status).toBe(409)
+    expect(await patched.json()).toEqual({ error: 'role_managed_by_idp' })
+    expect(await (await post('/api/v1/account/password', { currentPassword: 'x', newPassword: 'y' })).json()).toEqual({
+      error: 'managed_by_idp',
+    })
+    expect((await testApp.app.request('/oauth/link/philo_link_x')).status).toBe(404)
+  })
+
+  it('deactivates an account: every credential goes, and its tokens are refused whatever they say', async () => {
+    const testApp = app()
+    const samId = await twoPeople(testApp)
+    const key = await mintKey(testApp, { subject: 'sam-sub', email: 'sam@example.com', scope: USER_SCOPE })
+    testApp.db.insert(pushSubscriptions).values({ userId: samId, endpoint: 'https://push.example.com/s', p256dh: 'p', auth: 'a' }).run()
+
+    const res = await testApp.app.request(`/api/v1/users/${samId}`, { ...jsonPost({ disabled: true }, await asAdmin()), method: 'PATCH' })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { user: { status: string } }).user.status).toBe('disabled')
+
+    expect(testApp.db.select().from(apiKeys).where(eq(apiKeys.userId, samId)).all()).toHaveLength(0)
+    expect(testApp.db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, samId)).all()).toHaveLength(0)
+    expect((await testApp.app.request('/api/v1/leads', keyAuth(key))).status).toBe(401)
+    const refused = await principal(testApp, { subject: 'sam-sub', email: 'sam@example.com', scope: adminScope })
+    expect(refused).toEqual({ status: 403, body: { error: 'account_disabled' } })
+  })
+})

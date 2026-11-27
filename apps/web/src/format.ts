@@ -64,10 +64,13 @@ export function leadContact(lead: Pick<LeadRecord, 'email' | 'phone'>): string {
  * Who did it. Intake writes `form:<form_key>` and that key is the unguessable
  * secret the public endpoint is addressed by (DESIGN.md, Intake endpoint), so
  * it is deliberately never rendered — the form is identified by the lead's
- * `source` instead, which is the form's name.
+ * `source` instead, which is the form's name. A colleague is named from
+ * `people` (id → name, from `GET /api/v1/users`) when it is known.
  */
-export function actorLabel(actor: string, currentUserId: number): string {
+export function actorLabel(actor: string, currentUserId: number, people?: ReadonlyMap<number, string>): string {
   if (actor === `user:${currentUserId}`) return 'You'
+  const colleague = /^user:(\d+)$/.exec(actor)?.[1]
+  if (colleague !== undefined) return people?.get(Number(colleague)) ?? 'A user'
   if (actor.startsWith('user:')) return 'A user'
   if (actor.startsWith('form:')) return 'Intake form'
   // What the REST and MCP surfaces write for a headless caller — see

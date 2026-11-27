@@ -11,6 +11,7 @@ import {
 import { ApiKeys } from './ApiKeys.tsx'
 import { FunnelList } from './FunnelSettings.tsx'
 import { isStandalone, isIosSafari } from './install.ts'
+import { People } from './People.tsx'
 import {
   disablePush,
   enablePush,
@@ -26,6 +27,7 @@ import { Webhooks } from './Webhooks.tsx'
 export const SETTINGS_SECTIONS = {
   email: 'Email & business',
   funnels: 'Funnels',
+  people: 'People',
   notifications: 'Notifications',
   'api-keys': 'API keys',
   webhooks: 'Webhooks',
@@ -46,10 +48,12 @@ export interface SettingsProps {
   section?: SettingsSection
   /** An admin sees the server's settings; anyone else only their own sections. */
   isAdmin: boolean
+  /** Who is signed in, so People offers no action on their own row. */
+  currentUserId: number
   onSessionExpired: () => void
 }
 
-export function Settings({ section, isAdmin, onSessionExpired }: SettingsProps) {
+export function Settings({ section, isAdmin, currentUserId, onSessionExpired }: SettingsProps) {
   const showing = section ?? (isAdmin ? 'email' : 'notifications')
   const allowed = isAdmin || OWN_SETTINGS_SECTIONS.includes(showing)
   return (
@@ -62,6 +66,7 @@ export function Settings({ section, isAdmin, onSessionExpired }: SettingsProps) 
       {!allowed && <AdminOnly />}
       {allowed && showing === 'email' && <EmailSettings onSessionExpired={onSessionExpired} />}
       {allowed && showing === 'funnels' && <FunnelList onSessionExpired={onSessionExpired} />}
+      {allowed && showing === 'people' && <People currentUserId={currentUserId} onSessionExpired={onSessionExpired} />}
       {showing === 'notifications' && <PushNotifications onSessionExpired={onSessionExpired} />}
       {showing === 'api-keys' && <ApiKeys onSessionExpired={onSessionExpired} />}
       {allowed && showing === 'webhooks' && <Webhooks onSessionExpired={onSessionExpired} />}
@@ -194,7 +199,7 @@ function pushHint(state: PushState): string {
     if (isIosSafari() && !isStandalone()) {
       return 'On iPhone and iPad, push works only once Philo is added to the Home Screen. Open the install guide, then turn this on from the installed app.'
     }
-    return 'This browser cannot receive push notifications. New leads are still emailed to everyone who can sign in.'
+    return 'This browser cannot receive push notifications. New leads are still emailed to the funnel’s recipients.'
   }
   if (state === 'in-app') {
     return 'This browser has no push service, so Philo shows notifications only while it is open in a tab. In Brave, turn on "Use Google services for push messaging" in its privacy settings, restart it, then turn this off and on again. Email always goes out as well.'
@@ -320,7 +325,7 @@ function EmailSettingsForm({ initial, onSaved }: EmailSettingsFormProps) {
   return (
     <SettingsSection
       title="Email & business"
-      description="New leads are emailed to everyone who can sign in, unless their funnel names its own recipients, and acknowledged to the applicant."
+      description="New leads are emailed to every admin, unless their funnel names its own recipients, and acknowledged to the applicant."
     >
       {error !== undefined && (
         <p className="notice notice-error" role="alert">

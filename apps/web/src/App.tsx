@@ -211,6 +211,7 @@ export function App() {
       signIn={screen.auth.config}
       onSignOut={() => void handleSignOut()}
       onSessionExpired={handleSessionExpired}
+      onUserChanged={(user) => setScreen({ ...screen, user })}
     />
   )
 }

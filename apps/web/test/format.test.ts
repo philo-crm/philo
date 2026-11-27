@@ -59,6 +59,14 @@ describe('actorLabel', () => {
     expect(actorLabel('user:8', 7)).toBe('A user')
   })
 
+  it('names a colleague it knows, and falls back for one it does not', () => {
+    const people = new Map([[8, 'Sam Rivera']])
+    expect(actorLabel('user:8', 7, people)).toBe('Sam Rivera')
+    expect(actorLabel('user:7', 7, people)).toBe('You')
+    expect(actorLabel('user:9', 7, people)).toBe('A user')
+    expect(actorLabel('user:8x', 7, people)).toBe('A user')
+  })
+
   it('names a headless caller as what it is, matching what the server writes', () => {
     expect(actorLabel('api_key:3', 7)).toBe('API key')
     expect(actorLabel('system', 7)).toBe('System')

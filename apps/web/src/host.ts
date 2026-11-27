@@ -53,7 +53,7 @@ export interface PhiloHostContext {
   fallback(): void
   /** Philo's own theme store: its stored choice, `data-theme` and the `theme-color` meta. */
   setTheme(theme: Theme): void
-  /** Philo's own account-menu entries for this person's role (Server settings for an admin only). */
+  /** Philo's own account-menu entries for this person's role (People and Server settings for an admin only). */
   accountItems: ReadonlyArray<{ label: string; path: string }>
   /** Aborted when the signed-in shell unmounts: sign-out, an expired session. */
   signal: AbortSignal
@@ -87,12 +87,15 @@ export async function loadWebConfig(): Promise<WebConfig> {
   }
 }
 
+/** Your own account's screen — Account.tsx. */
+export const ACCOUNT_PATH = '/account'
+
 /** Philo's own account-menu entries — AccountMenu.tsx draws the same ones. */
 export function accountItemsFor(role: Role): ReadonlyArray<{ label: string; path: string }> {
-  return [
-    role === 'admin' ? { label: 'Server settings', path: '/settings' } : { label: 'Settings', path: '/settings/notifications' },
-    { label: 'Install the app', path: '/install' },
-  ]
+  const own = { label: 'Your account', path: ACCOUNT_PATH }
+  const install = { label: 'Install the app', path: '/install' }
+  if (role !== 'admin') return [own, { label: 'Settings', path: '/settings/notifications' }, install]
+  return [own, { label: 'People', path: '/settings/people' }, { label: 'Server settings', path: '/settings' }, install]
 }
 
 /** One per page: the script is injected once, and a failure stands until the page reloads. */

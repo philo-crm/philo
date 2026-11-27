@@ -24,7 +24,7 @@ import { useResource, useSessionGuard } from './useResource.ts'
 const TEMPLATE_LABELS: Record<string, { title: string; when: string }> = {
   new_lead_notify: {
     title: 'New lead notification',
-    when: "Sent as soon as a lead arrives, to the funnel's notification recipients — everyone who can sign in, unless the funnel names its own.",
+    when: "Sent as soon as a lead arrives, to the funnel's notification recipients — every admin, unless the funnel names its own.",
   },
   new_lead_ack: {
     title: 'Applicant acknowledgment',

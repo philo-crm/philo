@@ -1,10 +1,11 @@
-import { useCallback, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useCallback, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import {
   addLeadNote,
   apiErrorMessage,
   deleteLead,
   downloadAttachment,
   fetchLead,
+  fetchPeople,
   fetchStages,
   moveLeadStage,
   promoteLead,
@@ -39,6 +40,19 @@ export interface LeadDetailProps {
   onSessionExpired: () => void
 }
 
+/**
+ * Who each colleague is, for the timeline. Only a nicety: a failure leaves the
+ * timeline saying "A user", and is no reason to put an error on the lead.
+ */
+function usePeopleNames(): ReadonlyMap<number, string> | undefined {
+  const load = useCallback((signal: AbortSignal) => fetchPeople(signal), [])
+  const people = useResource(load)
+  return useMemo(
+    () => (people.data === undefined ? undefined : new Map(people.data.users.map((person) => [person.id, person.name ?? person.email]))),
+    [people.data],
+  )
+}
+
 export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDetailProps) {
   const [note, setNote] = useState('')
   const [actionError, setActionError] = useState<unknown>(undefined)
@@ -56,6 +70,7 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
   )
   const stages = useResource(loadStages)
   const funnels = useFunnels()
+  const people = usePeopleNames()
   const [deletedElsewhere, setDeletedElsewhere] = useState(false)
 
   // Somebody else — an agent, a teammate, another tab — changing this lead or
@@ -304,7 +319,7 @@ export function LeadDetail({ leadId, currentUserId, onSessionExpired }: LeadDeta
                 <p className="timeline-meta muted">
                   <span className="numeric">{formatDateTime(event.createdAt)}</span>
                   {' · '}
-                  <span>{actorLabel(event.actor, currentUserId)}</span>
+                  <span>{actorLabel(event.actor, currentUserId, people)}</span>
                 </p>
               </li>
             )
