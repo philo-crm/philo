@@ -125,3 +125,66 @@ describe('loadConfig — the host script', () => {
     },
   )
 })
+
+/** ADR-0013: the sources a host script's own assets load from, which land verbatim in the CSP. */
+describe('loadConfig — the host script’s asset origins', () => {
+  const HOST = { PHILO_WEB_HOST_SCRIPT_URL: '/host.js' }
+
+  it('adds none unless told to', () => {
+    expect(loadConfig({}).webAssetOrigins).toEqual([])
+    expect(loadConfig({ ...HOST, PHILO_WEB_ASSET_ORIGINS: ' , ' }).webAssetOrigins).toEqual([])
+  })
+
+  it('takes origins and path prefixes, trimmed, blanks and repeats dropped', () => {
+    expect(
+      loadConfig({
+        ...HOST,
+        PHILO_WEB_ASSET_ORIGINS:
+          ' https://chrome.example.com/v1/ , ,https://Cdn.example.net,https://cdn.example.net/,http://localhost:5174/static/,http://127.0.0.1:9000',
+      }).webAssetOrigins,
+    ).toEqual([
+      'https://chrome.example.com/v1/',
+      'https://cdn.example.net',
+      'http://localhost:5174/static/',
+      'http://127.0.0.1:9000',
+    ])
+  })
+
+  it.each([
+    ["'self'"],
+    ["'unsafe-inline'"],
+    ["'unsafe-eval'"],
+    ["'strict-dynamic'"],
+    ["'nonce-abc'"],
+    ["'sha256-abc'"],
+    ['*'],
+    ['https://*.example.com'],
+    ['https:'],
+    ['data:'],
+    ['blob:'],
+    ['example.com'],
+    ['http://chrome.example.com'],
+    ['wss://chrome.example.com'],
+    ['https://chrome.example.com/v1'],
+    ['https://chrome.example.com/v1/chrome.js'],
+    ['https://chrome.example.com/v1/?x=1'],
+    ['https://chrome.example.com/v1/#x'],
+    ['https://user@chrome.example.com/'],
+    ['https://chrome.example.com/a/../uploads/'],
+    ['https://chrome.example.com/static/..%2Fuploads/'],
+    ['https://chrome.example.com/a;script-src/'],
+    ["https://chrome.example.com/a'/"],
+    ['https://chrome.example.com/*/'],
+    ['https://chrome.example.com https://other.example.com'],
+  ])('refuses %s as an asset origin', (entry) => {
+    expect(() => loadConfig({ ...HOST, PHILO_WEB_ASSET_ORIGINS: `https://ok.example.com,${entry}` })).toThrow(
+      /PHILO_WEB_ASSET_ORIGINS/,
+    )
+  })
+
+  it('refuses asset origins without a host script', () => {
+    expect(() => loadConfig({ PHILO_WEB_ASSET_ORIGINS: 'https://chrome.example.com' })).toThrow(
+      /PHILO_WEB_ASSET_ORIGINS needs PHILO_WEB_HOST_SCRIPT_URL/,
+    )
+  })
+})

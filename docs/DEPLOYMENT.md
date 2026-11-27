@@ -93,6 +93,7 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_WEB_HOST_SCRIPT_URL` | unset | An operator script the PWA loads after sign-in, for shared top-bar chrome. An absolute `https://` URL (`http://` only for `localhost` and `127.0.0.1`), or a path on the PWA's own origin such as `/host/chrome.js`. **It runs with the page's full authority.** See [Host script](#host-script). |
 | `PHILO_WEB_HOST_CONFIG` | `{}` | A JSON object handed to the host script as `ctx.config`. Public, since anyone can read it, so no secrets. Anything but a JSON object is a startup error. |
 | `PHILO_WEB_HOST_TOKEN_RESOURCES` | empty | Comma-separated resource indicators (absolute URLs) the host script may ask the external IdP for a token for. Empty means it gets none. Philo's own audience is a startup error. |
+| `PHILO_WEB_ASSET_ORIGINS` | empty | Comma-separated sources the host script's own code, styles, fonts and images load from. Each is an `https://` origin, optionally with a path prefix ending in `/` (`http://` only for `localhost` and `127.0.0.1`). A query, wildcard or CSP keyword is a startup error. See [Host script](#host-script). |
 
 ### `PHILO_PUBLIC_BASE_URL` earns its keep
 
@@ -306,8 +307,23 @@ revalidates it, so a changed file lands on the next load.
 
 **The policy it produces.** A same-origin path needs nothing more: `'self'`
 covers it. An absolute URL is added to `script-src` as that exact URL,
-without its query, never its whole origin. The script's own API calls need
-their origins in `PHILO_WEB_CONNECT_ORIGINS`. The script must work without
+without its query, never its whole origin. Whatever the script loads from
+elsewhere is listed in `PHILO_WEB_ASSET_ORIGINS`, and each entry is added
+as given to `script-src`, `style-src` and `font-src`, and by its origin
+alone to `img-src`. For example,
+`PHILO_WEB_ASSET_ORIGINS=https://chrome.example.com/v1/` lets the script
+load `https://chrome.example.com/v1/menu.js` and
+`https://chrome.example.com/v1/tokens.css`, but not
+`https://chrome.example.com/uploads/x.js`. The script's own API calls need
+their origins in `PHILO_WEB_CONNECT_ORIGINS`.
+
+A path prefix is defense in depth, not a boundary. Once a request has been
+redirected, the browser checks only its origin, and it matches a path after
+decoding it, so `/v1/..%2Fuploads/x.js` matches `/v1/` on a server that
+decodes `%2F` before routing. List only origins that serve no content their
+users upload, and only prefixes under which nothing redirects. Mirror assets
+from any other origin, an IdP that hosts avatars for example, through a path
+on Philo's own origin instead. The script must work without
 inline script or inline `<style>`; a component can style itself through
 constructable stylesheets or the CSSOM. When the PWA is
 [hosted apart](#running-the-pieces-apart), add the same sources to the

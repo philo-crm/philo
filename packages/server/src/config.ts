@@ -31,6 +31,13 @@ export interface Config {
   webConnectOrigins: string[]
   /** The operator host script the PWA loads after sign-in — ADR-0013. Off by default. */
   webHost: WebHostConfig
+  /**
+   * `PHILO_WEB_ASSET_ORIGINS` — ADR-0013: where the host script's own
+   * assets come from, added to `script-src`, `style-src` and `font-src` as
+   * given and to `img-src` by origin. Each an origin, or an origin and a path
+   * prefix ending in `/`. Empty by default.
+   */
+  webAssetOrigins: string[]
 }
 
 /** ADR-0013. Environment only: a script URL is code execution in every person's browser. */
@@ -334,8 +341,54 @@ function parseHostTokenResources(raw: string | undefined, own: readonly string[]
   return values
 }
 
+/** A path prefix's segments: nothing a CSP reads specially, and no `%`, which a server may decode before routing. */
+const SAFE_PATH_PREFIX = /^(\/[A-Za-z0-9._~-]+)*\/$/
+
+/**
+ * Each entry lands verbatim in `script-src`, so it is held to an origin
+ * (`https:`, plain `http:` only for local development), optionally with a
+ * path prefix ending in `/`. A wildcard, a scheme-only source, a keyword, a
+ * nonce or hash, a query, a fragment or a dot segment stops the process
+ * instead. ADR-0013 says why a path is defense in depth, not a boundary.
+ */
+function parseAssetOrigins(raw: string | undefined): string[] {
+  const name = 'PHILO_WEB_ASSET_ORIGINS'
+  const sources: string[] = []
+  for (const entry of (raw ?? '').split(',').map((e) => e.trim())) {
+    if (entry === '') continue
+    const refuse = (why: string) =>
+      new ConfigError(
+        `${name} entries must be https origins, optionally with a path prefix ending in / (${why}), got ${JSON.stringify(entry)}`,
+      )
+    let url: URL
+    try {
+      url = new URL(entry)
+    } catch {
+      throw refuse('not an absolute URL')
+    }
+    if (!/^[a-z0-9.-]+$/.test(url.hostname)) throw refuse('not a plain host name')
+    if (url.protocol === 'http:') {
+      if (!LOCAL_HOSTS.has(url.hostname)) throw refuse('plain http only for localhost and 127.0.0.1')
+    } else if (url.protocol !== 'https:') {
+      throw refuse('https only')
+    }
+    if (url.username !== '' || url.password !== '' || /[?#@]/.test(entry)) throw refuse('no credentials, query or fragment')
+    // The path as written, so a dot segment the parser would resolve away is
+    // refused rather than quietly changed into a different prefix.
+    const afterScheme = entry.slice(entry.indexOf('//') + 2)
+    const slash = afterScheme.indexOf('/')
+    const rawPath = slash === -1 ? '/' : afterScheme.slice(slash)
+    if (rawPath !== url.pathname || !SAFE_PATH_PREFIX.test(rawPath) || /(^|\/)\.\.?\//.test(rawPath)) {
+      throw refuse('a path prefix is plain segments ending in /')
+    }
+    const source = url.pathname === '/' ? url.origin : `${url.origin}${url.pathname}`
+    if (!sources.includes(source)) sources.push(source)
+  }
+  return sources
+}
+
 /** Settings that only mean something beside a host script. */
-const HOST_SCRIPT_ONLY = ['PHILO_WEB_HOST_CONFIG', 'PHILO_WEB_HOST_TOKEN_RESOURCES'] as const
+const HOST_SCRIPT_ONLY = ['PHILO_WEB_HOST_CONFIG', 'PHILO_WEB_HOST_TOKEN_RESOURCES', 'PHILO_WEB_ASSET_ORIGINS'] as const
 
 function parseWebHost(
   env: NodeJS.ProcessEnv,
@@ -389,5 +442,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     externalIdp,
     webConnectOrigins: parseOriginList('PHILO_WEB_CONNECT_ORIGINS', env['PHILO_WEB_CONNECT_ORIGINS']),
     webHost: parseWebHost(env, { publicBaseUrl, mcpUrl }, externalIdp),
+    webAssetOrigins: parseAssetOrigins(env['PHILO_WEB_ASSET_ORIGINS']),
   }
 }

@@ -22,6 +22,7 @@ const app = createStandaloneApp({
     issuer: config.externalIdp?.issuer,
     connectOrigins: config.webConnectOrigins,
     hostScriptUrl: config.webHost.scriptUrl,
+    assetOrigins: config.webAssetOrigins,
   }),
 })
 
