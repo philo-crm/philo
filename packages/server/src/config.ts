@@ -82,6 +82,25 @@ export interface ExternalIdpConfig {
    * that picks the access token's audience from them. Empty by default.
    */
   resource: string[]
+  /**
+   * The two scopes that admit a person and name their role — ADR-0012. Set
+   * means the accounts are externally managed: one per subject, each with the
+   * role its token's scopes name. Unset, an external IdP keeps one account.
+   */
+  roles?: RoleScopes | undefined
+  /**
+   * What an agent should ask the IdP for, advertised by the MCP endpoint's
+   * protected-resource metadata. Defaults to the user scope plus
+   * `offline_access` when the role scopes are set; otherwise unset.
+   */
+  agentScope?: string | undefined
+}
+
+export interface RoleScopes {
+  /** Holding it admits a person as a user. */
+  userScope: string
+  /** Holding it makes them an admin, and admits them on its own. */
+  adminScope: string
 }
 
 const DEFAULT_PORT = 3000
@@ -122,12 +141,64 @@ function parseOptionalUrl(name: string, raw: string | undefined, fallback: strin
   return raw === undefined || raw === '' ? fallback : parseUrl(name, raw)
 }
 
-function parseOidcScope(raw: string | undefined): string {
-  if (raw === undefined || raw.trim() === '') return DEFAULT_OIDC_SCOPE
+function parseOidcScope(raw: string | undefined, roles: RoleScopes | undefined): string {
+  // The PWA's token is the IdP's whole answer for the person, so by default
+  // it asks for both role scopes — ADR-0012.
+  if (raw === undefined || raw.trim() === '') {
+    return roles === undefined ? DEFAULT_OIDC_SCOPE : `${DEFAULT_OIDC_SCOPE} ${roles.userScope} ${roles.adminScope}`
+  }
   const scopes = raw.trim().split(/\s+/)
   if (!scopes.includes('openid')) {
     throw new ConfigError(`PHILO_OIDC_SCOPE must include openid, got ${JSON.stringify(raw)}`)
   }
+  // Asking for neither would get the PWA only tokens this server refuses.
+  if (roles !== undefined && !scopes.includes(roles.userScope) && !scopes.includes(roles.adminScope)) {
+    throw new ConfigError(
+      `PHILO_OIDC_SCOPE must include ${roles.userScope} or ${roles.adminScope} (normally both), got ${JSON.stringify(raw)}`,
+    )
+  }
+  return scopes.join(' ')
+}
+
+/**
+ * RFC 6749 §3.3 scope-token: printable ASCII without space, `"` or `\`. The
+ * value is also quoted into a `WWW-Authenticate` challenge, which is what the
+ * two excluded characters would break.
+ */
+const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]+$/
+
+function parseScopeToken(name: string, raw: string | undefined): string | undefined {
+  const value = (raw ?? '').trim()
+  if (value === '') return undefined
+  if (!SCOPE_TOKEN.test(value)) {
+    throw new ConfigError(`${name} must be a single scope, without spaces or quotes, got ${JSON.stringify(raw)}`)
+  }
+  return value
+}
+
+/**
+ * Both or neither — ADR-0012: an instance whose IdP can name nobody an admin
+ * cannot be configured, and one that admits everyone as a user lets in every
+ * person able to sign in to anything at that IdP.
+ */
+function parseRoleScopes(env: NodeJS.ProcessEnv): RoleScopes | undefined {
+  const userScope = parseScopeToken('PHILO_OIDC_USER_SCOPE', env['PHILO_OIDC_USER_SCOPE'])
+  const adminScope = parseScopeToken('PHILO_OIDC_ADMIN_SCOPE', env['PHILO_OIDC_ADMIN_SCOPE'])
+  if (userScope === undefined && adminScope === undefined) return undefined
+  if (userScope === undefined || adminScope === undefined) {
+    throw new ConfigError('PHILO_OIDC_USER_SCOPE and PHILO_OIDC_ADMIN_SCOPE must be set together, or neither')
+  }
+  if (userScope === adminScope) {
+    throw new ConfigError(`PHILO_OIDC_USER_SCOPE and PHILO_OIDC_ADMIN_SCOPE must differ, both are ${JSON.stringify(userScope)}`)
+  }
+  return { userScope, adminScope }
+}
+
+function parseAgentScope(raw: string | undefined, roles: RoleScopes | undefined): string | undefined {
+  const scopes = (raw ?? '').trim().split(/\s+/).filter((scope) => scope !== '')
+  if (scopes.length === 0) return roles === undefined ? undefined : `${roles.userScope} offline_access`
+  const bad = scopes.find((scope) => !SCOPE_TOKEN.test(scope))
+  if (bad !== undefined) throw new ConfigError(`PHILO_OIDC_AGENT_SCOPE holds an invalid scope ${JSON.stringify(bad)}`)
   return scopes.join(' ')
 }
 
@@ -155,7 +226,13 @@ function parseOidcResource(raw: string | undefined): string[] {
 }
 
 /** Settings that only mean something when an external issuer is set. */
-const EXTERNAL_ONLY = ['PHILO_OIDC_SCOPE', 'PHILO_OIDC_RESOURCE'] as const
+const EXTERNAL_ONLY = [
+  'PHILO_OIDC_SCOPE',
+  'PHILO_OIDC_RESOURCE',
+  'PHILO_OIDC_USER_SCOPE',
+  'PHILO_OIDC_ADMIN_SCOPE',
+  'PHILO_OIDC_AGENT_SCOPE',
+] as const
 
 /**
  * All or nothing: an issuer without the PWA's client id would leave the app
@@ -192,13 +269,16 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
     .split(',')
     .map((id) => id.trim())
     .filter((id) => id !== '' && id !== clientId)
+  const roles = parseRoleScopes(env)
   return {
     issuer,
     clientId,
     audience: audience.length === 0 ? undefined : audience,
     agentClientIds,
-    scope: parseOidcScope(env['PHILO_OIDC_SCOPE']),
+    scope: parseOidcScope(env['PHILO_OIDC_SCOPE'], roles),
     resource: parseOidcResource(env['PHILO_OIDC_RESOURCE']),
+    roles,
+    agentScope: parseAgentScope(env['PHILO_OIDC_AGENT_SCOPE'], roles),
   }
 }
 
@@ -473,4 +553,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webHost: parseWebHost(env, { publicBaseUrl, mcpUrl }, externalIdp),
     webAssetOrigins: parseAssetOrigins(env['PHILO_WEB_ASSET_ORIGINS']),
   }
+}
+
+/**
+ * Settings that load but are probably not what the operator meant, for boot
+ * to print. Each is legal on purpose, so it warns rather than refusing.
+ */
+export function configWarnings(config: Pick<Config, 'externalIdp'>): string[] {
+  const warnings: string[] = []
+  const idp = config.externalIdp
+  // Legal for an IdP that refuses the admin scope to the PWA's client — but
+  // the PWA's token is the IdP's whole answer for the person (ADR-0012), so
+  // every PWA sign-in then demotes its person to user.
+  if (idp?.roles !== undefined && !idp.scope.split(' ').includes(idp.roles.adminScope)) {
+    warnings.push(
+      `PHILO_OIDC_SCOPE does not ask for ${idp.roles.adminScope}, so every PWA sign-in demotes its person to user ` +
+        'and no admin survives one. Add it unless the provider refuses it to this client on purpose.',
+    )
+  }
+  return warnings
 }

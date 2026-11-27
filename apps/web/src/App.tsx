@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { WebConfig } from '@philo/sdk'
 import { AppShell, SIGN_OUT_PATH } from './AppShell.tsx'
 import {
+  accessRefusedMessage,
   beginSignIn,
   browser,
   CALLBACK_PATH,
@@ -35,7 +36,17 @@ function leaveCallback(to: string): void {
 }
 
 async function signedInScreen(auth: Auth, web: WebConfig): Promise<Screen> {
-  const user = await fetchCurrentUser(auth)
+  let user: User | undefined
+  try {
+    user = await fetchCurrentUser(auth)
+  } catch (error) {
+    // Signed in at the IdP, refused here: saying so beats "unreachable", and
+    // dropping the session lets "Try again" fetch a token that may now pass.
+    const refused = accessRefusedMessage(error)
+    if (refused === undefined) throw error
+    auth.session.clear()
+    return { kind: 'signed-out', auth, error: refused }
+  }
   return user === undefined ? { kind: 'signed-out', auth } : { kind: 'ready', auth, user, web }
 }
 

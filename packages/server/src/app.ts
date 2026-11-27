@@ -2,9 +2,9 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
 import { createApiKeyRoutes } from './auth/api-key-routes.ts'
-import type { AccessPolicy } from './auth/access.ts'
+import { accessPolicyOf, type AccessPolicy } from './auth/access.ts'
 import type { ExternalIdp } from './auth/external-idp.ts'
-import { bearerMiddleware, requireAdmin, requireAuth, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
+import { bearerMiddleware, createRequireAdmin, createRequireAuth, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
 import { createAuthGuards, createAuthRoutes, type AuthTuning } from './auth/routes.ts'
 import type { WebHostConfig } from './config.ts'
 import type { Db } from './db/index.ts'
@@ -20,7 +20,7 @@ import type { LeadCreatedHook } from './notify.ts'
 import { ensureFirstPartyClient, FIRST_PARTY_CLIENT_ID } from './oauth/first-party.ts'
 import { createOAuthRoutes, createWellKnownRoutes } from './oauth/routes.ts'
 import type { SigningKey } from './oauth/signing-key.ts'
-import { OPENID_SCOPE, OPERATOR_SCOPE } from './oauth/tokens.ts'
+import { MCP_SCOPE, OPENID_SCOPE, OPERATOR_SCOPE } from './oauth/tokens.ts'
 import { LiveFeed, type LiveTuning } from './push/live.ts'
 import { createPushRoutes } from './push/routes.ts'
 import { createSettingsRoutes } from './settings/routes.ts'
@@ -128,7 +128,7 @@ export interface AppOptions {
   signingKey: SigningKey
   /** Replaces the built-in IdP when set — ADR-0006. */
   externalIdp?: ExternalIdp | undefined
-  /** Where roles are decided — ADR-0012. Unset: on the account. */
+  /** Where roles are decided — ADR-0012. Unset: as `externalIdp` implies. */
   access?: AccessPolicy | undefined
   /**
    * The VAPID public key the settings toggle subscribes with. Auto-generated
@@ -173,13 +173,21 @@ export interface AppOptions {
 function signInConfig(options: AppOptions) {
   const idp = options.externalIdp
   if (idp !== undefined) {
-    return { issuer: idp.issuer, clientId: idp.clientId, scope: idp.scope, resource: idp.resource }
+    return {
+      issuer: idp.issuer,
+      clientId: idp.clientId,
+      scope: idp.scope,
+      resource: idp.resource,
+      // Left out when unconfigured, so the MCP endpoint keeps advertising what it did.
+      ...(idp.agentScope === undefined ? {} : { agentScope: idp.agentScope }),
+    }
   }
   return {
     issuer: options.publicBaseUrl,
     clientId: FIRST_PARTY_CLIENT_ID,
     scope: `${OPENID_SCOPE} ${OPERATOR_SCOPE}`,
     resource: [],
+    agentScope: MCP_SCOPE,
   }
 }
 
@@ -193,8 +201,10 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     db: options.db,
     trustProxy: options.trustProxy,
     externalIdp: options.externalIdp,
-    access: options.access,
+    access: options.access ?? accessPolicyOf(options.externalIdp),
   }
+  const requireAuth = createRequireAuth(options.externalIdp)
+  const requireAdmin = createRequireAdmin(options.externalIdp)
   const app = new Hono<AuthEnv>()
   const changes = options.changeFeed ?? new ChangeFeed()
 
@@ -248,7 +258,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     hostTokenResources: options.webHost?.tokenResources ?? [],
   }
   app.get(WEB_CONFIG_PATH, (c) => c.json(webConfig))
-  app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db }))
+  app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db, externalIdp: options.externalIdp }))
   app.route(
     `${API_PREFIX}/leads`,
     createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated, changes }),

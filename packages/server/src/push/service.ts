@@ -8,6 +8,7 @@ import {
   deleteAllSubscriptions,
   deleteSubscription,
   deliverableSubscriptions,
+  sweepLapsedSubscriptions,
   type StoredSubscription,
 } from './subscriptions.ts'
 
@@ -147,7 +148,11 @@ export async function sendNewLeadPush(deps: PushDeps, leadId: number): Promise<v
     // the hook for a quarantined lead already.
     if (lead.isSpam) return
 
-    const subscriptions = deliverableSubscriptions(deps.db, deps.access ?? ROLES_ON_ACCOUNTS)
+    const policy = deps.access ?? ROLES_ON_ACCOUNTS
+    // The send path is where a lapsed device would be reached, so it is where
+    // the lapse is swept.
+    sweepLapsedSubscriptions(deps.db, policy)
+    const subscriptions = deliverableSubscriptions(deps.db, policy)
     if (subscriptions.length === 0) return
 
     const send = deps.send ?? buildSender(deps)

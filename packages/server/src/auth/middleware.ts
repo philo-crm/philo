@@ -3,7 +3,7 @@ import type { Db } from '../db/index.ts'
 import { FIRST_PARTY_CLIENT_ID } from '../oauth/first-party.ts'
 import { resolveAccessToken } from '../oauth/tokens.ts'
 import { resolveApiKey } from './api-keys.ts'
-import { verifyExternalToken, type ExternalIdp } from './external-idp.ts'
+import { verifyExternalToken, type ExternalIdp, type ExternalRefusal } from './external-idp.ts'
 import { ROLES_ON_ACCOUNTS, userWithAccess, type AccessPolicy } from './access.ts'
 import type { Role, SessionUser } from './session.ts'
 
@@ -41,6 +41,8 @@ export interface Principal {
 export interface AuthEnv {
   Variables: {
     principal: Principal | undefined
+    /** Why a token that verified was still refused, when it was — answered 403 by `requireAuth`. */
+    refusal: ExternalRefusal['refused'] | undefined
   }
 }
 
@@ -61,6 +63,12 @@ export function bearerToken(header: string | undefined): string | undefined {
  * is offered to the external IdP, when there is one.
  */
 export async function resolvePrincipal(deps: AuthDeps, token: string): Promise<Principal | undefined> {
+  const resolved = await resolveCredential(deps, token)
+  return resolved === undefined || 'refused' in resolved ? undefined : resolved
+}
+
+/** As `resolvePrincipal`, keeping the reason an external token was refused with 403. */
+async function resolveCredential(deps: AuthDeps, token: string): Promise<Principal | ExternalRefusal | undefined> {
   const key = resolveApiKey(deps.db, token)
   if (key !== undefined) return withUser(deps, key.userId, `api_key:${key.id}`)
 
@@ -73,7 +81,7 @@ export async function resolvePrincipal(deps: AuthDeps, token: string): Promise<P
 
   if (deps.externalIdp === undefined) return undefined
   const external = await verifyExternalToken(deps.db, deps.externalIdp, token)
-  if (external === undefined) return undefined
+  if (external === undefined || 'refused' in external) return external
   return {
     user: external.user,
     role: external.user.role,
@@ -98,7 +106,14 @@ function withUser(deps: AuthDeps, userId: number, actor: Principal['actor']): Pr
 export function bearerMiddleware(deps: AuthDeps): MiddlewareHandler<AuthEnv> {
   return async (c, next) => {
     const token = bearerToken(c.req.header('authorization'))
-    c.set('principal', token === undefined ? undefined : await resolvePrincipal(deps, token))
+    const resolved = token === undefined ? undefined : await resolveCredential(deps, token)
+    if (resolved !== undefined && 'refused' in resolved) {
+      c.set('principal', undefined)
+      c.set('refusal', resolved.refused)
+    } else {
+      c.set('principal', resolved)
+      c.set('refusal', undefined)
+    }
     return next()
   }
 }
@@ -110,23 +125,56 @@ function unauthorized(c: Context) {
   return c.json({ error: 'unauthorized' }, 401)
 }
 
-/** Deny-by-default guard for the API. Any credential acting for a user passes. */
-export const requireAuth: MiddlewareHandler<AuthEnv> = async (c, next) => {
-  if (c.get('principal') === undefined) return unauthorized(c)
-  return next()
+/** RFC 6750 §3.1: the token is fine, it lacks `scope` — which a client can go and ask for. */
+function insufficientScope(c: Context, scope: string): void {
+  c.header('WWW-Authenticate', `Bearer realm="philo", error="insufficient_scope", scope="${scope}"`)
 }
+
+/**
+ * Deny-by-default guard for the API. Any credential acting for a user passes.
+ * An external token that verified but was refused — ADR-0012 — is a 403, not
+ * a 401, which would only send its client round the same authorization again.
+ */
+export function createRequireAuth(externalIdp: ExternalIdp | undefined): MiddlewareHandler<AuthEnv> {
+  return async (c, next) => {
+    if (c.get('principal') !== undefined) return next()
+    const refusal = c.get('refusal')
+    if (refusal === 'insufficient_scope' && externalIdp?.roles !== undefined) {
+      insufficientScope(c, externalIdp.roles.userScope)
+      return c.json({ error: 'insufficient_scope' }, 403)
+    }
+    if (refusal === 'account_disabled') return c.json({ error: 'account_disabled' }, 403)
+    return unauthorized(c)
+  }
+}
+
+/** `createRequireAuth` for the built-in IdP, where every refusal is a 401. */
+export const requireAuth: MiddlewareHandler<AuthEnv> = createRequireAuth(undefined)
 
 /**
  * Admin-only: configuration and people — ADR-0012. Behind `requireAuth`, so a
  * principal is always there; a user's credential is refused with 403, which
- * tells a client the token is fine and the person is not allowed.
+ * tells a client the token is fine and the person is not allowed. With the
+ * role scopes set, the challenge names the admin scope, so an agent whose
+ * token lacks it can ask for it.
  */
-export const requireAdmin: MiddlewareHandler<AuthEnv> = async (c, next) => {
-  const principal = c.get('principal')
-  if (principal === undefined) return unauthorized(c)
-  if (principal.role !== 'admin') return c.json({ error: 'admin_required' }, 403)
-  return next()
+export function createRequireAdmin(externalIdp: ExternalIdp | undefined): MiddlewareHandler<AuthEnv> {
+  return async (c, next) => {
+    const principal = c.get('principal')
+    if (principal === undefined) return unauthorized(c)
+    if (principal.role === 'admin') return next()
+    return adminRequired(c, externalIdp)
+  }
 }
+
+/** The 403 for a credential that needs the admin role, with the admin-scope challenge when the role scopes are set. */
+export function adminRequired(c: Context, externalIdp: ExternalIdp | undefined) {
+  if (externalIdp?.roles !== undefined) insufficientScope(c, externalIdp.roles.adminScope)
+  return c.json({ error: 'admin_required' }, 403)
+}
+
+/** `createRequireAdmin` for the built-in IdP. */
+export const requireAdmin: MiddlewareHandler<AuthEnv> = createRequireAdmin(undefined)
 
 /**
  * The user the credential acts for. Throws rather than returning undefined so

@@ -1,13 +1,20 @@
 import { randomUUID } from 'node:crypto'
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, isNull, lt, or } from 'drizzle-orm'
 import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from 'jose'
 import type { ExternalIdpConfig } from '../config.ts'
 import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import { normalizeEmail } from './credentials.ts'
 import { hashPassword } from './password.ts'
-import { ACCOUNT_COLUMNS, ROLES_ON_ACCOUNTS, sessionUserOf, type AccountRow } from './access.ts'
-import type { SessionUser } from './session.ts'
+import {
+  ACCOUNT_COLUMNS,
+  ROLE_CONFIRMATION_INTERVAL_MS,
+  ROLES_ON_ACCOUNTS,
+  sessionUserOf,
+  type AccountRow,
+} from './access.ts'
+import type { RoleScopes } from '../config.ts'
+import type { Role, SessionUser } from './session.ts'
 
 /**
  * An OIDC provider that replaces the built-in IdP — ADR-0006. Philo becomes a
@@ -69,10 +76,45 @@ export function createExternalIdp(config: ExternalIdpConfig): ExternalIdp {
   }
 }
 
-/** The user an external token acts for, and the client that holds it. */
+/**
+ * The user an external token acts for, and the client that holds it. With
+ * the role scopes set, `user.role` is the role the token's scopes name, which
+ * may be less than the account's — ADR-0012.
+ */
 export interface ExternalPrincipal {
   user: SessionUser
   clientId: string
+}
+
+/**
+ * A token that verifies but is refused with 403 rather than 401 — ADR-0012:
+ * the token is good, and asking for it again unchanged would not help.
+ *
+ * - `insufficient_scope`: it holds neither role scope.
+ * - `account_disabled`: its account was deactivated in Philo.
+ */
+export interface ExternalRefusal {
+  refused: 'insufficient_scope' | 'account_disabled'
+}
+
+/**
+ * The scopes a token holds: `scope` (RFC 9068, space-separated) and `scp`,
+ * which some providers send as an array and some as a string.
+ */
+export function scopesOf(claims: JWTPayload): Set<string> {
+  const scopes: string[] = []
+  for (const value of [claims['scope'], claims['scp']]) {
+    if (typeof value === 'string') scopes.push(...value.split(/\s+/))
+    else if (Array.isArray(value)) scopes.push(...value.filter((scope): scope is string => typeof scope === 'string'))
+  }
+  return new Set(scopes.filter((scope) => scope !== ''))
+}
+
+/** Admin implies user: a token with the admin scope alone is an admin. */
+function roleOf(scopes: Set<string>, roles: RoleScopes): Role | undefined {
+  if (scopes.has(roles.adminScope)) return 'admin'
+  if (scopes.has(roles.userScope)) return 'user'
+  return undefined
 }
 
 /** A compact JWS has three dot-separated parts; anything else is not ours to check. */
@@ -95,7 +137,7 @@ export async function verifyExternalToken(
   db: Db,
   idp: ExternalIdp,
   token: string,
-): Promise<ExternalPrincipal | undefined> {
+): Promise<ExternalPrincipal | ExternalRefusal | undefined> {
   if (!looksLikeJwt(token)) return undefined
   let claims: JWTPayload
   try {
@@ -125,8 +167,56 @@ export async function verifyExternalToken(
   // ADR-0007 — so both are resolved the same way, by the bound subject.
   if (typeof claims.sub !== 'string' || claims.sub === '') return undefined
   const sub = claims.sub
-  const user = await findOrProvisionUser(db, `${idp.issuer} ${sub}`, claims, () => fetchUserinfo(idp, token, sub))
-  return user === undefined ? undefined : { user, clientId }
+  const subject = `${idp.issuer} ${sub}`
+  const userinfo = () => fetchUserinfo(idp, token, sub)
+
+  if (idp.roles === undefined) {
+    const user = await findOrProvisionOnlyAccount(db, subject, claims, userinfo)
+    if (user === undefined) return undefined
+    // Nothing reads the confirmation in this mode. Kept fresh so that turning
+    // the role scopes on later does not find the account's keys long lapsed.
+    keepConfirmed(db, user.id)
+    return { user, clientId }
+  }
+
+  // ADR-0012. The scope is checked before anything touches an account, so a
+  // token without it can never claim or create one — and a refusal changes
+  // nothing, because a client that did not ask for the scope looks the same
+  // as a person who lost it.
+  const role = roleOf(scopesOf(claims), idp.roles)
+  if (role === undefined) return { refused: 'insufficient_scope' }
+
+  const account = await findOrProvisionAccount(db, subject, claims, userinfo, role)
+  if (account === undefined) return undefined
+  // Philo's one override of the IdP: no scope gets a deactivated account in.
+  if (account.disabledAt !== null) return { refused: 'account_disabled' }
+  confirmRole(db, account, role, clientId === idp.clientId)
+  return { user: { id: account.id, email: account.email, name: account.name, role }, clientId }
+}
+
+/** Refreshes `role_confirmed_at` once it is an interval old, and otherwise writes nothing. */
+function keepConfirmed(db: Db, userId: number, now = new Date()): void {
+  const due = new Date(now.getTime() - ROLE_CONFIRMATION_INTERVAL_MS)
+  db.update(users)
+    .set({ roleConfirmedAt: now })
+    .where(and(eq(users.id, userId), or(isNull(users.roleConfirmedAt), lt(users.roleConfirmedAt, due))))
+    .run()
+}
+
+/**
+ * The stored role is a cache of the IdP's answer, for whatever never sees a
+ * token (API keys, push, email, the last-admin guard) — ADR-0012. Any
+ * admitted token confirms it, and one with the admin scope sets admin. Only
+ * the PWA's token demotes: it asks for both scopes, so it is the IdP's whole
+ * answer, while an agent's names only what that agent asked for. No token
+ * sets the role to null.
+ */
+function confirmRole(db: Db, account: AccountRow, tokenRole: Role, fromPwa: boolean, now = new Date()): void {
+  const role: Role = tokenRole === 'admin' || fromPwa ? tokenRole : (account.role ?? tokenRole)
+  const stale =
+    account.roleConfirmedAt === null || now.getTime() - account.roleConfirmedAt.getTime() >= ROLE_CONFIRMATION_INTERVAL_MS
+  if (role === account.role && !stale) return
+  db.update(users).set({ role, roleConfirmedAt: now }).where(eq(users.id, account.id)).run()
 }
 
 /** A slow provider costs one request this long, not a hung one. */
@@ -198,7 +288,7 @@ async function readCapped(res: Response, limit: number): Promise<string | undefi
   return Buffer.concat(chunks).toString('utf8')
 }
 
-/** Roles are not read from scopes yet, so the stored role decides, as with the built-in IdP. */
+/** Without the role scopes, the stored role decides, as with the built-in IdP. */
 const USER_COLUMNS = ACCOUNT_COLUMNS
 const access = (row: Parameters<typeof sessionUserOf>[0]) => sessionUserOf(row, ROLES_ON_ACCOUNTS)
 
@@ -208,8 +298,88 @@ function verifiedEmail(claims: JWTPayload): string | undefined {
   return normalizeEmail(claims['email'])
 }
 
+/** The name a profile gives, trimmed and bounded, or null. */
+function nameOf(profile: JWTPayload): string | null {
+  const raw = profile['name']
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim().slice(0, 200) : null
+}
+
+/** A password nobody knows: the built-in sign-in is switched off while an external IdP issues tokens. */
+const unusablePassword = () => hashPassword(`external-idp:${randomUUID()}`)
+
 /**
- * The user an external token names. Bound to the IdP's stable subject —
+ * The account an admitted token names when the role scopes are set —
+ * ADR-0012, one account per `iss`+`sub`:
+ *
+ * - **Bound subject:** that account.
+ * - **Unbound, and an account never bound holds the verified email** (the
+ *   token's, or userinfo's when the token carries none): that account is
+ *   bound to the subject, once.
+ * - **Otherwise** a new account, with the verified email, the profile's name
+ *   and the role the token names. An address held by an account bound to
+ *   another subject is refused: two people cannot share one.
+ *
+ * The row comes back whatever its state; the caller decides on deactivation.
+ * A deactivated account never bound comes back without being bound.
+ */
+async function findOrProvisionAccount(
+  db: Db,
+  subject: string,
+  claims: JWTPayload,
+  userinfo: () => Promise<JWTPayload | undefined>,
+  role: Role,
+): Promise<AccountRow | undefined> {
+  const boundTo = (q: Pick<Db, 'select'>): AccountRow | undefined =>
+    q.select(ACCOUNT_COLUMNS).from(users).where(eq(users.externalSubject, subject)).all()[0]
+  const bound = boundTo(db)
+  if (bound !== undefined) return bound
+
+  // Userinfo is asked once per new subject, and only when the token itself
+  // vouches for no address.
+  const profile = verifiedEmail(claims) === undefined ? await userinfo() : claims
+  if (profile === undefined) return undefined
+  const email = verifiedEmail(profile)
+  if (email === undefined) return undefined
+
+  const holder = db
+    .select({ ...ACCOUNT_COLUMNS, subject: users.externalSubject })
+    .from(users)
+    .where(eq(users.email, email))
+    .all()[0]
+  if (holder !== undefined) {
+    if (holder.subject !== null) return boundTo(db)
+    // Deactivated: handed back unbound, so the caller's refusal changes nothing.
+    if (holder.disabledAt !== null) return holder
+    const [claimed] = db
+      .update(users)
+      .set({ externalSubject: subject })
+      .where(and(eq(users.email, email), isNull(users.externalSubject)))
+      .returning(ACCOUNT_COLUMNS)
+      .all()
+    // Lost a race to a parallel request: it bound the address, to this
+    // subject (shared) or another (refused).
+    return claimed ?? boundTo(db)
+  }
+
+  const passwordHash = await unusablePassword()
+  return db.transaction((tx) => {
+    // The hash above yielded, so anything may have happened since: another
+    // token of this subject provisioned it, or someone took the address.
+    const raced = boundTo(tx)
+    if (raced !== undefined) return raced
+    if (tx.select({ id: users.id }).from(users).where(eq(users.email, email)).all().length > 0) return undefined
+    const [created] = tx
+      .insert(users)
+      .values({ email, passwordHash, name: nameOf(profile), externalSubject: subject, role, roleConfirmedAt: new Date() })
+      .returning(ACCOUNT_COLUMNS)
+      .all()
+    return created
+  })
+}
+
+/**
+ * The user an external token names when the role scopes are not set: the
+ * single-account behaviour from before ADR-0012. Bound to the IdP's stable subject —
  * an email address can be changed at the IdP, `iss`+`sub` cannot — and the
  * email is consulted only to make that binding, never to match afterwards:
  *
@@ -228,7 +398,7 @@ function verifiedEmail(claims: JWTPayload): string | undefined {
  * subject — is refused. Userinfo is asked only on the unbound path, so it
  * costs one request per account, once.
  */
-async function findOrProvisionUser(
+async function findOrProvisionOnlyAccount(
   db: Db,
   subject: string,
   claims: JWTPayload,
@@ -268,11 +438,10 @@ async function findOrProvisionUser(
     return access(unbound ?? boundTo(db))
   }
 
-  // A password nobody knows: the built-in sign-in is switched off in this mode,
-  // and if it is ever switched back on the operator resets rather than inherits.
-  const passwordHash = await hashPassword(`external-idp:${randomUUID()}`)
-  const rawName = profile['name']
-  const name = typeof rawName === 'string' && rawName.trim() !== '' ? rawName.trim().slice(0, 200) : null
+  // If the built-in sign-in is ever switched back on, the operator resets
+  // rather than inherits.
+  const passwordHash = await unusablePassword()
+  const name = nameOf(profile)
   return db.transaction((tx) => {
     // Lost a race with another first token: whoever won is the operator. If
     // the winner carried this same subject, this request is that operator too.

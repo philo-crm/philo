@@ -1,5 +1,5 @@
-import { eq } from 'drizzle-orm'
-import { accountIdsWithAccess, type AccessPolicy } from '../auth/access.ts'
+import { eq, inArray } from 'drizzle-orm'
+import { accountIdsWithAccess, lapsedAccountIds, type AccessPolicy } from '../auth/access.ts'
 import type { Db } from '../db/index.ts'
 import { pushSubscriptions } from '../db/schema.ts'
 import { err, ok, type Result } from '../result.ts'
@@ -146,4 +146,17 @@ export function deliverableSubscriptions(db: Db, policy: AccessPolicy, now = new
     .all()
     .filter((row) => allowed.has(row.userId))
     .map(({ userId: _userId, ...subscription }) => subscription)
+}
+
+/**
+ * Deletes the subscriptions of externally-managed accounts whose role
+ * confirmation lapsed — ADR-0012: someone removed at the IdP stops getting
+ * leads on their devices, and the rows go rather than linger. The account
+ * keeps everything else, and its next sign-in can subscribe again. Nothing
+ * happens when roles live on the account.
+ */
+export function sweepLapsedSubscriptions(db: Db, policy: AccessPolicy, now = new Date()): number {
+  const lapsed = lapsedAccountIds(db, policy, now)
+  if (lapsed.length === 0) return 0
+  return db.delete(pushSubscriptions).where(inArray(pushSubscriptions.userId, lapsed)).run().changes
 }

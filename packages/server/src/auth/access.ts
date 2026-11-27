@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull } from 'drizzle-orm'
 import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
+import type { ExternalIdpConfig } from '../config.ts'
 import type { Role, SessionUser } from './session.ts'
 
 /**
@@ -11,18 +12,29 @@ import type { Role, SessionUser } from './session.ts'
 export const EXTERNAL_ROLE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
 /**
+ * How often an admitted token rewrites `role_confirmed_at` when nothing else
+ * about the account changed. A confirmation is only compared against a 30-day
+ * window, so refreshing it on every request would buy nothing but writes.
+ */
+export const ROLE_CONFIRMATION_INTERVAL_MS = 60 * 60 * 1000
+
+/**
  * Where roles are decided. `rolesFromIdp` means the accounts are externally
  * managed: an external IdP with both the user and the admin scope configured,
  * so the stored role is only a cache of what tokens said, and it expires. In
  * every other mode — the built-in IdP, or an external one without the scopes —
- * the role lives on the account and the 30-day rule does not apply. Nothing in
- * this release configures the scopes, so boot always passes `ROLES_ON_ACCOUNTS`.
+ * the role lives on the account and the 30-day rule does not apply.
  */
 export interface AccessPolicy {
   rolesFromIdp: boolean
 }
 
 export const ROLES_ON_ACCOUNTS: AccessPolicy = { rolesFromIdp: false }
+
+/** The policy an identity setup implies: externally managed exactly when both role scopes are set. */
+export function accessPolicyOf(externalIdp: Pick<ExternalIdpConfig, 'roles'> | undefined): AccessPolicy {
+  return { rolesFromIdp: externalIdp?.roles !== undefined }
+}
 
 /** The account columns access is decided on. Select these wherever an account is resolved. */
 export const ACCOUNT_COLUMNS = {
@@ -104,4 +116,20 @@ export function accountIdsWithAccess(db: Db, policy: AccessPolicy, now: Date = n
       .filter((row) => hasAccess(row, policy, now))
       .map((row) => row.id),
   )
+}
+
+/**
+ * Ids of externally-managed accounts whose last confirmation is older than
+ * the window: active, so it is the lapse and not a deactivation that took
+ * their access. Empty unless roles come from the IdP.
+ */
+export function lapsedAccountIds(db: Db, policy: AccessPolicy, now: Date = new Date()): number[] {
+  if (!policy.rolesFromIdp) return []
+  return db
+    .select(ACCOUNT_COLUMNS)
+    .from(users)
+    .where(isNull(users.disabledAt))
+    .all()
+    .filter((row) => row.role !== null && !hasAccess(row, policy, now))
+    .map((row) => row.id)
 }

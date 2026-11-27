@@ -1,5 +1,7 @@
+import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { Db } from '../db/index.ts'
+import { users } from '../db/schema.ts'
 import { readJsonBody } from '../json-body.ts'
 import {
   createApiKey,
@@ -8,10 +10,14 @@ import {
   validateApiKeyName,
   type ApiKeyRecord,
 } from './api-keys.ts'
-import { currentUser, type AuthEnv } from './middleware.ts'
+import { ACCOUNT_COLUMNS } from './access.ts'
+import type { ExternalIdp } from './external-idp.ts'
+import { adminRequired, currentUser, principalRole, type AuthEnv } from './middleware.ts'
 
 export interface ApiKeyRoutesDeps {
   db: Db
+  /** For the admin-scope challenge when a key is refused — ADR-0012. */
+  externalIdp?: ExternalIdp | undefined
 }
 
 interface ApiKeyResponse {
@@ -51,7 +57,16 @@ export function createApiKeyRoutes(deps: ApiKeyRoutesDeps): Hono<AuthEnv> {
     const name = validateApiKeyName(body['name'])
     if (name === undefined) return c.json({ error: 'invalid_name' }, 400)
 
-    const created = createApiKey(deps.db, currentUser(c).id, name)
+    // A key acts with its account's stored role, so minting one must not lift
+    // a credential above what it holds — ADR-0012's "never more than the token
+    // holds". Only an external token's scopes can sit below the stored role:
+    // an admin's agent with the user scope alone is refused, and is told which
+    // scope to ask for.
+    const userId = currentUser(c).id
+    const stored = deps.db.select(ACCOUNT_COLUMNS).from(users).where(eq(users.id, userId)).all()[0]?.role
+    if (stored === 'admin' && principalRole(c) !== 'admin') return adminRequired(c, deps.externalIdp)
+
+    const created = createApiKey(deps.db, userId, name)
     return c.json({ key: toResponse(created.record), secret: created.key }, 201)
   })
 

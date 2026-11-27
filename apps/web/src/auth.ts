@@ -3,6 +3,7 @@ import {
   discover,
   endSessionUrl,
   exchangeCode,
+  isAccessDenied,
   OidcError,
   randomToken,
   TokenSession,
@@ -215,6 +216,18 @@ export async function fetchCurrentUser(auth: Auth): Promise<User | undefined> {
     auth.session.clear()
     return undefined
   }
+}
+
+/**
+ * Why a token that signed in fine still lets its person nowhere — ADR-0012:
+ * an external IdP that did not grant the scope, or an account an admin
+ * deactivated. Undefined for any other failure.
+ */
+export function accessRefusedMessage(error: unknown): string | undefined {
+  if (!isAccessDenied(error)) return undefined
+  return (error as ApiError).code === 'account_disabled'
+    ? 'This account has been deactivated. Ask an admin to reactivate it.'
+    : 'You signed in, but have not been given access to Philo. Ask whoever manages your sign-in to grant it.'
 }
 
 const SIGN_IN_MESSAGES: Record<string, string> = {

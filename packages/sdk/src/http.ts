@@ -14,14 +14,21 @@ export class ApiError extends Error {
    * refused.
    */
   readonly detail: string | undefined
+  /**
+   * The response's `WWW-Authenticate` challenge, when it sent one — with an
+   * external IdP, a 403 names the scope the token lacks (ADR-0012), which a
+   * client can go and ask for.
+   */
+  readonly challenge: string | undefined
 
-  constructor(status: number, code: string, retryAfterSeconds?: number, detail?: string) {
+  constructor(status: number, code: string, retryAfterSeconds?: number, detail?: string, challenge?: string) {
     super(`HTTP ${status}${code === '' ? '' : ` (${code})`}`)
     this.name = 'ApiError'
     this.status = status
     this.code = code
     this.retryAfterSeconds = retryAfterSeconds
     this.detail = detail
+    this.challenge = challenge
   }
 }
 
@@ -33,6 +40,19 @@ export function isUnauthorized(error: unknown): boolean {
 /** The call needs the admin role and the credential's user is not an admin — ADR-0012. */
 export function isAdminRequired(error: unknown): boolean {
   return error instanceof ApiError && error.status === 403 && error.code === 'admin_required'
+}
+
+/**
+ * The token verified but does not let its person in at all — ADR-0012: an
+ * external IdP's token holding neither role scope, or a deactivated account.
+ * Signing in again unchanged will not help.
+ */
+export function isAccessDenied(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 403 &&
+    (error.code === 'insufficient_scope' || error.code === 'account_disabled')
+  )
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Response | Promise<Response>
@@ -68,7 +88,8 @@ async function toApiError(res: Response): Promise<ApiError> {
   const code = typeof body.error === 'string' ? body.error : ''
   const retryAfter = typeof body.retryAfterSeconds === 'number' ? body.retryAfterSeconds : undefined
   const detail = typeof body.detail === 'string' && body.detail !== '' ? body.detail : undefined
-  return new ApiError(res.status, code, retryAfter, detail)
+  const challenge = res.headers.get('www-authenticate') ?? undefined
+  return new ApiError(res.status, code, retryAfter, detail, challenge)
 }
 
 export type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE'

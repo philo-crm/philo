@@ -105,6 +105,8 @@ describe('GET /api/v1/auth/config', () => {
       clientId: 'philo-web',
       scope: 'openid operator',
       resource: [],
+      // What the MCP endpoint's metadata tells agents to ask for.
+      agentScope: 'mcp',
     })
   })
 })
@@ -273,6 +275,18 @@ describe('external IdP', () => {
     const res = await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner', role: 'admin' } })
+  })
+
+  it('keeps the account\'s role confirmed, so turning the role scopes on later finds it fresh', async () => {
+    const testApp = createTestApp({ externalIdp: idp })
+    const jwt = await token({ azp: PWA_CLIENT, email: 'owner@example.com', email_verified: true })
+    await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000)
+    testApp.db.update(users).set({ roleConfirmedAt: old }).run()
+
+    await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))
+    const confirmed = testApp.db.select({ at: users.roleConfirmedAt }).from(users).all()[0]?.at
+    expect(confirmed!.getTime()).toBeGreaterThan(Date.now() - 60_000)
   })
 
   it('refuses a second person once the instance has its operator', async () => {
