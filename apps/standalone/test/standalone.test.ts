@@ -12,8 +12,9 @@ import {
   TEST_PUBLIC_BASE_URL,
 } from '../../../packages/server/test/support/app.ts'
 import { leads } from '../../../packages/server/src/db/schema.ts'
+import { FIRST_PARTY_CALLBACK_PATH } from '../../../packages/server/src/oauth/first-party.ts'
 import { createStandaloneApp } from '../src/app.ts'
-import { pwaContentSecurityPolicy } from '../src/csp.ts'
+import { CALLBACK_PATH, pwaContentSecurityPolicies, pwaContentSecurityPolicy } from '../src/csp.ts'
 
 const webDirs: string[] = []
 
@@ -40,14 +41,19 @@ function createWebDir({ withPwaFiles = true } = {}): string {
   return dir
 }
 
-function standalone(options: { withPwaFiles?: boolean } = {}) {
+function standalone(options: { withPwaFiles?: boolean; issuer?: string | undefined } = {}) {
   const server = createTestApp()
   const mcp = createMcpApp({
     apiBaseUrl: TEST_PUBLIC_BASE_URL,
     publicUrl: `${TEST_PUBLIC_BASE_URL}/mcp`,
     fetch: (input, init) => server.app.request(input, init),
   })
-  return { server, app: createStandaloneApp({ server: server.app, mcp, webDir: createWebDir(options) }) }
+  const contentSecurityPolicy =
+    options.issuer === undefined ? undefined : pwaContentSecurityPolicies({ issuer: options.issuer })
+  return {
+    server,
+    app: createStandaloneApp({ server: server.app, mcp, webDir: createWebDir(options), contentSecurityPolicy }),
+  }
 }
 
 describe('routing', () => {
@@ -201,12 +207,32 @@ describe('security headers', () => {
     )
   })
 
-  it('lets the PWA reach an external issuer, by origin only', () => {
+  it('lets the PWA reach and frame an external issuer, by origin only', () => {
     const policy = pwaContentSecurityPolicy({ issuer: 'https://id.example.com/realms/philo/' })
     expect(policy).toContain("connect-src 'self' https://id.example.com;")
+    // The extra-token helper's hidden frame loads the issuer's authorize URL.
+    expect(policy).toContain("frame-src 'self' https://id.example.com;")
     expect(policy).not.toContain('/realms')
-    // Only connect-src: the sign-in is a top-level navigation, which no directive here governs.
-    expect(policy.match(/id\.example\.com/g)).toHaveLength(1)
+    // Only those two: the sign-in is a top-level navigation, which no directive here governs.
+    expect(policy.match(/id\.example\.com/g)).toHaveLength(2)
+  })
+
+  it('never lets the extra connect origins be framed', () => {
+    const policy = pwaContentSecurityPolicy({ connectOrigins: ['https://token.example-apis.com'] })
+    expect(policy).toContain("frame-src 'self';")
+  })
+
+  it('lets only the PWA itself frame the callback, so the hidden frame can land there', () => {
+    for (const options of [{}, { issuer: 'https://id.example.com' }]) {
+      const { shell, callback } = pwaContentSecurityPolicies(options)
+      expect(shell).toBe(pwaContentSecurityPolicy(options))
+      expect(shell).toContain("frame-ancestors 'none'")
+      expect(callback).toBe(shell.replace("frame-ancestors 'none'", "frame-ancestors 'self'"))
+    }
+  })
+
+  it('knows the callback path the server registers as the redirect URI', () => {
+    expect(CALLBACK_PATH).toBe(FIRST_PARTY_CALLBACK_PATH)
   })
 
   it('adds the configured extra origins to connect-src, and nowhere else', () => {
@@ -230,7 +256,7 @@ describe('security headers', () => {
     expect(policy).toContain("connect-src 'self' https://id.example.com;")
   })
 
-  it.each(['/', '/leads/42', '/auth/callback', '/sw.js', '/manifest.webmanifest', '/app.js', '/assets/index-abc123.js'])(
+  it.each(['/', '/leads/42', '/auth/callback/x', '/auth', '/sw.js', '/manifest.webmanifest', '/app.js', '/assets/index-abc123.js'])(
     'sets the PWA headers on %s',
     async (path) => {
       const res = await standalone().app.request(path)
@@ -254,10 +280,31 @@ describe('security headers', () => {
       publicUrl: `${TEST_PUBLIC_BASE_URL}/mcp`,
       fetch: (input, init) => server.app.request(input, init),
     })
-    const policy = pwaContentSecurityPolicy({ issuer: 'https://id.example.com' })
-    const app = createStandaloneApp({ server: server.app, mcp, webDir: createWebDir(), contentSecurityPolicy: policy })
-    expect((await app.request('/')).headers.get('content-security-policy')).toBe(policy)
+    const policies = { shell: 'shell-policy', callback: 'callback-policy' }
+    const app = createStandaloneApp({ server: server.app, mcp, webDir: createWebDir(), contentSecurityPolicy: policies })
+    expect((await app.request('/')).headers.get('content-security-policy')).toBe('shell-policy')
+    expect((await app.request('/auth/callback')).headers.get('content-security-policy')).toBe('callback-policy')
   })
+
+  it.each([undefined, 'https://id.example.com'])(
+    'serves /auth/callback framable by the PWA alone, and nothing else (issuer: %s)',
+    async (issuer) => {
+      const { app } = standalone({ issuer })
+      const { shell, callback } = pwaContentSecurityPolicies({ issuer })
+      const res = await app.request('/auth/callback?code=abc&state=xyz')
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-security-policy')).toBe(callback)
+      expect(callback).toContain("frame-ancestors 'self'")
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+      for (const path of ['/', '/leads/42', '/auth/callback/', '/assets/index-abc123.js']) {
+        expect((await app.request(path)).headers.get('content-security-policy'), path).toBe(shell)
+      }
+      if (issuer !== undefined) {
+        expect(callback).toContain(`frame-src 'self' ${issuer};`)
+        expect(shell).toContain(`frame-src 'self' ${issuer};`)
+      }
+    },
+  )
 
   it.each([
     ['/api/v1/stages', 'GET'],

@@ -227,12 +227,20 @@ base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 
 (Served on one line; it is wrapped here to fit.) With `PHILO_OIDC_ISSUER` set,
 the issuer's origin is added to `connect-src`, because the PWA fetches the
-provider's discovery document and token endpoint. If the provider's discovery
+provider's discovery document and token endpoint, and to `frame-src`, because
+the PWA asks the provider for an extra token by loading its authorize URL in a
+hidden frame ([ADR-0013](adr/0013-operator-host-script.md)). If the provider's discovery
 document puts its token or revocation endpoint on another origin, list that
 origin in `PHILO_WEB_CONNECT_ORIGINS` (for example
 `PHILO_WEB_CONNECT_ORIGINS=https://oauth2.example-apis.com`); without it the
 browser blocks the code exchange and sign-in fails with only a console
-message.
+message. Those origins go in `connect-src` only, never in `frame-src`.
+
+`/auth/callback` is served with the same policy except
+`frame-ancestors 'self'`: the provider sends the hidden frame back there, and
+the page posts the answer to the PWA that framed it. Every other path keeps
+`frame-ancestors 'none'`. The service worker never answers `/auth/callback`
+from its offline cache, so the frame always gets the callback's own headers.
 
 The server's own responses never get this policy: the API, intake (which public
 websites post to from other origins), `/oauth`, `/.well-known`, `/mcp` and
@@ -248,9 +256,12 @@ sets the headers. Copy the policy above and add:
   `/api/email-preview`, with a policy of its own. A preview rendered directly
   in the PWA would inherit the PWA's policy and lose the template's inline
   styles and images.
-- the external IdP's origin to `connect-src`, if you use one.
+- the external IdP's origin to `connect-src` and `frame-src`, if you use one.
 
-Serve the policy on `index.html` and on every path that falls back to it. A
+Serve the policy on `index.html` and on every path that falls back to it, with
+one exception: on `/auth/callback`, serve it with `frame-ancestors 'self'`
+instead of `'none'`. Otherwise the extra-token frame is blocked, and the
+operator's host script gets `null` from `getToken`. A
 static host that cannot set headers can't apply `frame-ancestors`, so the
 PWA could then be framed by other sites.
 

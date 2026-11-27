@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { CALLBACK_PATH } from '../src/auth.ts'
 import {
   loadServiceWorker,
   makeClient,
@@ -92,6 +93,22 @@ describe('fetch', () => {
 
     const response = (await worker.dispatch('fetch', navigation('/board'))) as Response
     await expect(response.text()).resolves.toBe('shell from network')
+  })
+
+  it('leaves the sign-in callback to the browser, so the cached shell never answers it', async () => {
+    // The extra-token helper's hidden frame lands here, and the callback's own
+    // response is the one whose `frame-ancestors 'self'` lets it render framed.
+    // The cached shell carries the shell's `frame-ancestors 'none'`.
+    const fetchImpl = vi.fn(async () => html('shell from network'))
+    const worker = loadServiceWorker(fetchImpl as unknown as typeof fetch)
+    await worker.dispatch('install', {})
+    fetchImpl.mockClear()
+    fetchImpl.mockRejectedValue(new TypeError('offline'))
+
+    const response = await worker.dispatch('fetch', navigation(`${CALLBACK_PATH}?code=abc&state=xyz`))
+
+    expect(response).toBeUndefined()
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('rethrows when there is neither a network nor a cached shell', async () => {

@@ -2,7 +2,7 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { MCP_PATH, PROTECTED_RESOURCE_METADATA_PATH } from '@philo/mcp'
 import { Hono, type Context } from 'hono'
 import { fileURLToPath } from 'node:url'
-import { pwaContentSecurityPolicy } from './csp.ts'
+import { CALLBACK_PATH, pwaContentSecurityPolicies, type PwaContentSecurityPolicies } from './csp.ts'
 
 /** Where `npm run build --workspace apps/web` puts the PWA. */
 export const WEB_DIST_DIR = fileURLToPath(new URL('../../web/dist', import.meta.url))
@@ -25,10 +25,11 @@ export interface StandaloneOptions {
   /** The built PWA. Overridable for tests. */
   webDir?: string | undefined
   /**
-   * The policy every PWA response carries — csp.ts. Built once at startup from
-   * config; the built-in IdP's default when omitted.
+   * The policies PWA responses carry — csp.ts: the callback's on
+   * `CALLBACK_PATH`, the shell's on everything else. Built once at startup
+   * from config; the built-in IdP's defaults when omitted.
    */
-  contentSecurityPolicy?: string | undefined
+  contentSecurityPolicy?: PwaContentSecurityPolicies | undefined
 }
 
 /** Everything the server answers. Never the app shell: HTML here is an unparseable 200. */
@@ -54,6 +55,15 @@ function isMcpPath(path: string): boolean {
  */
 function isStaticFilePath(path: string): boolean {
   return /\.[a-z0-9]+$/i.test(path)
+}
+
+/** The PWA's security headers, around one of the two policies csp.ts builds. */
+function pwaHeadersWith(policy: string): ReadonlyArray<readonly [string, string]> {
+  return [
+    ['Content-Security-Policy', policy],
+    ['X-Content-Type-Options', 'nosniff'],
+    ['Referrer-Policy', 'strict-origin-when-cross-origin'],
+  ]
 }
 
 function forward(target: Handler, c: Context): Response | Promise<Response> {
@@ -98,14 +108,16 @@ export function createStandaloneApp(options: StandaloneOptions): Hono {
   // Never on the server or MCP: intake is posted to cross-origin from public
   // sites and answers exactly as the server does, and the server's own pages
   // (the IdP dialog, attachment downloads) carry policies of their own.
-  const pwaHeaders: ReadonlyArray<readonly [string, string]> = [
-    ['Content-Security-Policy', options.contentSecurityPolicy ?? pwaContentSecurityPolicy()],
-    ['X-Content-Type-Options', 'nosniff'],
-    ['Referrer-Policy', 'strict-origin-when-cross-origin'],
-  ]
+  //
+  // The callback alone may be framed, and only by the PWA: the extra-token
+  // helper's hidden frame lands there (csp.ts).
+  const policies = options.contentSecurityPolicy ?? pwaContentSecurityPolicies()
+  const shellHeaders = pwaHeadersWith(policies.shell)
+  const callbackHeaders = pwaHeadersWith(policies.callback)
   app.use('/*', async (c, next) => {
     await next()
     if (isMcpPath(c.req.path) || isServerPath(c.req.path)) return
+    const pwaHeaders = c.req.path === CALLBACK_PATH ? callbackHeaders : shellHeaders
     // Never over a header a handler already set, as with Cache-Control.
     for (const [name, value] of pwaHeaders) {
       if (!c.res.headers.has(name)) c.res.headers.set(name, value)

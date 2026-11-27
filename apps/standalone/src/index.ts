@@ -2,7 +2,7 @@ import { serve } from '@hono/node-server'
 import { createMcpApp } from '@philo/mcp'
 import { bootServer, loadConfig, VERSION } from '@philo/server'
 import { createStandaloneApp } from './app.ts'
-import { pwaContentSecurityPolicy } from './csp.ts'
+import { pwaContentSecurityPolicies } from './csp.ts'
 
 const config = loadConfig()
 const server = bootServer(config)
@@ -18,7 +18,7 @@ const mcp = createMcpApp({
 const app = createStandaloneApp({
   server: server.app,
   mcp,
-  contentSecurityPolicy: pwaContentSecurityPolicy({
+  contentSecurityPolicy: pwaContentSecurityPolicies({
     issuer: config.externalIdp?.issuer,
     connectOrigins: config.webConnectOrigins,
   }),

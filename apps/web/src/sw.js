@@ -17,6 +17,9 @@ const PRECACHE = __PHILO_PRECACHE__
 /** The one navigation response worth keeping: the server answers every client-side route with it. */
 const SHELL = '/'
 
+/** CALLBACK_PATH in auth.ts. */
+const CALLBACK = '/auth/callback'
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
@@ -40,7 +43,15 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request
   if (request.method !== 'GET') return
-  if (new URL(request.url).origin !== self.location.origin) return
+  const url = new URL(request.url)
+  if (url.origin !== self.location.origin) return
+
+  // The sign-in callback is the browser's to load. The extra-token helper's
+  // hidden frame lands here, and renders only under the callback's own
+  // `frame-ancestors 'self'`; the cached shell carries the shell's `'none'`,
+  // so falling back to it would block the frame. Offline there is no code
+  // exchange to finish anyway.
+  if (url.pathname === CALLBACK) return
 
   // Network first, so a deploy is picked up on the next load rather than
   // whenever the shell happens to fall out of the cache.
@@ -51,7 +62,7 @@ self.addEventListener('fetch', (event) => {
 
   // Content-hashed by vite, so a hit is never stale. Everything else — the API
   // above all — is left alone: a cached answer about leads is a wrong answer.
-  if (new URL(request.url).pathname.startsWith('/assets/')) {
+  if (url.pathname.startsWith('/assets/')) {
     event.respondWith(cacheFirst(request))
   }
 })

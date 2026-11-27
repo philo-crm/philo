@@ -254,6 +254,10 @@ configured. With a host script:
   issuer to `frame-src`** when an external IdP is configured, beside the
   issuer it already adds to `connect-src`. Until then `getToken` answers
   `null` after the frame times out.
+  *Done:* the extra-token change landed second, and the follow-up to it adds
+  the issuer to `frame-src`. It also serves `/auth/callback` with
+  `frame-ancestors 'self'` instead of `'none'`, because the frame lands there,
+  and keeps the service worker from answering that path from its cached shell.
 - The extra-token helper must key its cache by resource, scope and `prompt`
   (today it keys by the first two; the host-script PR changes it), so
   a host call with a `prompt` the IdP will not answer silently does not mark
