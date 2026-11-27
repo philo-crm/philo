@@ -320,3 +320,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webConnectOrigins: parseOriginList('PHILO_WEB_CONNECT_ORIGINS', env['PHILO_WEB_CONNECT_ORIGINS']),
   }
 }
+
+/**
+ * Settings that load but are probably not what the operator meant, for boot
+ * to print. Each is legal on purpose, so it warns rather than refusing.
+ */
+export function configWarnings(config: Pick<Config, 'externalIdp'>): string[] {
+  const warnings: string[] = []
+  const idp = config.externalIdp
+  // Legal for an IdP that refuses the admin scope to the PWA's client — but
+  // the PWA's token is the IdP's whole answer for the person (ADR-0012), so
+  // every PWA sign-in then demotes its person to user.
+  if (idp?.roles !== undefined && !idp.scope.split(' ').includes(idp.roles.adminScope)) {
+    warnings.push(
+      `PHILO_OIDC_SCOPE does not ask for ${idp.roles.adminScope}, so every PWA sign-in demotes its person to user ` +
+        'and no admin survives one. Add it unless the provider refuses it to this client on purpose.',
+    )
+  }
+  return warnings
+}

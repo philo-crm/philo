@@ -354,3 +354,58 @@ describe('a deactivated account', () => {
     expect(rowOf(testApp)).toEqual(before)
   })
 })
+
+describe('minting an API key', () => {
+  it('is refused to a token whose scopes name less than its account\'s stored role', async () => {
+    const testApp = app()
+    await signedInAdmin(testApp)
+
+    const res = await testApp.app.request(
+      '/api/v1/api-keys',
+      jsonPost({ name: 'cron' }, { authorization: `Bearer ${await token({ client: AGENT_CLIENT, scope: `${USER_SCOPE} offline_access` })}` }),
+    )
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'admin_required' })
+    expect(res.headers.get('www-authenticate')).toBe(
+      `Bearer realm="philo", error="insufficient_scope", scope="${ADMIN_SCOPE}"`,
+    )
+    expect(testApp.db.select().from(apiKeys).all()).toEqual([])
+    expect(rowOf(testApp)?.role).toBe('admin')
+  })
+
+  it('is open to a user signed in through the PWA with the user scope', async () => {
+    const testApp = app()
+    expect((await principal(testApp, { scope: USER_SCOPE })).body.role).toBe('user')
+    const secret = await mintKey(testApp, { scope: USER_SCOPE })
+    expect((await testApp.app.request('/api/v1/leads', keyAuth(secret))).status).toBe(200)
+  })
+
+  it('is open to an admin whose token holds the admin scope, an agent\'s included', async () => {
+    const testApp = app()
+    await signedInAdmin(testApp)
+    await mintKey(testApp, { scope: `${USER_SCOPE} ${ADMIN_SCOPE}` })
+    await mintKey(testApp, { client: AGENT_CLIENT, scope: ADMIN_SCOPE })
+    expect(testApp.db.select().from(apiKeys).all()).toHaveLength(2)
+  })
+
+  it('is open to an agent acting for a user, whose stored role is no higher than its token', async () => {
+    const testApp = app()
+    expect((await principal(testApp, { scope: USER_SCOPE })).body.role).toBe('user')
+    await mintKey(testApp, { client: AGENT_CLIENT, scope: USER_SCOPE })
+  })
+})
+
+describe('a deactivated account never bound', () => {
+  it('is refused without being bound, so the refusal changes nothing', async () => {
+    const testApp = app()
+    createFirstUser(testApp.db, { email: ADMIN_EMAIL, passwordHash: 'unused', name: 'Admin' })
+    testApp.db.update(users).set({ disabledAt: new Date() }).run()
+    const before = rowOf(testApp)
+
+    const res = await testApp.app.request('/api/v1/leads', await bearer({ email: ADMIN_EMAIL, scope: ADMIN_SCOPE }))
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'account_disabled' })
+    expect(rowOf(testApp)).toEqual(before)
+    expect(rowOf(testApp)?.externalSubject).toBeNull()
+  })
+})

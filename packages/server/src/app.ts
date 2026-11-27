@@ -241,7 +241,7 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   })
 
   app.route(`${API_PREFIX}/auth`, createAuthRoutes({ signIn: signInConfig(options) }))
-  app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db }))
+  app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db, externalIdp: options.externalIdp }))
   app.route(
     `${API_PREFIX}/leads`,
     createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated, changes }),

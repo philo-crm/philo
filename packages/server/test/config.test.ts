@@ -1,6 +1,6 @@
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { loadConfig } from '../src/config.ts'
+import { configWarnings, loadConfig } from '../src/config.ts'
 
 describe('loadConfig', () => {
   it('applies defaults when nothing is set', () => {
@@ -88,6 +88,18 @@ describe('loadConfig', () => {
     it('keeps an explicit sign-in scope as written', () => {
       const config = loadConfig({ ...env, ...roles, PHILO_OIDC_SCOPE: 'openid email crm:admin crm:user' })
       expect(config.externalIdp?.scope).toBe('openid email crm:admin crm:user')
+    })
+
+    it('warns when an explicit sign-in scope leaves out the admin scope, since every PWA sign-in then demotes', () => {
+      const config = loadConfig({ ...env, ...roles, PHILO_OIDC_SCOPE: 'openid email crm:user' })
+      expect(config.externalIdp?.scope).toBe('openid email crm:user')
+      expect(configWarnings(config)).toEqual([expect.stringMatching(/PHILO_OIDC_SCOPE.*crm:admin.*admin/)])
+    })
+
+    it('does not warn when the sign-in scope asks for both role scopes, or the role scopes are unset', () => {
+      expect(configWarnings(loadConfig({ ...env, ...roles }))).toEqual([])
+      expect(configWarnings(loadConfig({ ...env, ...roles, PHILO_OIDC_SCOPE: 'openid crm:admin crm:user' }))).toEqual([])
+      expect(configWarnings(loadConfig({ ...env, PHILO_OIDC_SCOPE: 'openid email' }))).toEqual([])
     })
 
     it('refuses a sign-in scope that asks for neither role scope', () => {

@@ -213,14 +213,18 @@ the provider — one that admits a person as a **user**, one that makes them an
   `openid email profile <user scope> <admin scope>`), and the user scope (plus
   `offline_access`) on every agent client. A provider that refuses the whole
   request for a scope the person lacks, rather than leaving it out, needs
-  `PHILO_OIDC_SCOPE` set with that in mind.
+  `PHILO_OIDC_SCOPE` set with that in mind. A `PHILO_OIDC_SCOPE` that leaves
+  out the admin scope demotes every admin to user at their next PWA sign-in,
+  so no admin survives one; Philo warns about it at startup.
 - **Each request** takes its role from the token's `scope` or `scp` claim:
   the admin scope makes an admin (alone too), the user scope a user. A token
   holding neither is refused with `403 insufficient_scope` and a
   `WWW-Authenticate` challenge naming the user scope, and it never binds or
   creates an account. A user's token on an admin route gets
   `403 admin_required`, naming the admin scope. An agent's token acts with
-  its own scopes, never more, even for an admin.
+  its own scopes, never more, even for an admin. That includes API keys: a
+  key acts with the stored role, so a token whose scopes name less than that
+  role cannot mint one (`403 admin_required`, naming the admin scope).
 - **Accounts:** every `iss`+`sub` gets one, created by its first admitted
   token with a verified email and the profile's name. An account from before
   (the built-in IdP's, or the single external one) is bound by its verified

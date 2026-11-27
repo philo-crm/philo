@@ -163,9 +163,14 @@ export function createRequireAdmin(externalIdp: ExternalIdp | undefined): Middle
     const principal = c.get('principal')
     if (principal === undefined) return unauthorized(c)
     if (principal.role === 'admin') return next()
-    if (externalIdp?.roles !== undefined) insufficientScope(c, externalIdp.roles.adminScope)
-    return c.json({ error: 'admin_required' }, 403)
+    return adminRequired(c, externalIdp)
   }
+}
+
+/** The 403 for a credential that needs the admin role, with the admin-scope challenge when the role scopes are set. */
+export function adminRequired(c: Context, externalIdp: ExternalIdp | undefined) {
+  if (externalIdp?.roles !== undefined) insufficientScope(c, externalIdp.roles.adminScope)
+  return c.json({ error: 'admin_required' }, 403)
 }
 
 /** `createRequireAdmin` for the built-in IdP. */

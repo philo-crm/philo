@@ -385,8 +385,11 @@ before any account is bound or created), every `iss`+`sub` gets its own
 account, and `users.role` is only a cache that admitted tokens confirm — the
 PWA's client's tokens alone demote it. *Has access* then also needs a
 confirmation within 30 days, which is what stops the API keys and push devices
-of someone removed at the IdP. Without the scopes an external IdP keeps its one
-account.
+of someone removed at the IdP. Minting an API key needs a credential whose role
+is at least its account's stored role, because the key acts with the stored
+role: an admin's agent holding only the user scope gets `403 admin_required`,
+with the admin-scope challenge, rather than a key that would act as admin.
+Without the scopes an external IdP keeps its one account.
 
 1. **UI: OIDC sign-in.** The PWA is a public OIDC client of the built-in IdP:
    authorization code + PKCE, an operator-scoped access token in memory and a

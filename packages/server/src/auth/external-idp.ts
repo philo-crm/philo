@@ -320,6 +320,7 @@ const unusablePassword = () => hashPassword(`external-idp:${randomUUID()}`)
  *   another subject is refused: two people cannot share one.
  *
  * The row comes back whatever its state; the caller decides on deactivation.
+ * A deactivated account never bound comes back without being bound.
  */
 async function findOrProvisionAccount(
   db: Db,
@@ -340,9 +341,15 @@ async function findOrProvisionAccount(
   const email = verifiedEmail(profile)
   if (email === undefined) return undefined
 
-  const holder = db.select({ subject: users.externalSubject }).from(users).where(eq(users.email, email)).all()[0]
+  const holder = db
+    .select({ ...ACCOUNT_COLUMNS, subject: users.externalSubject })
+    .from(users)
+    .where(eq(users.email, email))
+    .all()[0]
   if (holder !== undefined) {
     if (holder.subject !== null) return boundTo(db)
+    // Deactivated: handed back unbound, so the caller's refusal changes nothing.
+    if (holder.disabledAt !== null) return holder
     const [claimed] = db
       .update(users)
       .set({ externalSubject: subject })

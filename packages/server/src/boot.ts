@@ -1,6 +1,6 @@
 import { createApp } from './app.ts'
 import { createExternalIdp } from './auth/external-idp.ts'
-import type { Config } from './config.ts'
+import { configWarnings, type Config } from './config.ts'
 import { openDatabase, type Db } from './db/index.ts'
 import { ChangeFeed } from './events/feed.ts'
 import { accessPolicyOf } from './auth/access.ts'
@@ -138,6 +138,7 @@ function onListening(config: Config, db: Db, emailDeps: EmailDeps): void {
   // in memory, so this is what carries the guarantee across a restart — but a
   // mail server that is down must not hold up serving.
   void sweepUnsentEmails(emailDeps)
+  for (const warning of configWarnings(config)) console.warn(`  note: ${warning}`)
   if (config.trustProxy) {
     // Worth stating positively: this is the setting that decides whether a header
     // a stranger can write is allowed to name the caller.
