@@ -130,13 +130,14 @@ describe('EmailTemplates', () => {
     const frame = (await within(ack).findByTitle('Applicant acknowledgment preview')) as HTMLIFrameElement
     const post = vi.spyOn(frame.contentWindow!, 'postMessage')
 
-    // Another window announcing itself gets nothing.
-    window.dispatchEvent(new MessageEvent('message', { data: { type: 'philo:email-preview-ready' }, source: window }))
+    // Nothing is sent before the frame asks; once it does, exactly once.
     expect(post).not.toHaveBeenCalled()
+    await announceReady(frame, post)
+    expect(post).toHaveBeenCalledTimes(1)
 
-    window.dispatchEvent(
-      new MessageEvent('message', { data: { type: 'philo:email-preview-ready' }, source: frame.contentWindow }),
-    )
+    // Another window announcing itself gets nothing — checked once the preview
+    // is surely listening, so the silence means something.
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'philo:email-preview-ready' }, source: window }))
     expect(post).toHaveBeenCalledTimes(1)
 
     // A new preview reaches the frame on screen, whichever it is.
@@ -226,13 +227,24 @@ function lastPreviewBody(api: FakeApi): Record<string, unknown> {
  */
 async function renderedInto(frame: HTMLIFrameElement): Promise<string> {
   const post = vi.spyOn(frame.contentWindow!, 'postMessage')
-  window.dispatchEvent(
-    new MessageEvent('message', { data: { type: 'philo:email-preview-ready' }, source: frame.contentWindow }),
-  )
-  await waitFor(() => expect(post).toHaveBeenCalled())
+  await announceReady(frame, post)
   const [message, target] = post.mock.lastCall!
   // The page is an opaque origin (sandboxed), which only '*' can address.
   expect(target).toBe('*')
   expect(message).toMatchObject({ type: 'philo:email-preview' })
   return (message as { html: string }).html
+}
+
+/**
+ * The frame's page saying it is ready, until the preview answers. The preview
+ * listens from a passive effect, which can run a moment after the frame is on
+ * screen, and an announcement before then is lost — as a real page's would be.
+ */
+async function announceReady(frame: HTMLIFrameElement, post: { mock: { calls: unknown[] } }): Promise<void> {
+  await waitFor(() => {
+    window.dispatchEvent(
+      new MessageEvent('message', { data: { type: 'philo:email-preview-ready' }, source: frame.contentWindow }),
+    )
+    expect(post.mock.calls.length).toBeGreaterThan(0)
+  })
 }
