@@ -98,7 +98,9 @@ export function createStandaloneApp(options: StandaloneOptions): Hono {
       // still in flight, and `immutable` would outlive the deploy that fixes it.
       const failed = c.res.status >= 400
       c.res.headers.set('Cache-Control', failed ? 'no-store' : 'public, max-age=31536000, immutable')
-    } else if (PWA_ROOT_FILES.has(c.req.path)) {
+    } else if (PWA_ROOT_FILES.has(c.req.path) || c.req.path.startsWith('/host/')) {
+      // `/host/` is ADR-0013's mounted host-script directory: unhashed, and an
+      // operator's fix to it must land on the next load.
       c.res.headers.set('Cache-Control', 'no-cache')
     }
   })

@@ -90,9 +90,9 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_OIDC_SCOPE` | `openid email profile` | The scope the PWA asks that provider for. Must include `openid`. Add `offline_access` if the provider issues refresh tokens only when asked. |
 | `PHILO_OIDC_RESOURCE` | empty | Comma-separated [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707) resource indicators (absolute URLs) the PWA sends with its sign-in and token requests, for a provider that picks the token's audience from them. |
 | `PHILO_WEB_CONNECT_ORIGINS` | empty | Comma-separated extra origins added to the PWA's `connect-src`, for a provider whose token or revocation endpoint is on another origin. Each must be a bare `https://` origin (`http://` only for `localhost` and `127.0.0.1`): a path, wildcard or CSP keyword is a startup error. See [Content-Security-Policy](#content-security-policy). |
-| `PHILO_WEB_HOST_SCRIPT_URL` | unset | An operator script the PWA loads after sign-in, for shared top-bar chrome. An absolute `https://` URL (`http://` only for `localhost` and `127.0.0.1`), or a path on the PWA's own origin such as `/host/chrome.js`. **It runs with the page's full authority.** See [Host script](#host-script). |
+| `PHILO_WEB_HOST_SCRIPT_URL` | unset | An operator script the PWA loads after sign-in, for shared top-bar chrome. An absolute `https://` URL (`http://` only for `localhost` and `127.0.0.1`), or a path on the PWA's own origin such as `/host/chrome.js`. The path names one file: it may not end in `/` or hold `%`. **It runs with the page's full authority.** See [Host script](#host-script). |
 | `PHILO_WEB_HOST_CONFIG` | `{}` | A JSON object handed to the host script as `ctx.config`. Public, since anyone can read it, so no secrets. Anything but a JSON object is a startup error. |
-| `PHILO_WEB_HOST_TOKEN_RESOURCES` | empty | Comma-separated resource indicators (absolute URLs) the host script may ask the external IdP for a token for. Empty means it gets none. Philo's own audience is a startup error. |
+| `PHILO_WEB_HOST_TOKEN_RESOURCES` | empty | Comma-separated resource indicators (absolute URLs) the host script may ask the external IdP for a token for. Empty means it gets none. Philo's own audience is a startup error, and so is a non-empty list without `PHILO_OIDC_AUDIENCE`: with no audience Philo's API checks none, so any token the host got could act there. |
 | `PHILO_WEB_ASSET_ORIGINS` | empty | Comma-separated sources the host script's own code, styles, fonts and images load from. Each is an `https://` origin, optionally with a path prefix ending in `/` (`http://` only for `localhost` and `127.0.0.1`). A query, wildcard or CSP keyword is a startup error. See [Host script](#host-script). |
 
 ### `PHILO_PUBLIC_BASE_URL` earns its keep
@@ -302,8 +302,12 @@ PWA without rebuilding it:
   under `/host/`, with the PWA's own headers, so
   `PHILO_WEB_HOST_SCRIPT_URL=/host/chrome.js` needs no change to the policy.
 
-Neither is cached by the service worker. The browser's HTTP cache
-revalidates it, so a changed file lands on the next load.
+Neither is cached by the service worker. The image answers `/host/` with
+`Cache-Control: no-cache`, so the browser revalidates the script and a
+changed file lands on the next load. A reverse proxy answering `/host/`
+itself should send the same header; without one, browsers cache the file
+for a guessed time, often days. For a script on another origin, that
+origin's headers decide, so give it a `?v=<release>` query or `no-cache`.
 
 **The policy it produces.** A same-origin path needs nothing more: `'self'`
 covers it. An absolute URL is added to `script-src` as that exact URL,
@@ -328,6 +332,14 @@ inline script or inline `<style>`; a component can style itself through
 constructable stylesheets or the CSSOM. When the PWA is
 [hosted apart](#running-the-pieces-apart), add the same sources to the
 policy your static host serves.
+
+**Tokens for the script.** `getToken` answers only for a resource listed in
+`PHILO_WEB_HOST_TOKEN_RESOURCES`, compared as an exact string, and only with
+an external IdP that has `PHILO_OIDC_AUDIENCE` set. The `scope` the script
+asks for is passed to the IdP unchecked. If your IdP grants audiences by
+scope rather than by `resource`, make sure no scope the PWA's client may ask
+for grants Philo's audience, or the script can get a token that acts at
+Philo's API.
 
 **What happens when it fails.** Philo's own account menu stays until the
 script takes it over. If the script fails to load, throws, or has not

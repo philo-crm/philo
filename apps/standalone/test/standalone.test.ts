@@ -34,6 +34,9 @@ function createWebDir({ withPwaFiles = true } = {}): string {
   writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Philo</title>')
   writeFileSync(join(dir, 'app.js'), 'console.log("philo")')
   writeFileSync(join(dir, 'assets', 'index-abc123.js'), 'console.log("hashed")')
+  // ADR-0013's mounted host-script directory.
+  mkdirSync(join(dir, 'host'))
+  writeFileSync(join(dir, 'host', 'chrome.js'), 'window.PhiloHost = { mount() {} }')
   if (withPwaFiles) {
     writeFileSync(join(dir, 'sw.js'), 'self.addEventListener("push", () => {})')
     writeFileSync(join(dir, 'manifest.webmanifest'), '{"name":"Philo","short_name":"Philo"}')
@@ -182,6 +185,14 @@ describe('caching', () => {
   it('does not mark unhashed root files immutable', async () => {
     const res = await standalone().app.request('/app.js')
     expect(res.headers.get('cache-control')).toBeNull()
+  })
+
+  // An operator's fix to a broken host script must land on the next load,
+  // not when a heuristic freshness runs out (ADR-0013).
+  it('makes a mounted host script revalidate', async () => {
+    const res = await standalone().app.request('/host/chrome.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
   })
 
   // A cached service worker is a deploy that never lands.
